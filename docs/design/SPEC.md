@@ -145,7 +145,7 @@ Where this spec and the Goldfish report disagree, **this spec wins**.
 
 | Dir | Message |
 | --- | --- |
-| sidecar → app | `{"v":1,"type":"ready","engine":"faster-whisper","model":"…","device":"cuda","compute":"…","vram_mb":N,"caps":{"hotwords":true,"prompt":true,"vad":true}}` |
+| sidecar → app | `{"v":1,"type":"ready","engine":"faster-whisper","model":"…","device":"cuda","compute":"…","vram_mb":N,"caps":{"hotwords":false,"prompt":true,"vad":true}}` |
 | app → sidecar | `{"v":1,"type":"transcribe","id":"…","audio_path":"…","bias_terms":["…"],"prompt":"…"}` |
 | sidecar → app | `{"v":1,"type":"result","id":"…","text":"…","speech_ms":N,"infer_ms":N,"segments":[{"start":s,"end":s,"text":"…","no_speech_prob":p}]}` |
 | sidecar → app | `{"v":1,"type":"error","id":"…|null","code":"OOM|BAD_AUDIO|NOT_READY|INTERNAL","msg":"…"}` |
