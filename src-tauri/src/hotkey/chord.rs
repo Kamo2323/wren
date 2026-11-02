@@ -119,10 +119,10 @@ impl ChordMachine {
 
     /// Time passing with no key event. Closes an expired double-tap window.
     pub fn on_tick(&mut self, now_ms: u64) -> Vec<ChordOutput> {
-        if let Mode::AwaitDouble { released_at } = self.mode {
-            if now_ms.saturating_sub(released_at) > DOUBLE_TAP_GAP_MS {
-                self.mode = Mode::Idle;
-            }
+        if let Mode::AwaitDouble { released_at } = self.mode
+            && now_ms.saturating_sub(released_at) > DOUBLE_TAP_GAP_MS
+        {
+            self.mode = Mode::Idle;
         }
         Vec::new()
     }
