@@ -20,6 +20,7 @@ import type {
 } from "./types";
 import { emptyStats, mockDictionary, mockStats, mockTranscriptions } from "./mock";
 import { replaceWord, wordCount } from "./text";
+import { browserCopy, copyTextWith } from "./copy";
 
 export { replaceWord } from "./text";
 
@@ -325,26 +326,7 @@ export const onHistoryChanged = (h: () => void) => on<unknown>("app://history-ch
 
 // ---------- helpers ----------
 
-/** Copy text from the main window. Falls back to a hidden textarea if the async API is blocked. */
-export async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try {
-      ok = document.execCommand("copy");
-    } catch {
-      ok = false;
-    }
-    ta.remove();
-    return ok;
-  }
-}
+/** Copy dictated text from the main window (Home/History cards): through Rust, so it stays out of
+ *  Win+V history and cloud clipboard (copy.ts). False when it could not be copied. */
+export const copyText = (text: string): Promise<boolean> =>
+  copyTextWith(text, { inTauri, rustCopy: (t) => call("copy_text", { text: t }), browserCopy });

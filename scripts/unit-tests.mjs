@@ -3,6 +3,10 @@
 import assert from "node:assert/strict";
 import { niceTicks, dayWpm } from "../src/lib/chart.ts";
 import { replaceWord, wordCount, markMatches } from "../src/lib/text.ts";
+import { copyTextWith } from "../src/lib/copy.ts";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 let failed = 0;
 function test(name, fn) {
@@ -65,6 +69,69 @@ test("markMatches", () => {
     { text: ".", match: true },
     { text: "b", match: false },
   ]);
+});
+
+async function testAsync(name, fn) {
+  try {
+    await fn();
+    console.log(`PASS  ${name}`);
+  } catch (e) {
+    failed++;
+    console.log(`FAIL  ${name}\n      ${e.message.split("\n").join("\n      ")}`);
+  }
+}
+
+// I-2: dictated text is copied by Rust (excluded from Win+V history and cloud clipboard), never by
+// the WebView's clipboard API, whenever the page runs inside Tauri.
+await testAsync("copyTextWith: in Tauri, Rust copies and the browser clipboard is never used", async () => {
+  const calls = [];
+  const ok = await copyTextWith("Dictated words", {
+    inTauri: true,
+    rustCopy: async (t) => calls.push(["rust", t]),
+    browserCopy: async (t) => (calls.push(["browser", t]), true),
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [["rust", "Dictated words"]]);
+});
+await testAsync("copyTextWith: in Tauri, a Rust failure is reported, with no browser fallback", async () => {
+  const calls = [];
+  const ok = await copyTextWith("", {
+    inTauri: true,
+    rustCopy: async () => {
+      calls.push("rust");
+      throw new Error("nothing to copy");
+    },
+    browserCopy: async () => (calls.push("browser"), true),
+  });
+  assert.equal(ok, false);
+  assert.deepEqual(calls, ["rust"]);
+});
+await testAsync("copyTextWith: in a plain browser (mock), the browser clipboard is used", async () => {
+  const calls = [];
+  const ok = await copyTextWith("x", {
+    inTauri: false,
+    rustCopy: async () => calls.push("rust"),
+    browserCopy: async (t) => (calls.push(["browser", t]), true),
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [["browser", "x"]]);
+});
+test("no page copies with navigator.clipboard / execCommand except copy.ts's browser-only path", () => {
+  const root = fileURLToPath(new URL("../src/", import.meta.url));
+  const offenders = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(name)) {
+        const rel = relative(root, p).replaceAll("\\", "/");
+        const src = readFileSync(p, "utf8");
+        if (rel !== "lib/copy.ts" && /navigator\.clipboard|execCommand\(/.test(src)) offenders.push(rel);
+      }
+    }
+  };
+  walk(root);
+  assert.deepEqual(offenders, []);
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

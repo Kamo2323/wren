@@ -236,6 +236,7 @@ pub fn run() {
             commands::dictionary_set_status,
             commands::dictionary_delete,
             commands::popup_copy_text,
+            commands::copy_text,
             commands::popup_undo_learned,
             commands::popup_discard,
             commands::popup_open_main,
