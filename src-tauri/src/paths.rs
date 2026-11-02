@@ -2,9 +2,14 @@
 //!
 //! Settings live under `%APPDATA%\Wren`; everything bulky (database, audio, models, the Python
 //! runtime, logs) lives under `%LOCALAPPDATA%\Wren`. Setting `WREN_HOME` puts both roots under one
-//! folder, which tests use so they never touch the real data.
+//! folder, which tests use so they never touch the real data. `WREN_RUNTIME_ROOT` (tests only) moves
+//! just the read-only speech runtime and models, so a test with a temp `WREN_HOME` still finds the
+//! real installed engine.
 
 use std::path::{Path, PathBuf};
+
+/// Overrides the folder holding `runtime\` and `models\` (live tests with a temp `WREN_HOME`).
+pub const RUNTIME_ROOT_ENV: &str = "WREN_RUNTIME_ROOT";
 
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -51,11 +56,18 @@ impl Paths {
     pub fn audio_dir(&self) -> PathBuf {
         self.local.join("audio")
     }
+    /// Root of the read-only engine files: `WREN_RUNTIME_ROOT` if set, else the local root.
+    fn engine_root(&self) -> PathBuf {
+        match std::env::var_os(RUNTIME_ROOT_ENV) {
+            Some(root) if !root.is_empty() => PathBuf::from(root),
+            _ => self.local.clone(),
+        }
+    }
     pub fn models_dir(&self) -> PathBuf {
-        self.local.join("models")
+        self.engine_root().join("models")
     }
     pub fn runtime_dir(&self) -> PathBuf {
-        self.local.join("runtime")
+        self.engine_root().join("runtime")
     }
     /// Python interpreter inside the sidecar venv.
     pub fn runtime_python(&self) -> PathBuf {
