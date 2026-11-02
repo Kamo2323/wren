@@ -248,9 +248,11 @@ pub fn popup_open_main(app: AppHandle) {
     crate::tray::show_main(&app);
 }
 
+/// Through the session's view (M-5): "Starting" while Settings swaps the engine, never the old
+/// engine's "Failed: shut down".
 #[tauri::command]
 pub fn engine_status(services: State<'_, Services>) -> EngineStatus {
-    services.env.engine().status()
+    crate::session::Env::engine_status(services.env.as_ref())
 }
 
 #[tauri::command(async)]

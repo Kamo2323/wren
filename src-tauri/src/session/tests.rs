@@ -713,6 +713,23 @@ fn a_failed_engine_saves_the_dictation_without_text() {
     assert_eq!(transcribe_calls(&r.env), 0);
 }
 
+/// M-3: a failed engine says so, instead of "Warming up…", while recording and after.
+#[test]
+fn a_failed_engine_never_shows_warming_up() {
+    let r = rig();
+    *r.env.status.lock() = EngineStatus::Failed { reason: "The speech engine could not start.".into() };
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    let stopped = PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() };
+    wait_until("engine-stopped popup while recording", POPUP_DELAY_MS + 1_000, || r.env.popups().contains(&stopped));
+    assert!(r.env.recorder.active.lock().is_some(), "still recording (the audio is kept)");
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("not-transcribed popup", 2_000, || {
+        r.env.popups().contains(&PopupState::Error { message: NOT_TRANSCRIBED_MESSAGE.into() })
+    });
+    assert!(!r.env.popups().contains(&PopupState::Warming), "showed Warming up… for a failed engine");
+    assert_eq!(r.env.rows().len(), 1, "saved with its audio (Ruling 25)");
+}
+
 // ---------- review round 1: back-to-back dictations, notices, quit ----------
 
 #[test]

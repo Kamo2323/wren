@@ -203,6 +203,10 @@ fn is_ready(s: &EngineStatus) -> bool {
     matches!(s, EngineStatus::Ready { .. })
 }
 
+fn is_failed(s: &EngineStatus) -> bool {
+    matches!(s, EngineStatus::Failed { .. })
+}
+
 fn is_cpu(s: &EngineStatus) -> bool {
     matches!(s, EngineStatus::Ready { device, .. } if device == "cpu")
 }
@@ -756,7 +760,10 @@ impl SessionLoop {
             && now >= due
         {
             a.popup_due = None;
-            let state = if a.warming && !is_ready(&env.engine_status()) {
+            let status = env.engine_status();
+            let state = if is_failed(&status) {
+                PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() }
+            } else if a.warming && !is_ready(&status) {
                 PopupState::Warming
             } else {
                 PopupState::Listening { cpu: a.cpu }
@@ -855,8 +862,11 @@ impl SessionLoop {
         }
         match intent {
             Intent::Paste | Intent::SaveNotice => {
-                let next = if is_ready(&env.engine_status()) {
+                let status = env.engine_status();
+                let next = if is_ready(&status) {
                     PopupState::Transcribing { since_ms: epoch_ms() }
+                } else if is_failed(&status) {
+                    PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() }
                 } else {
                     PopupState::Warming
                 };
@@ -894,6 +904,8 @@ type AiStep<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// The popup message when a dictation could not be transcribed (its audio is kept in History).
 pub const NOT_TRANSCRIBED_MESSAGE: &str = "Couldn't transcribe — it's saved in History.";
+/// Shown instead of "Warming up…" when the engine has given up (M-3); clicking opens Wren.
+pub const ENGINE_STOPPED_MESSAGE: &str = "Speech engine stopped — open Wren.";
 
 fn drop_audio(job: &Job) {
     let _ = std::fs::remove_file(&job.recording.wav_path);
