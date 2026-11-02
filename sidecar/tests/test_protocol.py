@@ -289,3 +289,48 @@ def test_process_exits_when_stdin_closes():
     )
     proc.stdin.close()  # Wren gone, even mid-load
     assert proc.wait(timeout=20) == 0
+
+
+# ------------------------------------------------------------------------------------------ bias prompt
+
+
+def test_build_prompt_glossary_only():
+    from wren_sidecar.engine import build_prompt
+
+    assert build_prompt([], "") is None
+    assert build_prompt(["Wren", "Glaido"], "") == "Glossary: Wren, Glaido."
+    assert build_prompt(["Wren"], "Notes for Maximilian.") == "Notes for Maximilian. Glossary: Wren."
+    assert build_prompt([], "  Hello.  ") == "Hello."
+    assert build_prompt(["", "  ", "Wren"], "") == "Glossary: Wren."
+
+
+def test_build_prompt_stays_under_the_budget_keeping_best_terms():
+    from wren_sidecar.engine import MAX_PROMPT_CHARS, build_prompt
+
+    terms = [f"Term{i:03d}" for i in range(200)]
+    p = build_prompt(terms, "A sentence.")
+    assert len(p) <= MAX_PROMPT_CHARS
+    assert p.startswith("A sentence. Glossary: Term000, Term001,") and p.endswith(".")
+
+
+def test_bias_terms_never_become_hotwords():
+    import numpy as np
+    from wren_sidecar.engine import EngineConfig, Transcriber
+
+    seen = {}
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            seen.update(kw)
+
+            class Info:
+                duration = 1.0
+                duration_after_vad = 0.0
+
+            return iter(()), Info()
+
+    t = Transcriber(FakeModel(), EngineConfig(models_dir=Path(".")), name="m", device="cpu", compute="int8")
+    t.transcribe_array(np.zeros(16000, dtype=np.float32), ["Zorvath Quillby"], "")
+    assert "hotwords" not in seen
+    assert seen["initial_prompt"] == "Glossary: Zorvath Quillby."
+    assert seen["vad_filter"] is True and seen["beam_size"] == 1 and seen["condition_on_previous_text"] is False

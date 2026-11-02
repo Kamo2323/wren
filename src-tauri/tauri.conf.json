@@ -29,6 +29,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": [
+      "../sidecar/wren_sidecar/**/*.py",
+      "../sidecar/pyproject.toml",
+      "../sidecar/uv.lock",
+      "../sidecar/assets/**/*"
+    ],
     "windows": {
       "nsis": {
         "installMode": "currentUser"

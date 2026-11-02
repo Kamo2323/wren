@@ -2,7 +2,8 @@
 
 Defaults are the benchmark's pick on Maximilian's own voice (docs/research/stt-benchmark.md):
 large-v3-turbo, int8_float16, beam 1, language "en", VAD filter on (without it every model invented
-text on silent clips), condition_on_previous_text off, timestamps on.
+text on silent clips), condition_on_previous_text off, timestamps on, dictionary terms as a
+"Glossary: ..." initial_prompt (not hotwords).
 
 Privacy: dictated text only ever leaves this module inside a `result`. Errors and log lines use fixed
 wording plus exception *type names*, never exception text (which could quote the audio's words).
@@ -23,6 +24,9 @@ from . import cuda, protocol
 SAMPLE_RATE = 16000
 # Clips shorter than this (10 ms) hold no speech; skip the model entirely.
 MIN_SAMPLES = SAMPLE_RATE // 100
+
+# Whisper keeps only ~220 prompt tokens; ~4 characters a token leaves room for the decoder's own.
+MAX_PROMPT_CHARS = 800
 
 Log = Callable[[str, str], None]
 
@@ -79,6 +83,30 @@ def read_wav(path: str | Path) -> np.ndarray:
         raise BadAudio(f"audio file could not be decoded ({type(e).__name__})") from e
 
 
+def build_prompt(bias_terms: list[str], prompt: str) -> str | None:
+    """The initial_prompt: the optional sentence, then "Glossary: t1, t2, ...".
+
+    Benchmark result (docs/research/stt-benchmark.md, spec §5): dictionary terms go ONLY into this
+    Glossary prompt (name recall 80% -> 93%, no harm elsewhere), never into `hotwords`, which made
+    the model append dictionary words to trailing silence. Terms that would push the prompt past
+    MAX_PROMPT_CHARS are dropped from the end (the list arrives ranked, best first).
+    """
+    sentence = (prompt or "").strip()
+    terms = [t.strip() for t in bias_terms if t and t.strip()]
+    budget = MAX_PROMPT_CHARS - len(sentence) - len("Glossary: .") - 1
+    kept: list[str] = []
+    for t in terms:
+        cost = len(t) + (2 if kept else 0)
+        if cost > budget:
+            break
+        kept.append(t)
+        budget -= cost
+    parts = [sentence] if sentence else []
+    if kept:
+        parts.append("Glossary: " + ", ".join(kept) + ".")
+    return " ".join(parts) or None
+
+
 def is_oom(e: BaseException) -> bool:
     s = str(e).lower()
     return "out of memory" in s or "cuda_error_out_of_memory" in s
@@ -103,10 +131,9 @@ class Transcriber:
             vad_filter=self.cfg.vad,
             condition_on_previous_text=self.cfg.condition_on_previous_text,
         )
-        if bias_terms:
-            kwargs["hotwords"] = " ".join(bias_terms)
-        if prompt:
-            kwargs["initial_prompt"] = prompt
+        initial_prompt = build_prompt(bias_terms, prompt)
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt  # never `hotwords`: see build_prompt
         segments_iter, info = self.model.transcribe(audio, **kwargs)
         segments = []
         # The generator does the decoding; consume it inside the timing.

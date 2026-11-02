@@ -73,7 +73,8 @@ fn find_input_device(name: &str) -> Option<cpal::Device> {
 
 /// RMS (0..1 full scale) → meter level 0..1, linear in dB between the floor and ceiling constants.
 fn level_from_rms(rms: f32) -> f32 {
-    if !(rms > 0.0) {
+    // Also catches NaN.
+    if rms.is_nan() || rms <= 0.0 {
         return 0.0;
     }
     let db = 20.0 * rms.log10();
@@ -144,10 +145,10 @@ impl AudioRecorder {
             if !path.is_file() {
                 bail!("WREN_TEST_AUDIO names a file that does not exist: {}", path.display());
             }
-        } else if let Some(name) = &device {
-            if find_input_device(name).is_none() {
-                tracing::warn!("chosen microphone is not connected; using the Windows default until it is");
-            }
+        } else if let Some(name) = &device
+            && find_input_device(name).is_none()
+        {
+            tracing::warn!("chosen microphone is not connected; using the Windows default until it is");
         }
         if test_audio.is_none() {
             warm_up_input(device.as_deref());
@@ -252,10 +253,10 @@ impl AudioRecorder {
     /// Choose the microphone for the next recording (`None` = Windows default). A name that is not
     /// connected right now is refused, so the picker can say so.
     pub fn set_device(&self, device: Option<String>) -> Result<()> {
-        if let Some(name) = &device {
-            if find_input_device(name).is_none() {
-                bail!("no microphone called \"{name}\" is connected");
-            }
+        if let Some(name) = &device
+            && find_input_device(name).is_none()
+        {
+            bail!("no microphone called \"{name}\" is connected");
         }
         *self.device.lock() = device;
         Ok(())

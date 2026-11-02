@@ -37,7 +37,10 @@ pub enum EngineStatus {
 pub struct TranscribeRequest {
     pub id: String,
     pub audio_path: PathBuf,
+    /// Ranked dictionary terms (≤ `BIAS_TERMS_MAX`). The sidecar sends them to the model as an
+    /// `initial_prompt` "Glossary: t1, t2, …" (never as `hotwords`; benchmark result, spec §5).
     pub bias_terms: Vec<String>,
+    /// Optional extra sentence placed before the glossary.
     pub prompt: String,
 }
 
@@ -277,10 +280,7 @@ mod tests {
         assert!(cfg.sidecar_args(true).join(" ").ends_with("--device cpu"));
         assert!(cfg.python.ends_with("python.exe") && cfg.log_file.ends_with("sidecar.log"));
 
-        let mut s = EngineSettings::default();
-        s.vad_filter = false;
-        s.condition_on_previous_text = true;
-        s.beam_size = 0;
+        let s = EngineSettings { vad_filter: false, condition_on_previous_text: true, beam_size: 0, ..EngineSettings::default() };
         let joined = EngineConfig::from_paths(&paths, &s).sidecar_args(false).join(" ");
         assert!(joined.contains("--no-vad") && joined.contains("--condition-on-previous-text") && joined.contains("--beam 1"));
     }

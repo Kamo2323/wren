@@ -83,8 +83,10 @@ if (-not $venvOk) {
     Write-Step "Venv already present ($venv)"
 }
 
-Write-Step 'Installing locked packages (uv sync --frozen)'
-Invoke-Native 'uv' @('sync', '--project', $SidecarDir, '--frozen', '--no-dev', '--no-install-project')
+# --compile-bytecode: the app runs with PYTHONDONTWRITEBYTECODE, so .pyc files must exist up front
+# or every launch recompiles numpy, av, ctranslate2... from source.
+Write-Step 'Installing locked packages (uv sync --frozen --compile-bytecode)'
+Invoke-Native 'uv' @('sync', '--project', $SidecarDir, '--frozen', '--no-dev', '--no-install-project', '--compile-bytecode')
 
 Write-Step 'Models'
 $fetch = @'

@@ -621,13 +621,13 @@ fn resume_process(pid: u32) -> Result<()> {
         let mut resumed = 0;
         let mut more = Thread32First(snap, &mut entry).is_ok();
         while more {
-            if entry.th32OwnerProcessID == pid {
-                if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
-                    if ResumeThread(thread) != u32::MAX {
-                        resumed += 1;
-                    }
-                    let _ = CloseHandle(thread);
+            if entry.th32OwnerProcessID == pid
+                && let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
+            {
+                if ResumeThread(thread) != u32::MAX {
+                    resumed += 1;
                 }
+                let _ = CloseHandle(thread);
             }
             more = Thread32Next(snap, &mut entry).is_ok();
         }
