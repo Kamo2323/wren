@@ -422,7 +422,7 @@ mod tests {
     fn fix_then_send_learns_from_the_last_snapshot() {
         let (end, times) = run("hello klode", None, |t| match t {
             ..2_000 => text("hello klode"),
-            ..4_000 => text("hello Claude"),
+            2_000..4_000 => text("hello Claude"),
             _ => text("\n"), // sent: an empty composer reads as a line break
         });
         assert_eq!(end.reason, EndReason::Emptied);
@@ -458,7 +458,7 @@ mod tests {
     fn focus_moving_ends_the_watch_and_keeps_the_last_snapshot() {
         let (end, _) = run("hello klode", None, |t| match t {
             ..1_000 => text("hello klode"),
-            ..2_000 => text("hello Claude"),
+            1_000..2_000 => text("hello Claude"),
             _ => Reading::Text { focus: key(2), text: "another box".into(), took_ms: 1 },
         });
         assert_eq!(end.reason, EndReason::FocusMoved);
@@ -486,7 +486,7 @@ mod tests {
         let (end, times) = run("hello klode", None, |t| match t {
             ..300 => text("hello klode"),
             750 | 1_250 => Reading::Failed { took_ms: 1 },
-            ..2_000 => text("hello Claude"),
+            300..2_000 => text("hello Claude"),
             _ => Reading::Failed { took_ms: 1 },
         });
         assert_eq!(end.reason, EndReason::Failures);

@@ -133,7 +133,7 @@ impl Uia {
             class_name: unsafe { element.CachedClassName() }.map(|b| b.to_string()).unwrap_or_default(),
             framework: unsafe { element.CachedFrameworkId() }.map(|b| b.to_string()).unwrap_or_default(),
         };
-        let runtime_id = unsafe { element.GetRuntimeId() }.map(|sa| safearray_i32(sa)).unwrap_or_default();
+        let runtime_id = unsafe { element.GetRuntimeId() }.map(safearray_i32).unwrap_or_default();
         Focused { element, facts, runtime_id }
     }
 
