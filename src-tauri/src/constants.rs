@@ -155,3 +155,23 @@ pub fn ui_constants() -> UiConstants {
         popup_error_ms: POPUP_ERROR_MS,
     }
 }
+
+// ---- Audio (spec §4) and speech engine supervision (spec §5) ----
+
+/// RMS below this many dBFS counts as silence. Drives `Recording::heard_sound`, "No sound from mic"
+/// and the hands-free silence auto-stop.
+pub const AUDIO_SILENCE_DBFS: f32 = -50.0;
+/// Level meter range: this many dBFS shows as 0…
+pub const LEVEL_FLOOR_DBFS: f32 = -60.0;
+/// …and this many as 1 (linear in dB between, which reads as even to the ear).
+pub const LEVEL_CEIL_DBFS: f32 = -12.0;
+/// The `WREN_TEST_AUDIO` seam streams its file in chunks this long, in real time.
+pub const TEST_AUDIO_CHUNK_MS: u64 = 10;
+/// A sidecar that has not sent `ready` this long after starting is killed and counted as a failure.
+pub const SIDECAR_READY_TIMEOUT_MS: u64 = 90_000;
+/// After `shutdown`, the sidecar gets this long to exit before its Job Object is terminated.
+pub const SIDECAR_SHUTDOWN_GRACE_MS: u64 = 2_000;
+/// This many crashes in a row before `ready` (e.g. CUDA aborting the process) → restart on the CPU model.
+pub const SIDECAR_CPU_AFTER_PRE_READY_CRASHES: usize = 2;
+/// How often the supervisor checks the sidecar process.
+pub const SIDECAR_POLL_MS: u64 = 50;

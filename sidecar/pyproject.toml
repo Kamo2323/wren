@@ -1,0 +1,27 @@
+# Wren speech sidecar: faster-whisper on CUDA, spoken to over JSON lines on stdio (spec §5).
+# The runtime venv is built from this file and uv.lock by scripts/setup-runtime.ps1 into
+# %LOCALAPPDATA%\Wren\runtime\.venv. The package itself is not installed into the venv: Wren runs
+# `python -m wren_sidecar` with the bundled source folder on PYTHONPATH.
+[project]
+name = "wren-sidecar"
+version = "0.1.0"
+description = "Wren speech engine sidecar (faster-whisper)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Versions match the benchmark venv that chose the model (docs/research/stt-benchmark.md).
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.4",
+    # CUDA 12 cuBLAS + cuDNN 9 as wheels; cuda.py puts their DLL folders on the search path.
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cudnn-cu12==9.27.0.42",
+    "numpy>=2,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

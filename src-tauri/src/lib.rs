@@ -1,8 +1,10 @@
 //! Wren — local dictation for Windows. See docs/design/SPEC.md.
 
+pub mod audio;
 pub mod commands;
 pub mod constants;
 pub mod dictionary;
+pub mod engine;
 pub mod hotkey;
 pub mod logging;
 pub mod paths;
