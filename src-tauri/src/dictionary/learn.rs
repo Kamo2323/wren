@@ -25,14 +25,10 @@ pub enum LearnDecision {
     Ignored(String),
 }
 
-/// Longest run of words (on either side) a single correction may cover.
-const MAX_RUN_WORDS: usize = 3;
-/// More separate edits than this means the user rewrote the text: learn nothing.
-const MAX_EDITS: usize = 2;
-/// Normalised edit distance at or below which two spellings count as "spelt alike".
-const MAX_SPELLING_DISTANCE: f64 = 0.4;
-/// Double Metaphone code length; longer than the crate default (4) so long words must match fully.
-const METAPHONE_CODE_LEN: usize = 12;
+use crate::constants::{
+    LEARN_MAX_EDITS as MAX_EDITS, LEARN_MAX_RUN_WORDS as MAX_RUN_WORDS,
+    LEARN_MAX_SPELLING_DISTANCE as MAX_SPELLING_DISTANCE, LEARN_METAPHONE_CODE_LEN as METAPHONE_CODE_LEN,
+};
 
 /// A word as written (punctuation trimmed, curly apostrophe made straight) and the same word
 /// lower-cased. The diff runs on `shown`, so a case fix next to a real fix joins the same run

@@ -7,6 +7,7 @@ pub mod logging;
 pub mod paths;
 pub mod popup;
 pub mod settings;
+pub mod store;
 pub mod tray;
 
 use parking_lot::RwLock;

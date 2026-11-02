@@ -40,6 +40,27 @@ pub const KEYSTATE_POLL_MS: u64 = 250;
 pub const CANCEL_SAVE_AFTER_MS: u64 = 3_000;
 /// Transcriptions and their audio are deleted after this many hours.
 pub const RETENTION_HOURS: i64 = 72;
+/// The retention sweep runs at startup and then this often.
+pub const SWEEP_INTERVAL_MS: u64 = 3_600_000;
+/// A WAV in the audio folder with no History row is deleted only once it is at least this old,
+/// so a recording that is still being saved is never swept away.
+pub const ORPHAN_AUDIO_MIN_AGE_MS: u64 = 3_600_000;
+/// How long a database call waits for a lock held by another connection before failing.
+pub const DB_BUSY_TIMEOUT_MS: u64 = 5_000;
+/// Stats window for the daily chart and the busiest hour (spec §9).
+pub const STATS_WINDOW_DAYS: i64 = 30;
+/// Correction diff (spec §8): a learnable swap covers at most this many words on each side…
+pub const LEARN_MAX_RUN_WORDS: usize = 3;
+/// …and more separate edits than this in one text means a rewrite, so nothing is learned.
+pub const LEARN_MAX_EDITS: usize = 2;
+/// Old and new words "spelt alike" when their normalised edit distance is at most this.
+pub const LEARN_MAX_SPELLING_DISTANCE: f64 = 0.4;
+/// Double Metaphone code length for "sound alike" (the crate default of 4 is too loose for long words).
+pub const LEARN_METAPHONE_CODE_LEN: usize = 12;
+/// A learned `from` this short (in characters), or a common word, needs repeated sightings…
+pub const LEARN_SHORT_FROM_MAX_CHARS: usize = 2;
+/// …this many identical sightings, before its replacement becomes active.
+pub const LEARN_PROMOTE_SIGHTINGS: u32 = 2;
 /// Default typing speed used for "time saved".
 pub const TYPING_WPM_DEFAULT: u32 = 52;
 /// Most dictionary terms sent to the model with one dictation.
