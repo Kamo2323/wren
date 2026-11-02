@@ -252,6 +252,16 @@ if (!only || only === "pages") {
   await open("history", "?fail=1", ".empty--error");
   await shoot(page, "history-load-error");
 
+  // The engine needs attention: the sidebar footer is a button into Settings at the speech engine
+  await open("home", "?engine=failed", "button.engine");
+  await page.locator("button.engine").click();
+  await page.waitForSelector("#set-engine");
+  await page.mouse.move(700, 400);
+  await wait(1000);
+  await shoot(page, "settings-engine-failed");
+  await open("home", "?engine=cpu", ".engine");
+  await shoot(page, "sidebar-engine-cpu", { clip: { x: 0, y: 700, width: 216, height: 100 } });
+
   // Settings
   await open("settings", "", ".setcard");
   await shoot(page, "settings-1200x800");

@@ -20,6 +20,17 @@ export function formatSaved(ms: number): Part[] {
   ];
 }
 
+/** Compact, for captions: "2h 18m", "45m", "1h", "30s". */
+export function formatSavedShort(ms: number): string {
+  const totalMin = Math.floor(ms / 60_000);
+  if (ms <= 0) return "0m";
+  if (totalMin < 1) return `${Math.round(ms / 1000)}s`;
+  if (totalMin < 60) return `${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 /** The same as one line of text: "9 h 42 min". */
 export function formatSavedText(ms: number): string {
   return formatSaved(ms)

@@ -3,6 +3,7 @@
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const MAIN_LABEL: &str = "main";
@@ -53,7 +54,27 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// Bring the main window back (from the tray, a second launch, or a popup click).
+/// The main window is still waiting for its first show (the page says when it has painted).
+static FIRST_SHOW_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Keep the main window hidden until the page has painted; `first_show` (from the page, or the
+/// fallback timer) then shows it. Call once from `setup`, unless Wren starts hidden.
+pub fn arm_first_show() {
+    FIRST_SHOW_PENDING.store(true, Ordering::SeqCst);
+}
+
+/// Show the main window the first time, once. Later calls (and calls when Wren started hidden) do
+/// nothing, so the page can call it freely.
+pub fn first_show(app: &AppHandle) {
+    if FIRST_SHOW_PENDING.swap(false, Ordering::SeqCst)
+        && let Some(win) = app.get_webview_window(MAIN_LABEL)
+    {
+        let _ = win.show();
+    }
+}
+
 pub fn show_main(app: &AppHandle) {
+    FIRST_SHOW_PENDING.store(false, Ordering::SeqCst);
     if let Some(win) = app.get_webview_window(MAIN_LABEL) {
         let _ = win.unminimize();
         let _ = win.show();

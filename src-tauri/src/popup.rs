@@ -20,16 +20,23 @@
 //! - `emit_state`/`emit_level` post to the webview.
 //!
 //! `is_own_window` still asks Tauri for each window's handle: call it on the main thread only.
+//!
+//! **Clicks.** The window is 360 × 120 but the pill is much smaller, and a WebView2 window that is not
+//! click-through catches clicks on its transparent pixels too. So the window stays click-through even
+//! in the clickable states; while one shows, a small thread watches the cursor (`GetCursorPos`, no
+//! messages) and clears `WS_EX_TRANSPARENT` only while the cursor is over the pill, whose rectangle the
+//! front end reports with `popup_hit_rect`.
 
-use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_WINDOW_H, POPUP_WINDOW_W};
-use serde::Serialize;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_HIT_SLOP, POPUP_HOVER_POLL_MS, POPUP_WINDOW_H, POPUP_WINDOW_W};
+use std::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos, ShowWindowAsync,
+    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW, SetWindowPos, ShowWindowAsync,
     GWL_EXSTYLE, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT,
@@ -43,6 +50,66 @@ pub const POPUP_LEVEL_EVENT: &str = "popup://level";
 
 /// The popup's HWND, read once on the main thread in `create` (0 = not created).
 static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
+/// The session wants the popup to take clicks (a clickable state is showing).
+static CLICK_WANTED: AtomicBool = AtomicBool::new(false);
+/// What the hover thread last asked for (true = not click-through).
+static CLICK_APPLIED: AtomicBool = AtomicBool::new(false);
+/// The hover thread is running.
+static TRACKER_RUNNING: AtomicBool = AtomicBool::new(false);
+/// The pill's rectangle inside the popup window, in logical px, as the front end last reported it.
+/// None until the first report: the whole window then counts (the old behaviour).
+static HIT_RECT: Mutex<Option<HitRect>> = Mutex::new(None);
+
+/// A rectangle inside the popup window in logical (CSS) pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct HitRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+fn hit_rect_lock() -> std::sync::MutexGuard<'static, Option<HitRect>> {
+    HIT_RECT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Record where the pill is (the front end reports it whenever the pill changes size).
+pub fn set_hit_rect(rect: HitRect) {
+    *hit_rect_lock() = Some(rect);
+}
+
+/// Is `cursor` over `hit` (logical px inside the window, plus `POPUP_HIT_SLOP`), for a window at
+/// `window` = (left, top, right, bottom) in physical px? The scale is physical width ÷ logical width.
+pub fn cursor_over(cursor: (i32, i32), window: (i32, i32, i32, i32), hit: Option<HitRect>) -> bool {
+    let (left, top, right, bottom) = window;
+    let (cx, cy) = cursor;
+    if cx < left || cx >= right || cy < top || cy >= bottom {
+        return false;
+    }
+    let Some(r) = hit else { return true };
+    let scale = (right - left) as f64 / POPUP_WINDOW_W;
+    let x0 = left as f64 + (r.x - POPUP_HIT_SLOP) * scale;
+    let y0 = top as f64 + (r.y - POPUP_HIT_SLOP) * scale;
+    let x1 = left as f64 + (r.x + r.w + POPUP_HIT_SLOP) * scale;
+    let y1 = top as f64 + (r.y + r.h + POPUP_HIT_SLOP) * scale;
+    let (fx, fy) = (cx as f64, cy as f64);
+    fx >= x0 && fx < x1 && fy >= y0 && fy < y1
+}
+
+/// Is the cursor over the pill right now? Reads only (no messages sent): any thread.
+fn cursor_over_pill(hwnd: HWND) -> bool {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return false;
+        }
+        let mut pt = POINT::default();
+        let mut rc = RECT::default();
+        if GetCursorPos(&mut pt).is_err() || GetWindowRect(hwnd, &mut rc).is_err() {
+            return false;
+        }
+        cursor_over((pt.x, pt.y), (rc.left, rc.top, rc.right, rc.bottom), *hit_rect_lock())
+    }
+}
 
 /// Create the popup window, hidden and click-through. Call once from `setup` (main thread).
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -147,9 +214,13 @@ pub fn show(app: &AppHandle) {
             let scale = dpi_x as f64 / 96.0;
             let w = (POPUP_WINDOW_W * scale).round() as i32;
             let h = (POPUP_WINDOW_H * scale).round() as i32;
+            // Centred on the work area, measured up from the monitor's bottom edge (not the work
+            // area's), so the pill sits on the top edge of a bottom taskbar, as Glaido's does. A
+            // taskbar at the top or side leaves rcWork.bottom == rcMonitor.bottom, so this holds
+            // there too. HWND_TOPMOST is re-asserted on every show so the pill draws above the taskbar.
             let work = info.rcWork;
             let x = work.left + ((work.right - work.left) - w) / 2;
-            let y = work.bottom - h - (POPUP_BOTTOM_MARGIN * scale).round() as i32;
+            let y = info.rcMonitor.bottom - h - (POPUP_BOTTOM_MARGIN * scale).round() as i32;
             let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS;
             // Moving onto a monitor with a different DPI makes the window resize itself to Windows'
             // suggested rect; a second identical call (no DPI change any more) puts it back.
@@ -169,16 +240,59 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-/// Let the popup receive clicks (for "click to copy", "Undo", "×") or pass them through.
-/// Toggles only `WS_EX_TRANSPARENT`; `WS_EX_LAYERED` from creation stays. Any thread: the style
-/// change itself runs on the main thread (posted; this returns at once).
+/// Let the popup receive clicks (for "click to copy", "Undo", "×") or pass them all through.
+/// `true` does not make the whole window clickable: it starts the hover thread, which lets the window
+/// take clicks only while the cursor is over the pill. Any thread; returns at once.
 pub fn set_clickable(app: &AppHandle, clickable: bool) {
     let Some(hwnd) = popup_hwnd(app) else { return };
+    CLICK_WANTED.store(clickable, Ordering::SeqCst);
+    if !clickable {
+        CLICK_APPLIED.store(false, Ordering::SeqCst);
+        post_click_style(app, hwnd, false);
+        return;
+    }
+    if TRACKER_RUNNING.swap(true, Ordering::SeqCst) {
+        return; // already watching
+    }
+    let thread_app = app.clone();
+    let raw = hwnd.0 as isize;
+    let spawned = std::thread::Builder::new().name("wren-popup-hover".into()).spawn(move || {
+        let hwnd = HWND(raw as *mut core::ffi::c_void);
+        let poll = std::time::Duration::from_millis(POPUP_HOVER_POLL_MS);
+        loop {
+            if !CLICK_WANTED.load(Ordering::SeqCst) {
+                TRACKER_RUNNING.store(false, Ordering::SeqCst);
+                // A set_clickable(true) that came in just after the check above found this thread
+                // still running and returned: carry on watching for it.
+                if CLICK_WANTED.load(Ordering::SeqCst) && !TRACKER_RUNNING.swap(true, Ordering::SeqCst) {
+                    continue;
+                }
+                return;
+            }
+            let over = cursor_over_pill(hwnd);
+            if over != CLICK_APPLIED.load(Ordering::SeqCst) {
+                CLICK_APPLIED.store(over, Ordering::SeqCst);
+                post_click_style(&thread_app, hwnd, over);
+            }
+            std::thread::sleep(poll);
+        }
+    });
+    if let Err(err) = spawned {
+        TRACKER_RUNNING.store(false, Ordering::SeqCst);
+        tracing::warn!(error = %err, "popup: cannot start the hover thread; the whole window takes clicks");
+        post_click_style(app, hwnd, true);
+    }
+}
+
+/// Toggle `WS_EX_TRANSPARENT` on the main thread (posted); `WS_EX_LAYERED` from creation stays. A
+/// request to take clicks that lands after the session said "no more clicks" is dropped there.
+fn post_click_style(app: &AppHandle, hwnd: HWND, take_clicks: bool) {
     on_main(app, hwnd, move |hwnd| {
+        let take_clicks = take_clicks && CLICK_WANTED.load(Ordering::SeqCst);
         unsafe {
             let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             let transparent = WS_EX_TRANSPARENT.0 as isize;
-            let new = if clickable { ex & !transparent } else { ex | transparent };
+            let new = if take_clicks { ex & !transparent } else { ex | transparent };
             if new != ex {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
                 refresh_frame(hwnd);
@@ -243,15 +357,28 @@ pub fn self_check(app: &AppHandle) -> Vec<String> {
         failures.push("after show: not click-through".into());
     }
 
+    // Clickable: the window takes clicks only while the cursor is over the pill. Check a pill that
+    // fills the window and a tiny one in a corner; the expected answer follows the real cursor.
+    let saved_rect = *hit_rect_lock();
+    let takes_clicks = |ex: isize| ex & WS_EX_TRANSPARENT.0 as isize == 0;
+    set_hit_rect(HitRect { x: 0.0, y: 0.0, w: POPUP_WINDOW_W, h: POPUP_WINDOW_H });
     set_clickable(app, true);
     settle();
     if !visible() {
         failures.push("after set_clickable(true): hidden".into());
     }
-    if ex() & WS_EX_TRANSPARENT.0 as isize != 0 {
-        failures.push("after set_clickable(true): still click-through".into());
+    let over = cursor_over_pill(hwnd);
+    if takes_clicks(ex()) != over {
+        failures.push(format!("set_clickable(true), pill fills the window: takes clicks {}, cursor over it {over}", takes_clicks(ex())));
     }
     check_styles("after set_clickable(true)", &mut failures);
+    set_hit_rect(HitRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 });
+    settle();
+    let over = cursor_over_pill(hwnd);
+    if takes_clicks(ex()) != over {
+        failures.push(format!("set_clickable(true), tiny pill: takes clicks {}, cursor over it {over}", takes_clicks(ex())));
+    }
+    *hit_rect_lock() = saved_rect;
 
     set_clickable(app, false);
     settle();
@@ -281,4 +408,34 @@ pub fn self_check(app: &AppHandle) -> Vec<String> {
         failures.push("foreground window changed during the check".into());
     }
     failures
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WIN: (i32, i32, i32, i32) = (1000, 900, 1360, 1020); // 360 × 120 at 100 %
+    const PILL: HitRect = HitRect { x: 122.0, y: 68.0, w: 116.0, h: 38.0 };
+
+    #[test]
+    fn only_the_pill_and_its_slop_take_clicks() {
+        assert!(cursor_over((1000 + 180, 900 + 87), WIN, Some(PILL)), "centre of the pill");
+        assert!(cursor_over((1000 + 119, 900 + 87), WIN, Some(PILL)), "inside the 4 px slop");
+        assert!(!cursor_over((1000 + 180, 900 + 40), WIN, Some(PILL)), "above the pill");
+        assert!(!cursor_over((1000 + 20, 900 + 87), WIN, Some(PILL)), "beside the pill");
+        assert!(!cursor_over((990, 950), WIN, Some(PILL)), "outside the window");
+    }
+
+    #[test]
+    fn before_the_first_report_the_whole_window_counts() {
+        assert!(cursor_over((1000 + 5, 900 + 5), WIN, None));
+        assert!(!cursor_over((999, 905), WIN, None));
+    }
+
+    #[test]
+    fn follows_the_display_scale() {
+        let win150 = (0, 0, 540, 180); // 150 %
+        assert!(cursor_over((270, 130), win150, Some(PILL)));
+        assert!(!cursor_over((270, 60), win150, Some(PILL)), "above the pill at 150 %");
+    }
 }

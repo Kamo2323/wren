@@ -1,5 +1,5 @@
 // The copy / delete / fix-a-word handlers every list of transcript cards shares (Home and History).
-import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { createElement } from "react";
 import type { TranscriptionRow } from "./types";
 import { copyText, dictionarySetStatus, historyDelete, historyFixWord } from "./api";
@@ -9,6 +9,32 @@ import { useToast } from "../components/Toast";
 import { Check } from "../components/Icon";
 
 type SetRows = Dispatch<SetStateAction<TranscriptionRow[] | null>>;
+
+/** The newest dictation time (ms) each page has shown, kept across visits (module scope = this app session). */
+const newestSeen: Record<string, number> = {};
+
+/**
+ * Ids of rows newer than anything `page` has shown before (none on the very first load), so only
+ * genuinely new cards animate in; revisiting a page shows its cards at once.
+ */
+export function useNewIds(rows: TranscriptionRow[] | null, page: string): ReadonlySet<string> {
+  const memo = useRef<{ rows: TranscriptionRow[] | null; ids: ReadonlySet<string> }>({ rows: null, ids: new Set() });
+  if (rows !== memo.current.rows) {
+    const before = newestSeen[page];
+    const ids = new Set<string>();
+    if (rows) {
+      let newest = before ?? -Infinity;
+      for (const r of rows) {
+        const t = Date.parse(r.createdAtUtc);
+        if (before != null && t > before) ids.add(r.id);
+        if (t > newest) newest = t;
+      }
+      newestSeen[page] = newest; // an empty first load leaves -Infinity: the first dictation is new
+    }
+    memo.current = { rows, ids };
+  }
+  return memo.current.ids;
+}
 
 export function useTranscriptActions(setRows: SetRows) {
   const toast = useToast();

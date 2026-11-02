@@ -148,7 +148,7 @@ function HourlyCard({ s }: { s: StatsData }) {
           <div>
             <div className="headline__value num">{hourSpan(busiest)}</div>
             <div className="headline__caption">
-              Your busiest hour · {plural(values[busiest] ?? 0, "word", "words")}, {share}% of the last 30 days
+              Your busiest hour · {plural(values[busiest] ?? 0, "word", "words")} ({share}%)
             </div>
           </div>
         ) : (
@@ -174,7 +174,6 @@ function HourlyCard({ s }: { s: StatsData }) {
 
 function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
   const all = s.wpmAll != null ? Math.round(s.wpmAll) : null;
-  const today = s.wpmToday != null ? Math.round(s.wpmToday) : null;
   const factor = all != null && typingWpm > 0 ? all / typingWpm : null;
   const days = s.daily;
   const series = days.map((d) => dayWpm(d.words, d.speakingMs));
@@ -193,7 +192,7 @@ function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
     if (recent.length >= 2 && before.length >= 2) {
       const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
       const delta = (avg(recent) - avg(before)) / avg(before);
-      trend = Math.abs(delta) < 0.02 ? "Steady over the last two weeks" : `${Math.round(Math.abs(delta) * 100)}% ${delta > 0 ? "faster" : "slower"} than the week before`;
+      trend = Math.abs(delta) < 0.02 ? "Steady for two weeks" : `${Math.round(Math.abs(delta) * 100)}% ${delta > 0 ? "up" : "down"} on the week before`;
     }
   }
 
@@ -204,14 +203,6 @@ function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
           <h2 id="speed-title" className="chart-card__title">Speaking speed</h2>
           <p className="chart-card__sub">Words per minute, last 30 days</p>
         </div>
-        {today != null && (
-          <dl className="facts">
-            <div className="fact">
-              <dt>Today</dt>
-              <dd className="num">{today}</dd>
-            </div>
-          </dl>
-        )}
       </div>
       <div className="headline">
         <span className="headline__icon">
@@ -257,15 +248,20 @@ function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
 
 // ---------------------------------------------------------------- page
 
+/** The stats last shown, kept for this app session so a revisit paints at once. */
+let lastStats: StatsData | null = null;
+
 export default function Stats({ typingWpm: typingWpmSetting }: { typingWpm?: number }) {
   const constants = useConstants();
   const typingWpm = typingWpmSetting ?? constants.typingWpmDefault;
-  const [s, setS] = useState<StatsData | null>(null);
+  const [s, setS] = useState<StatsData | null>(lastStats);
   const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setS(await statsGet());
+      const next = await statsGet();
+      lastStats = next;
+      setS(next);
       setFailed(false);
     } catch {
       setFailed(true); // keep any stats already on screen; say so only when there are none

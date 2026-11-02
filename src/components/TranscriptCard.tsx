@@ -17,6 +17,8 @@ export interface TranscriptCardProps {
   now?: number;
   /** Search words to mark in the text (History search). The whole text shows while searching. */
   highlight?: string;
+  /** A dictation that arrived since the page last looked: it rises in (others appear at once). */
+  isNew?: boolean;
 }
 
 
@@ -34,7 +36,8 @@ export function tokenise(text: string): Token[] {
 
 const COPIED_MS = 1600;
 
-export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight }: TranscriptCardProps) {
+export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight, isNew }: TranscriptCardProps) {
+  const [arrived] = useState(isNew === true); // fixed at mount, so a later refresh can't cut the rise-in short
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [fixing, setFixing] = useState(false);
@@ -135,7 +138,7 @@ export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight }:
     }
   }
 
-  const cls = ["tcard", copied && "is-copied", fixing && "is-fixing", leaving && "is-leaving"].filter(Boolean).join(" ");
+  const cls = ["tcard", arrived && "is-new", copied && "is-copied", fixing && "is-fixing", leaving && "is-leaving"].filter(Boolean).join(" ");
 
   return (
     <div
@@ -239,7 +242,7 @@ export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight }:
                 </Button>
               </>
             )}
-            <span className="fixbar__note">Wren will spell it this way from now on.</span>
+            {picked !== null && <span className="fixbar__note">Wren will spell it this way from now on.</span>}
           </div>
         </div>
       ) : (

@@ -5,7 +5,7 @@ import type { TranscriptionRow } from "../lib/types";
 import { historyRecent, historySearch, onHistoryChanged, subscribe } from "../lib/api";
 import { formatNumber, retentionLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
-import { useDayGroups, useTranscriptActions } from "../lib/useTranscriptActions";
+import { useDayGroups, useNewIds, useTranscriptActions } from "../lib/useTranscriptActions";
 import { TranscriptCard } from "../components/TranscriptCard";
 import { ChordKeys, EmptyState, LoadError } from "../components/Empty";
 import { Button } from "../components/Button";
@@ -15,17 +15,24 @@ import { Clock, Search, X } from "../components/Icon";
 const ALL_LIMIT = 5000;
 const SEARCH_DEBOUNCE_MS = 140;
 
+/** Everything (no search) as last shown, kept for this app session so a revisit paints at once. */
+let lastAll: TranscriptionRow[] | null = null;
+
 export default function History() {
   const constants = useConstants();
   const kept = retentionLabel(constants.retentionHours);
   const [query, setQuery] = useState("");
-  const [rows, setRows] = useState<TranscriptionRow[] | null>(null);
+  const [rows, setRows] = useState<TranscriptionRow[] | null>(lastAll);
   const [searchedFor, setSearchedFor] = useState(""); // the query the rows on screen belong to
   const [now, setNow] = useState(() => Date.now());
   const [failed, setFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const { onCopy, onDelete, onFix } = useTranscriptActions(setRows);
+  const newIds = useNewIds(rows, "history");
+  useEffect(() => {
+    if (rows && !failed && searchedFor === "") lastAll = rows;
+  }, [rows, failed, searchedFor]);
 
   const load = useCallback(async (q: string) => {
     const id = ++requestId.current;
@@ -181,6 +188,7 @@ export default function History() {
                     onCopy={onCopy}
                     onDelete={onDelete}
                     onFix={onFix}
+                    isNew={newIds.has(r.id)}
                   />
                 ))}
               </div>

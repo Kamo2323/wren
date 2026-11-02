@@ -6,7 +6,7 @@
 // at duration + EXIT_MS, or send { kind: "hidden" } at any time. Timestamps in PopupState are epoch ms.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import type { PopupKind, PopupState, UiConstants } from "../lib/types";
-import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupOpenMain, popupOpenMicSettings, popupUndoLearned, subscribe } from "../lib/api";
+import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupHitRect, popupOpenMain, popupOpenMicSettings, popupUndoLearned, subscribe } from "../lib/api";
 import { useConstants } from "../lib/useConstants";
 import { formatTimer } from "../lib/format";
 import { POPUP_SPRING, springEasing, supportsLinearEasing } from "../lib/spring";
@@ -32,6 +32,12 @@ const AFTER_ACTION_MS = 1100; // "Copied" / "Undone" stay this long
 const PILL_H = 38;
 const COLLAPSED_W = 40;
 const COLLAPSED_H = 10;
+/** The pasted circle shrinks evenly to a point instead of squashing into a capsule. */
+const COLLAPSED_PASTED = 22;
+/** The pill's gap to the bottom of the window (`.stage` padding-bottom in popup.css). */
+const STAGE_PAD_BOTTOM = 14;
+const PASTED_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
+const PASTED_SIZE_MS = 280;
 
 type Local = null | "copied" | "undone";
 
@@ -293,10 +299,13 @@ export default function Popup() {
   } else if (k === "noSound") {
     tone = "warn";
     clickable = openMicSettings; // spec §4: opens Windows' microphone privacy settings
+    countdownMs = DISMISS_MS.noSound;
     content = (
       <>
         <MicOff size={16} strokeWidth={2.2} className="pill__icon" />
-        <span className="pill__text">No sound from your mic</span>
+        <span className="pill__text">
+          No sound from your mic <span className="pill__soft">· open settings</span>
+        </span>
       </>
     );
   } else if (k === "notPasted") {
@@ -370,13 +379,24 @@ export default function Popup() {
   const showHint = shown && k === "handsfree" && hfSince > 0 && now - hfSince < HINT_MS;
 
   const padX = k === "pasted" ? 10 : isRec ? 13.5 : 15;
-  const width = shown ? Math.max(PILL_H, Math.round(contentW + padX * 2)) : COLLAPSED_W;
-  const height = shown ? PILL_H : COLLAPSED_H;
+  const collapsedW = k === "pasted" ? COLLAPSED_PASTED : COLLAPSED_W;
+  const collapsedH = k === "pasted" ? COLLAPSED_PASTED : COLLAPSED_H;
+  const width = shown ? Math.max(PILL_H, Math.round(contentW + padX * 2)) : collapsedW;
+  const height = shown ? PILL_H : collapsedH;
+
+  // ---- tell Rust where the pill is: the window takes clicks only over it (popup.rs) ----
+  const winW = constants.popupWindowW;
+  const winH = constants.popupWindowH;
+  useEffect(() => {
+    if (!shown) return;
+    void popupHitRect({ x: (winW - width) / 2, y: winH - STAGE_PAD_BOTTOM - height, w: width, h: height }).catch(() => {});
+  }, [shown, width, height, winW, winH]);
   const pillStyle: CSSProperties = {
     width,
     height,
-    ["--spring" as string]: spring.easing,
-    ["--spring-ms" as string]: `${reduced ? 1 : spring.ms}ms`,
+    // The pasted circle has 400 ms in all: it settles fast (no overshoot) so the tick is seen whole.
+    ["--spring" as string]: k === "pasted" ? PASTED_EASE : spring.easing,
+    ["--spring-ms" as string]: `${reduced ? 1 : k === "pasted" ? PASTED_SIZE_MS : spring.ms}ms`,
   };
 
   return (
