@@ -29,15 +29,28 @@ Wren is Maximilian's free, local Windows dictation app (a Willow / Glaido replac
 - Tauri 2 (Rust + WebView2) + Python sidecar for speech. Rust gives a reliable low-level keyboard hook and
   small footprint (Glaido is Tauri); Python faster-whisper on CUDA is already proven on this PC (Overseer).
 
-## Progress
+## Progress (updated ~05:35 UTC 2026-11-02)
 
-- Research done: `docs/design/goldfish-brainstorm-report.md`, `docs/research/willow-teardown.md`,
-  `docs/research/glaido-teardown.md` (+ screenshots). Benchmark (`docs/research/stt-benchmark.md`) running.
-- `docs/design/SPEC.md` (binding) and `docs/design/PLAN.md` (11 tasks) written.
-- Task 1 (foundation) built by the coordinator, commit 284ec76.
-- Build ledger with every ruling: `.superpowers/sdd/PLAN/progress.md` (git-ignored).
-- Wave 1 running in worktrees: Task 2 hotkey, Task 4 store/stats, Task 6 design + popup UI; Task 1 review.
+- Research done: Goldfish review, Willow + Glaido teardowns, STT benchmark (`docs/research/stt-benchmark.md`:
+  large-v3-turbo int8 beam 1 + VAD + Glossary prompt).
+- Merged on main: Task 1 foundation, Task 2 hotkey, Task 3 voice in (audio + sidecar + engine), Task 4 store/stats,
+  Task 5 pipeline + paste (review running), Task 6 design system + popup + Home.
+- In progress: Task 7 pages (fix round), Task 8 session wiring (worktree C:\Wren-wt	ask-8-session).
+- Remaining: Task 9 watcher + Claude probe + AI clean-up, Task 10 installer + live verification, Task 11 UX polish,
+  final review, morning note.
+- Every ruling and review outcome: `.superpowers/sdd/PLAN/progress.md` (git-ignored ledger).
+- Speech runtime + models installed for real at `%LOCALAPPDATA%\Wren\{runtime,models}` (via WMI, because processes
+  started from the Claude desktop app get AppData writes redirected into Claude's package cache).
+
+## Things to tell Maximilian in the morning
+
+- Glaido was closed (not uninstalled) for the hotkey tests and left closed so Wren doesn't double-paste.
+- Task 5's first paste tests added 12 entries to his Win+V clipboard history, pushing ~12 older unpinned entries
+  out (unrecoverable). Root-fixed; Wren never adds history entries now.
+- A Glaido debug relaunch at 02:07 UTC saw real (non-injected) "g", "l" key presses — someone was at the PC.
+- Task 2's live probe opened Notepad, which reopened his FILM5-DESIGN.md tab (unchanged).
+- wordfreq's word list (used to judge "common words") is CC BY-SA — fine for a personal app.
 
 ## Next step
 
-Merge wave 1 after reviews; dispatch Task 3 (speech) once the benchmark lands; then Tasks 5, 7, 8, 9, 10, 11.
+Finish Tasks 5/7 reviews, merge Task 8, then dispatch Task 9, Task 10, Task 11, final review, morning note.
