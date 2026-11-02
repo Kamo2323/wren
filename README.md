@@ -104,6 +104,10 @@ powershell -ExecutionPolicy Bypass -File scripts\live-test.ps1 -Wren "$env:LOCAL
 It writes `docs/live-test-report.md`. The test uses its own temporary data folder, so it never adds
 anything to your history.
 
+Screenshots of the real installed app (from test recordings, not real dictations) are in
+`docs/screenshots/real/`; `scripts/real-screens.ps1 -TestHome <live-test work folder>\home` takes
+them again after a live test.
+
 Developer checks: `cd src-tauri; cargo test` (Rust), `cd sidecar; uv run pytest` (speech sidecar),
 `npm run dev` / `npx tauri dev` (run from source).
 
