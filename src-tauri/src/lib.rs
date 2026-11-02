@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod constants;
+pub mod dictionary;
 pub mod logging;
 pub mod paths;
 pub mod popup;
