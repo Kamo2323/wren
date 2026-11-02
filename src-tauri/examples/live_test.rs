@@ -17,8 +17,14 @@
 //! 5. Cleans up (closes the page, stops Wren, puts the user's clipboard back), checks Windows clipboard
 //!    history gained nothing and Wren's logs hold no dictated words, writes the report.
 //!
+//! With `--task9`: the correction watcher and pre-paste check rounds, plus real mouse clicks on the
+//! popup (the pill takes clicks only while the cursor is over it): "Not pasted · click to copy",
+//! the "Learned" toast's Undo and the hands-free ×. Each click must leave the test page in front with
+//! its keyboard focus.
+//!
 //! Safety: before every injected key the foreground window must be the test page (never claude.exe);
-//! otherwise the test stops. Never uses Notepad; never starts Willow or Glaido.
+//! otherwise the test stops. A click is sent only when the window under the cursor is Wren's popup
+//! and the test page is in front. Never uses Notepad; never starts Willow or Glaido.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -599,6 +605,8 @@ struct Results {
     hf_release_to_paste: Vec<u64>,
     failures: Vec<String>,
     notes: Vec<String>,
+    /// Real clicks on the popup (`--task9`): (round, pass, detail).
+    clicks: Vec<(&'static str, bool, String)>,
 }
 
 /// One dictation into the page. `hands_free` double-taps, waits for the clip, taps to stop.
@@ -1202,6 +1210,9 @@ fn render(args: &Args, r: &Results) -> String {
             yn(*sidecar_gone)
         ));
     }
+    for (label, pass, d) in &r.clicks {
+        s.push_str(&format!("| Real click on the popup: {label} | {} — {d} |\n", if *pass { "pass" } else { "**fail**" }));
+    }
     s.push_str(&format!("| Windows clipboard history after the run (`NEW` = entries added; `HITS` = dictated text found) | {} |\n", r.history));
     s.push_str(&format!("| Wren's logs contain no dictated words | {} |\n", r.log_private.map(yn).unwrap_or("not run")));
     s.push_str(&format!("\nForeground sampling: every 5 ms from the chord press until 1.4 s after the paste; \"unchanged\" means the only foreground window seen was the test page while Wren's popup showed and hid.\n\nArguments: {} holds, {} taps.\n", args.holds, args.taps));
@@ -1394,6 +1405,23 @@ fn watcher_round(args: &Args, edge: &Path, popup: Option<HWND>, field: &str, end
     }
     let term = entries.iter().any(|e| e.kind == wren_lib::dictionary::EntryKind::Term && e.to_text == T9_TO);
     println!("[task9 {field}] dictionary: term {T9_TO} present {term}");
+    if field == "ta" {
+        // The real click on the toast's Undo (while it is still up: POPUP_LEARNED_MS).
+        // Logged with Debug formatting, e.g. "[Some(3)]": take the numbers.
+        let learned_ids: Vec<i64> = learned
+            .as_ref()
+            .and_then(|(f, _)| f.get("entry_ids").and_then(|v| v.as_str()).map(str::to_string))
+            .map(|ids| ids.split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_default();
+        let outcome = match (popup, learned.is_some()) {
+            (Some(p), true) => click_undo(&page, p, &store, &learned_ids),
+            _ => Err("not run (no popup window, or nothing was learned)".into()),
+        };
+        let (pass, detail) = outcome.unwrap_or_else(|e| (false, e));
+        println!("[click undo] {} — {detail}", if pass { "PASS" } else { "FAIL" });
+        r.clicks.push(("Learned toast · Undo", pass, detail));
+    }
+    let entries = store.dictionary_list().map_err(|e| e.to_string())?;
     // Clear what was learned, so the next round can learn it again from scratch.
     for e in entries.iter().filter(|e| e.to_text == T9_TO) {
         let _ = store.delete_entry(e.id);
@@ -1422,8 +1450,23 @@ fn prepaste_round(args: &Args, edge: &Path, popup: Option<HWND>, r: &mut Results
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(1_000));
+    // The real click on "Not pasted · click to copy" (the whole pill is the button). The session has
+    // already copied the text; something else goes on the clipboard first, so only the click can
+    // put the dictation back.
+    std::thread::sleep(Duration::from_millis(600));
+    let click = match popup {
+        Some(p) if done.is_some() => Some(click_copy(&page, p)),
+        _ => None,
+    };
+    std::thread::sleep(Duration::from_millis(400));
     let (_, popup_seen, _) = sampler.finish();
+    let (pass, detail) = match click {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => (false, e),
+        None => (false, "not run (no popup window, or the dictation never finished)".into()),
+    };
+    println!("[click copy] {} — {detail}", if pass { "PASS" } else { "FAIL" });
+    r.clicks.push(("Not pasted · click to copy", pass, detail));
     let st = page.state();
     let check = log_since(&args.home, "pre-paste check", checks_before);
     println!(
@@ -1451,5 +1494,263 @@ fn run_task9(args: &Args, edge: &Path, popup: Option<HWND>, r: &mut Results) -> 
     watcher_round(args, edge, popup, "ce", VK_RETURN, r)?;
     std::thread::sleep(Duration::from_millis(500));
     prepaste_round(args, edge, popup, r)?;
+    std::thread::sleep(Duration::from_millis(500));
+    let (pass, detail) = match popup {
+        Some(p) => discard_round(args, edge, p).unwrap_or_else(|e| (false, e)),
+        None => (false, "not run (no popup window)".into()),
+    };
+    println!("[click ×] {} — {detail}", if pass { "PASS" } else { "FAIL" });
+    r.clicks.push(("Hands-free ×", pass, detail));
+    for (label, pass, detail) in &r.clicks {
+        if !pass {
+            r.failures.push(format!("click {label}: {detail}"));
+        }
+    }
     Ok(())
+}
+
+// ---------- real clicks on the popup (`--task9`) ----------
+
+/// The screen rectangle (left, top, right, bottom) of the popup element named `name`, through UI
+/// Automation (Chromium builds its accessibility tree on the first query, so this retries).
+fn uia_rect(popup: HWND, name: &str) -> Result<(i32, i32, i32, i32), String> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Accessibility::{CUIAutomation8, IUIAutomation, TreeScope_Descendants, UIA_NamePropertyId};
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::core::BSTR;
+    let raw = popup.0 as isize;
+    let name = name.to_string();
+    std::thread::spawn(move || -> Result<(i32, i32, i32, i32), String> {
+        let _com = wren_lib::watcher::uia::ComMta::join();
+        let uia: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("UI Automation: {e}"))?;
+        let cond = unsafe { uia.CreatePropertyCondition(UIA_NamePropertyId, &VARIANT::from(BSTR::from(name.as_str()))) }
+            .map_err(|e| e.to_string())?;
+        let t = Instant::now();
+        let mut last = String::new();
+        while t.elapsed() < Duration::from_secs(3) {
+            let found = unsafe { uia.ElementFromHandle(HWND(raw as *mut _)) }
+                .and_then(|root| unsafe { root.FindFirst(TreeScope_Descendants, &cond) })
+                .and_then(|el| unsafe { el.CurrentBoundingRectangle() });
+            match found {
+                Ok(r) if r.right > r.left && r.bottom > r.top => return Ok((r.left, r.top, r.right, r.bottom)),
+                Ok(_) => last = "empty rectangle".into(),
+                Err(e) => last = e.to_string(),
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(format!("UI Automation did not find {name:?} in the popup ({last})"))
+    })
+    .join()
+    .map_err(|_| "the UI Automation thread panicked".to_string())?
+}
+
+/// The middle of the pill: bottom-centre of the popup window (Popup.tsx: 38 px high, 14 px above
+/// the window's bottom edge; logical px scaled to the window's physical size).
+fn pill_centre(popup: HWND) -> Result<(i32, i32), String> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut rc = RECT::default();
+    unsafe { GetWindowRect(popup, &mut rc) }.map_err(|e| e.to_string())?;
+    let scale = (rc.right - rc.left) as f64 / wren_lib::constants::POPUP_WINDOW_W;
+    Ok(((rc.left + rc.right) / 2, rc.bottom - ((14.0 + 38.0 / 2.0) * scale).round() as i32))
+}
+
+/// One real left click at (x, y) on Wren's popup. Moves the cursor there, waits until the window
+/// under it is the popup (the hover thread lets the pill take clicks only while the cursor is over
+/// it), clicks with `SendInput`, puts the cursor back. Refuses unless the test page is in front.
+/// Returns how long the pill took to accept the cursor.
+fn click_popup(page: HWND, popup: HWND, x: i32, y: i32) -> Result<u64, String> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor, GetCursorPos, SetCursorPos, WindowFromPoint};
+    if unsafe { GetForegroundWindow() } != page || fg_exe() == "claude.exe" {
+        return Err(format!("foreground is {} (not the test page); no click", fg_exe()));
+    }
+    let mut old = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut old);
+        let _ = SetCursorPos(x, y);
+    }
+    let put_back = || unsafe {
+        let _ = SetCursorPos(old.x, old.y);
+    };
+    let t = Instant::now();
+    loop {
+        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT) };
+        if under == popup {
+            break;
+        }
+        if t.elapsed() > Duration::from_millis(1_500) {
+            put_back();
+            return Err(format!(
+                "the pill never took the cursor at ({x}, {y}) within 1.5 s (window under it: {})",
+                process_name(window_pid(under))
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let accepted_ms = t.elapsed().as_millis() as u64;
+    if unsafe { GetForegroundWindow() } != page {
+        put_back();
+        return Err("the test page left the foreground before the click".into());
+    }
+    let mi = |flags| INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flags, ..Default::default() } } };
+    unsafe { SendInput(&[mi(MOUSEEVENTF_LEFTDOWN), mi(MOUSEEVENTF_LEFTUP)], size_of::<INPUT>() as i32) };
+    std::thread::sleep(Duration::from_millis(60));
+    put_back();
+    Ok(accepted_ms)
+}
+
+/// After a click: the page is still the only foreground window and still has keyboard focus on
+/// `want` (the page reports "" once its document loses focus), and a key still reaches it.
+fn page_kept_focus(page: &Page, fgs: &[isize], want: &str) -> (bool, String) {
+    let fg_ok = fgs == [page.hwnd.0 as isize];
+    let f = page.state().f;
+    let last_before = page.state().log.last().cloned();
+    let mut key_ok = false;
+    if unsafe { GetForegroundWindow() } == page.hwnd && fg_exe() != "claude.exe" {
+        // A tagged Shift: no text, and Wren ignores tagged keys.
+        send_tagged_keys(&[(VK_SHIFT, true), (VK_SHIFT, false)]);
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(1_000) {
+            let st = page.state();
+            if st.log.last() != last_before.as_ref() && st.log.last().is_some_and(|l| l.ends_with("key Shift")) {
+                key_ok = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let ok = fg_ok && f == want && key_ok;
+    let detail = format!(
+        "foreground stayed the test page: {fg_ok} ({} window(s) seen); page focus on #{f} (want #{want}); a key sent after the click reached the page: {key_ok}",
+        fgs.len()
+    );
+    (ok, detail)
+}
+
+/// (a) "Not pasted · click to copy": the clipboard ends up holding the dictated text.
+fn click_copy(page: &Page, popup: HWND) -> Result<(bool, String), String> {
+    const SENTINEL: &str = "wren click test: not the dictation";
+    wren_lib::paste::copy_text(SENTINEL).map_err(|e| format!("cannot put the sentinel on the clipboard: {e}"))?;
+    let (x, y) = pill_centre(popup)?;
+    let sampler = Sampler::start(Some(popup));
+    let clicked = click_popup(page.hwnd, popup, x, y);
+    std::thread::sleep(Duration::from_millis(500));
+    let (fgs, _, _) = sampler.finish();
+    let accepted_ms = clicked?;
+    let clip = wren_lib::paste::clipboard::read_text().unwrap_or_default();
+    let copied = clip != SENTINEL && has_all(&clip, &HOLD_EXPECT);
+    let (focus_ok, focus) = page_kept_focus(page, &fgs, "log");
+    Ok((
+        copied && focus_ok,
+        format!("pill centre ({x}, {y}) took the cursor after {accepted_ms} ms; clipboard then held the dictated text: {copied}; {focus}"),
+    ))
+}
+
+/// (b) the "Learned" toast's Undo: every entry that learn added is switched off.
+fn click_undo(page: &Page, popup: HWND, store: &wren_lib::store::Store, learned_ids: &[i64]) -> Result<(bool, String), String> {
+    if learned_ids.is_empty() {
+        return Err("the learn log line named no entry ids".into());
+    }
+    let (l, t, rr, b) = uia_rect(popup, "Undo")?;
+    let (x, y) = ((l + rr) / 2, (t + b) / 2);
+    // Tab ended the watch, so focus is on whatever the page has now (the composer).
+    let want = page.state().f;
+    let sampler = Sampler::start(Some(popup));
+    let clicked = click_popup(page.hwnd, popup, x, y);
+    let mut disabled = false;
+    let t0 = Instant::now();
+    while clicked.is_ok() && t0.elapsed() < Duration::from_secs(2) {
+        let entries = store.dictionary_list().map_err(|e| e.to_string())?;
+        disabled = learned_ids
+            .iter()
+            .all(|id| entries.iter().any(|e| e.id == *id && e.status == wren_lib::dictionary::Status::Disabled));
+        if disabled {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let (fgs, _, _) = sampler.finish();
+    let accepted_ms = clicked?;
+    let (focus_ok, focus) = page_kept_focus(page, &fgs, &want);
+    Ok((
+        disabled && focus_ok,
+        format!(
+            "Undo at ({x}, {y}) took the cursor after {accepted_ms} ms; learned entries {learned_ids:?} all disabled in the database: {disabled}; {focus}"
+        ),
+    ))
+}
+
+/// (c) the hands-free ×: the recording is discarded — nothing pasted, no History row.
+fn discard_round(args: &Args, edge: &Path, popup: HWND) -> Result<(bool, String), String> {
+    let page = open_page(edge, &args.home, "ta")?;
+    let starts_before = log_count(&args.home, "recording started");
+    // The id of the hands-free recording (the first tap of a double-tap also starts and discards a
+    // hold, so only a discard of this id counts).
+    let hands_free_id = || {
+        log_since(&args.home, "recording started", starts_before)
+            .into_iter()
+            .find(|f| f.get("mode").and_then(|m| m.as_str()) == Some("HandsFree"))
+            .and_then(|f| f.get("id").and_then(|v| v.as_str()).map(str::to_string))
+    };
+    let discarded = |id: &str| wren_log(&args.home).iter().any(|(m, f)| m == "recording discarded" && f.get("id").and_then(|v| v.as_str()) == Some(id));
+    let result = (|| {
+        let store = wren_lib::store::Store::open(&db_path(&args.home)).map_err(|e| e.to_string())?;
+        let rows_before = store.recent(1_000).map_err(|e| e.to_string())?.len();
+        let before = page.state();
+        let done_before = log_count(&args.home, "dictation done");
+        chord_tap(page.hwnd, 120, 0)?;
+        std::thread::sleep(Duration::from_millis(200));
+        chord_tap(page.hwnd, 120, 0)?;
+        let t = Instant::now();
+        let id = loop {
+            if let Some(id) = hands_free_id() {
+                break id;
+            }
+            if t.elapsed() > Duration::from_secs(3) {
+                return Err("hands-free did not start".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        std::thread::sleep(Duration::from_millis(900));
+        let (l, tp, rr, b) = uia_rect(popup, "Discard this dictation")?;
+        let (x, y) = ((l + rr) / 2, (tp + b) / 2);
+        let sampler = Sampler::start(Some(popup));
+        let clicked = click_popup(page.hwnd, popup, x, y);
+        let t = Instant::now();
+        while clicked.is_ok() && !discarded(&id) && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let discard_ms = t.elapsed().as_millis();
+        // Long enough for a paste that must not happen (weather.wav would have played out too).
+        std::thread::sleep(Duration::from_millis(5_000));
+        let (fgs, _, _) = sampler.finish();
+        let accepted_ms = clicked?;
+        let was_discarded = discarded(&id);
+        let st = page.state();
+        let nothing_pasted = st.n == before.n && st.ta == before.ta;
+        let rows_after = store.recent(1_000).map_err(|e| e.to_string())?.len();
+        let no_row = rows_after == rows_before && log_count(&args.home, "dictation done") == done_before;
+        let (focus_ok, focus) = page_kept_focus(&page, &fgs, "ta");
+        Ok((
+            was_discarded && nothing_pasted && no_row && focus_ok,
+            format!(
+                "× at ({x}, {y}) took the cursor after {accepted_ms} ms; the hands-free recording was discarded: {was_discarded} (logged {discard_ms} ms after the click); nothing pasted: {nothing_pasted}; no History row: {no_row}; {focus}"
+            ),
+        ))
+    })();
+    // If the click failed, hands-free is still recording and would paste later: stop it.
+    if let Some(id) = hands_free_id()
+        && !discarded(&id)
+    {
+        let _ = chord_tap(page.hwnd, 120, 0);
+        std::thread::sleep(Duration::from_millis(1_500));
+    }
+    page.close();
+    result
 }
