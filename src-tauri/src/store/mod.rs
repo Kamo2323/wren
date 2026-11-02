@@ -854,6 +854,19 @@ impl Store {
         Ok(decision)
     }
 
+    /// The id of the replacement for exactly `from → to` (`from` ignoring case), if any. Used for
+    /// the "Learned: X → Y · Undo" toast after `learn`.
+    pub fn replacement_id(&self, from: &str, to: &str) -> StoreResult<Option<i64>> {
+        let conn = self.conn()?;
+        Ok(find_pair(&conn, from.trim(), to.trim())?.map(|e| e.id))
+    }
+
+    /// The id of the term `word`, if any.
+    pub fn term_id(&self, word: &str) -> StoreResult<Option<i64>> {
+        let conn = self.conn()?;
+        Ok(find_term(&conn, word.trim())?.map(|e| e.id))
+    }
+
     /// History "fix a word" (spec §8): an active replacement `from → to` and an active term `to`,
     /// whatever the word, and the transcription's `final_text` rewritten the same way (whole word,
     /// case-aware) so the fix survives a reload. `words` follows the new text; `hourly_totals` stay as
