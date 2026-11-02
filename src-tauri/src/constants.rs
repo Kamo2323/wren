@@ -36,6 +36,10 @@ pub const RECORDING_WARN_MS: u64 = 540_000;
 pub const HANDSFREE_SILENCE_STOP_MS: u64 = 90_000;
 /// While recording, physical key state is polled this often to recover lost key-ups.
 pub const KEYSTATE_POLL_MS: u64 = 250;
+/// Hotkey watchdog: if Windows saw input this long after the hook's last event, reinstall the hook.
+pub const HOOK_SILENT_REINSTALL_MS: u64 = 5_000;
+/// How often the hotkey watchdog compares `GetLastInputInfo` with the hook's last event.
+pub const HOOK_WATCHDOG_POLL_MS: u64 = 1_000;
 /// A hold that has run at least this long is saved to History (not pasted) when cancelled.
 pub const CANCEL_SAVE_AFTER_MS: u64 = 3_000;
 /// Transcriptions and their audio are deleted after this many hours.
