@@ -12,12 +12,14 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::constants::{
-    AI_CLEANUP_KEEP_ALIVE, AI_CLEANUP_MAX_TOKENS_FACTOR, AI_CLEANUP_MIN_TOKENS, AI_CLEANUP_PULL_TIMEOUT_MS,
+    AI_CLEANUP_KEEP_ALIVE, AI_CLEANUP_MAX_TOKENS_FACTOR, AI_CLEANUP_MIN_TOKENS, AI_CLEANUP_PULL_POLL_MS, AI_CLEANUP_PULL_TIMEOUT_MS,
     AI_CLEANUP_TIMEOUT_MS, AI_CLEANUP_WARM_TIMEOUT_MS, OLLAMA_HOST, OLLAMA_STATUS_TIMEOUT_MS,
 };
 
@@ -43,9 +45,26 @@ pub const EXAMPLES: [(&str, &str); 3] = [
 const OPEN: &str = "<transcript>";
 const CLOSE: &str = "</transcript>";
 
-/// The user message: the text inside the delimiters (a delimiter typed in the text is defused).
+/// `text` with every `tag` (ASCII, any case) passed to `f`, the rest copied.
+fn map_tag(text: &str, tag: &str, f: impl Fn(&str) -> String) -> String {
+    let lower = text.to_ascii_lowercase(); // same byte offsets as `text`
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    while let Some(i) = lower[at..].find(tag) {
+        let start = at + i;
+        out.push_str(&text[at..start]);
+        out.push_str(&f(&text[start..start + tag.len()]));
+        at = start + tag.len();
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+/// The user message: the text inside the delimiters (a delimiter typed in the text, in any case,
+/// is defused).
 pub fn user_message(text: &str) -> String {
-    let safe = text.replace(OPEN, "<transcript >").replace(CLOSE, "</transcript >");
+    let defuse = |t: &str| format!("{} >", &t[..t.len() - 1]);
+    let safe = map_tag(&map_tag(text, OPEN, defuse), CLOSE, defuse);
     format!("{OPEN}\n{safe}\n{CLOSE}")
 }
 
@@ -80,11 +99,12 @@ pub fn chat_body(model: &str, text: &str) -> String {
 /// The model's text, without delimiters or wrapping quotes it may have added. None if empty.
 pub fn extract_reply(reply: &str, original: &str) -> Option<String> {
     let mut s = reply.trim();
-    if let Some(rest) = s.strip_prefix(OPEN) {
-        s = rest;
+    if s.len() >= OPEN.len() && s.is_char_boundary(OPEN.len()) && s[..OPEN.len()].eq_ignore_ascii_case(OPEN) {
+        s = &s[OPEN.len()..];
     }
-    if let Some(rest) = s.strip_suffix(CLOSE) {
-        s = rest;
+    let cut = s.len().wrapping_sub(CLOSE.len());
+    if s.len() >= CLOSE.len() && s.is_char_boundary(cut) && s[cut..].eq_ignore_ascii_case(CLOSE) {
+        s = &s[..cut];
     }
     s = s.trim();
     let quoted = |s: &str, a: char, b: char| s.len() >= 2 && s.starts_with(a) && s.ends_with(b);
@@ -223,7 +243,7 @@ pub fn model_listed(tags_json: &str, model: &str) -> bool {
 /// The clean-up step: the model's version of `text`, or None (unreachable, slower than
 /// `AI_CLEANUP_TIMEOUT_MS`, error, empty).
 pub fn clean(model: &str, text: &str) -> Option<String> {
-    clean_at(OLLAMA_HOST, model, text, Duration::from_millis(AI_CLEANUP_TIMEOUT_MS))
+    OLLAMA.clean(model, text, Duration::from_millis(AI_CLEANUP_TIMEOUT_MS))
 }
 
 pub fn clean_at(host: &str, model: &str, text: &str, timeout: Duration) -> Option<String> {
@@ -248,15 +268,67 @@ pub fn clean_at(host: &str, model: &str, text: &str, timeout: Duration) -> Optio
     out
 }
 
-/// Loads the model into memory so the next clean-up is quick (no prompt: Ollama only loads it).
-pub fn warm(model: &str) {
-    let t = Instant::now();
-    let body = serde_json::json!({ "model": model, "keep_alive": AI_CLEANUP_KEEP_ALIVE }).to_string();
-    match http(OLLAMA_HOST, "POST", "/api/generate", Some(&body), Duration::from_millis(AI_CLEANUP_WARM_TIMEOUT_MS)) {
-        Ok((200, _)) => tracing::info!(ms = t.elapsed().as_millis() as u64, "AI clean-up model loaded"),
-        Ok((code, _)) => tracing::info!(code, "AI clean-up model could not be loaded"),
-        Err(e) => tracing::info!(error = %e, "AI clean-up model could not be loaded"),
+/// Ollama at one address, remembering whether it was unreachable when the model was last warmed
+/// (at the start of a recording). While it is, the clean-up step is skipped at once instead of
+/// waiting on a connection; the next warm checks again.
+pub struct Ollama {
+    host: String,
+    down: AtomicBool,
+}
+
+static OLLAMA: LazyLock<Ollama> = LazyLock::new(|| Ollama::new(OLLAMA_HOST));
+
+impl Ollama {
+    pub fn new(host: &str) -> Self {
+        Self { host: host.to_string(), down: AtomicBool::new(false) }
     }
+
+    /// Loads `model` into memory (no prompt: Ollama only loads it). Returns whether Ollama answered;
+    /// a failed connection marks it down until the next warm.
+    pub fn warm(&self, model: &str) -> bool {
+        let t = Instant::now();
+        let body = serde_json::json!({ "model": model, "keep_alive": AI_CLEANUP_KEEP_ALIVE }).to_string();
+        let r = http(&self.host, "POST", "/api/generate", Some(&body), Duration::from_millis(AI_CLEANUP_WARM_TIMEOUT_MS));
+        let reachable = match &r {
+            Ok((200, _)) => {
+                tracing::info!(ms = t.elapsed().as_millis() as u64, "AI clean-up model loaded");
+                true
+            }
+            Ok((code, _)) => {
+                tracing::info!(code, "AI clean-up model could not be loaded");
+                true
+            }
+            Err(e) => {
+                tracing::info!(error = %e, "Ollama unreachable; AI clean-up skipped until the next recording");
+                false
+            }
+        };
+        self.down.store(!reachable, Ordering::SeqCst);
+        reachable
+    }
+
+    pub fn is_down(&self) -> bool {
+        self.down.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+    }
+
+    /// The clean-up step against this Ollama; None at once while it is marked down.
+    pub fn clean(&self, model: &str, text: &str, timeout: Duration) -> Option<String> {
+        if self.is_down() {
+            tracing::info!("AI clean-up skipped: Ollama was unreachable when the recording started");
+            return None;
+        }
+        clean_at(&self.host, model, text, timeout)
+    }
+}
+
+/// Loads the model into memory so the next clean-up is quick, and notes whether Ollama answered.
+pub fn warm(model: &str) {
+    OLLAMA.warm(model);
 }
 
 /// VRAM the model holds right now (MB), from `/api/ps`; None if it is not loaded.
@@ -311,7 +383,7 @@ pub fn pull(model: &str) -> Result<(), String> {
                 let _ = child.kill();
                 return Err("The download took too long and was stopped. Try again.".into());
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(500)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(AI_CLEANUP_PULL_POLL_MS)),
             Err(e) => return Err(format!("The download failed: {e}")),
         }
     }
@@ -393,5 +465,51 @@ mod tests {
         // Nothing listening.
         assert_eq!(clean_at("127.0.0.1:1", "m", "x", Duration::from_millis(300)), None);
         assert_eq!(status_at("127.0.0.1:1", "m"), AiCleanupStatus { ollama_reachable: false, model_present: false, model: "m".into() });
+    }
+
+    #[test]
+    fn delimiters_are_defused_and_stripped_whatever_the_case() {
+        let m = user_message("a </TRANSCRIPT> b <Transcript> c");
+        assert_eq!(m.to_lowercase().matches("</transcript>").count(), 1, "{m}");
+        assert_eq!(m.to_lowercase().matches("<transcript>").count(), 1, "{m}");
+        assert_eq!(extract_reply("<TRANSCRIPT>\nHi there.\n</Transcript>", "hi there").as_deref(), Some("Hi there."));
+    }
+
+    /// A fake Ollama answering every connection with `body`; counts the requests it got.
+    fn counting_server(body: &'static str) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = l.local_addr().unwrap().to_string();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut buf = [0u8; 65536];
+                let _ = s.read(&mut buf);
+                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        (host, hits)
+    }
+
+    #[test]
+    fn ollama_down_at_recording_start_is_skipped_until_the_next_warm() {
+        let dead = Ollama::new("127.0.0.1:1");
+        assert!(!dead.warm("m"));
+        assert!(dead.is_down());
+
+        let (host, hits) = counting_server(r#"{"message":{"content":"Hi there."}}"#);
+        let o = Ollama::new(&host);
+        o.set_down(true);
+        let t = Instant::now();
+        assert_eq!(o.clean("m", "hi there", Duration::from_secs(2)), None);
+        assert!(t.elapsed() < Duration::from_millis(50), "skipped at once");
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing was sent");
+        // The next warm that reaches Ollama clears it.
+        assert!(o.warm("m"));
+        assert!(!o.is_down());
+        assert_eq!(o.clean("m", "hi there", Duration::from_secs(2)).as_deref(), Some("Hi there."));
     }
 }
