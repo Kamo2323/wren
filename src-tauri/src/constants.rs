@@ -121,9 +121,19 @@ pub const CLIPBOARD_PUBLISH_TIMEOUT_MS: u64 = 3_000;
 
 /// Hotkey watchdog: reinstall the hook if Windows saw input but the hook saw nothing for this long.
 pub const HOOK_WATCHDOG_MS: u64 = 5_000;
-/// Session (Task 8): longest wait for one transcription result from the engine (a 10 min clip on the
-/// GPU takes well under a minute; this only catches a hung sidecar).
-pub const TRANSCRIBE_TIMEOUT_MS: u64 = 120_000;
+/// Session (Task 8): wait for one transcription result at most this long plus
+/// `TRANSCRIBE_TIMEOUT_PER_CLIP` × the clip length (a 10 min clip on the GPU takes well under a
+/// minute; the CPU fallback can take close to real time; this only catches a hung sidecar).
+pub const TRANSCRIBE_TIMEOUT_MS: u64 = 60_000;
+pub const TRANSCRIBE_TIMEOUT_PER_CLIP: f64 = 1.5;
+/// On quit: a recording or queued dictation is transcribed only if the engine is ready within this
+/// long; otherwise its audio is kept and a "not transcribed" row saved…
+pub const QUIT_ENGINE_WAIT_MS: u64 = 5_000;
+/// …and quitting waits at most this long in total for queued dictations.
+pub const QUIT_DRAIN_MAX_MS: u64 = 10_000;
+/// A start-up problem (hotkey, microphone) is shown in the popup this long after launch, once the
+/// popup page has loaded.
+pub const STARTUP_ERROR_POPUP_DELAY_MS: u64 = 3_000;
 /// The popup plays a ~200 ms exit after its own dismiss duration; the session hides the window this
 /// long after that duration (contract with src/popup/Popup.tsx).
 pub const POPUP_HIDE_AFTER_DISMISS_MS: u64 = 250;

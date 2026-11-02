@@ -77,6 +77,7 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
     assert!(P::Error { message: "m".into() }.is_clickable());
     assert!(P::HandsFree { started_at_ms: 0, cpu: false }.is_clickable());
     assert!(P::CapWarning { remaining_ms: 1, mode: CapMode::HandsFree }.is_clickable());
+    assert!(P::NoSound.is_clickable(), "opens the microphone privacy settings");
     for s in [
         P::Hidden,
         P::Listening { cpu: false },
@@ -84,7 +85,6 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
         P::Transcribing { since_ms: 0 },
         P::Pasted,
         P::Nothing,
-        P::NoSound,
         P::CapWarning { remaining_ms: 1, mode: CapMode::Hold },
     ] {
         assert!(!s.is_clickable(), "{s:?}");
@@ -125,6 +125,9 @@ fn term_hits_are_case_insensitive_whole_words() {
 // ---------- fakes ----------
 
 struct FakeRecorder {
+    /// The fake foreground window (shared with the env), so stopping can move focus.
+    fg: Arc<Mutex<ForegroundInfo>>,
+    switch_fg_on_stop: AtomicBool,
     active: Mutex<Option<PathBuf>>,
     elapsed: AtomicU64,
     silence: AtomicU64,
@@ -133,9 +136,15 @@ struct FakeRecorder {
     cancels: AtomicUsize,
 }
 
+fn edge() -> ForegroundInfo {
+    ForegroundInfo { hwnd: 42, pid: 4242, process_name: "msedge.exe".into() }
+}
+
 impl FakeRecorder {
-    fn new() -> Self {
+    fn new(fg: Arc<Mutex<ForegroundInfo>>) -> Self {
         Self {
+            fg,
+            switch_fg_on_stop: AtomicBool::new(false),
             active: Mutex::new(None),
             elapsed: AtomicU64::new(3_000),
             silence: AtomicU64::new(0),
@@ -158,6 +167,9 @@ impl Recorder for FakeRecorder {
     }
     fn stop(&self) -> anyhow::Result<Recording> {
         let p = self.active.lock().take().ok_or_else(|| anyhow::anyhow!("not recording"))?;
+        if self.switch_fg_on_stop.load(Ordering::SeqCst) {
+            *self.fg.lock() = ForegroundInfo { hwnd: 7, pid: 77, process_name: "other.exe".into() };
+        }
         Ok(Recording {
             wav_path: p,
             duration_ms: self.elapsed.load(Ordering::SeqCst),
@@ -203,6 +215,8 @@ struct FakeEnv {
     /// Scripted engine replies (text, delay ms), in call order; empty → "Hello there."
     replies: Mutex<VecDeque<(Result<String, EngineError>, u64)>>,
     paste_results: Mutex<VecDeque<PasteResult>>,
+    fg: Arc<Mutex<ForegroundInfo>>,
+    paste_at: Mutex<Vec<Instant>>,
     events: Mutex<Vec<Ev>>,
     ai_calls: AtomicUsize,
 }
@@ -212,11 +226,14 @@ impl FakeEnv {
         let dir = std::env::temp_dir().join(format!("wren-session-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("db").join("wren.db")).unwrap();
+        let fg = Arc::new(Mutex::new(edge()));
         Arc::new(Self {
             dir,
             store,
             settings: Mutex::new(Settings::default()),
-            recorder: FakeRecorder::new(),
+            recorder: FakeRecorder::new(fg.clone()),
+            fg,
+            paste_at: Mutex::new(Vec::new()),
             status: Mutex::new(EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1400 }),
             replies: Mutex::new(VecDeque::new()),
             paste_results: Mutex::new(VecDeque::new()),
@@ -274,9 +291,10 @@ impl Env for FakeEnv {
         Ok(TranscribeResult { speech_ms: if text.is_empty() { 0 } else { 2_000 }, text, infer_ms: 1, segments: vec![] })
     }
     fn foreground(&self) -> ForegroundInfo {
-        ForegroundInfo { hwnd: 42, pid: 4242, process_name: "msedge.exe".into() }
+        self.fg.lock().clone()
     }
     fn paste(&self, text: &str, _target: &ForegroundInfo) -> PasteResult {
+        self.paste_at.lock().push(Instant::now());
         let saved_first = self.store.recent(100).unwrap().iter().any(|r| r.final_text == text);
         self.push(Ev::Paste { text: text.into(), saved_first });
         self.paste_results.lock().pop_front().unwrap_or(PasteResult::Pasted)
@@ -615,26 +633,221 @@ fn ready_too_late_after_release_saves_with_a_notice_instead_of_pasting() {
     assert!(r.env.pastes().is_empty());
 }
 
-#[test]
-fn an_engine_error_is_shown_and_nothing_is_saved() {
-    let r = rig();
-    r.env.replies.lock().push_back((Err(EngineError::Oom("cuda".into())), 0));
-    r.hk.send(HotkeyEvent::HoldStart).unwrap();
-    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
-    wait_until("error popup", 2_000, || r.env.popups().iter().any(|p| matches!(p, PopupState::Error { .. })));
-    assert!(r.env.rows().is_empty());
-    assert!(r.env.pastes().is_empty());
+fn transcribe_calls(env: &FakeEnv) -> usize {
+    env.events().iter().filter(|e| matches!(e, Ev::Transcribe { .. })).count()
 }
 
 #[test]
-fn a_failed_engine_is_reported_without_waiting() {
+fn an_engine_error_is_retried_once() {
+    let r = rig();
+    r.env.replies.lock().push_back((Err(EngineError::Internal("crashed".into())), 0));
+    r.env.reply("Second try.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("paste", 3_000, || r.env.pastes().len() == 1);
+    assert_eq!(r.env.pastes(), vec!["Second try.".to_string()]);
+    assert_eq!(transcribe_calls(&r.env), 2);
+    assert!(!r.env.popups().iter().any(|p| matches!(p, PopupState::Error { .. })));
+}
+
+#[test]
+fn an_engine_failing_twice_keeps_the_audio_and_saves_without_text() {
+    let r = rig();
+    r.env.replies.lock().push_back((Err(EngineError::Oom("cuda".into())), 0));
+    r.env.replies.lock().push_back((Err(EngineError::Timeout), 0));
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("error popup", 3_000, || {
+        r.env.popups().contains(&PopupState::Error { message: NOT_TRANSCRIBED_MESSAGE.into() })
+    });
+    let rows = r.env.rows();
+    assert_eq!(rows.len(), 1, "saved in History");
+    assert_eq!(rows[0].paste_outcome, PasteOutcome::Failed);
+    assert_eq!(rows[0].final_text, "");
+    assert_eq!(std::fs::read_dir(r.env.audio_dir()).unwrap().count(), 1, "the WAV is kept");
+    assert!(r.env.pastes().is_empty());
+    assert_eq!(transcribe_calls(&r.env), 2);
+}
+
+#[test]
+fn a_failed_engine_saves_the_dictation_without_text() {
     let r = rig();
     *r.env.status.lock() = EngineStatus::Failed { reason: "The speech engine could not start.".into() };
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
     r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
     wait_until("error popup", 2_000, || {
-        r.env.popups().contains(&PopupState::Error { message: "The speech engine could not start.".into() })
+        r.env.popups().contains(&PopupState::Error { message: NOT_TRANSCRIBED_MESSAGE.into() })
     });
+    assert_eq!(r.env.rows().len(), 1);
+    assert_eq!(r.env.rows()[0].paste_outcome, PasteOutcome::Failed);
+    assert_eq!(transcribe_calls(&r.env), 0);
+}
+
+// ---------- review round 1: back-to-back dictations, notices, quit ----------
+
+#[test]
+fn popup_result_is_posted_and_shown() {
+    let r = rig();
+    r.session.popup_result(PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 });
+    wait_until("learned", 1_000, || {
+        r.env.popups().contains(&PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 })
+    });
+    assert!(r.env.events().contains(&Ev::Clickable(true)));
+}
+
+#[test]
+fn the_first_dictation_waits_for_a_held_second_one_before_pasting() {
+    let r = rig();
+    r.env.reply("First one.", 100);
+    r.env.reply("Second one.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || r.env.recorder.active.lock().is_none());
+    r.hk.send(HotkeyEvent::HoldStart).unwrap(); // the chord is held again
+    sleep(600); // the first is transcribed by now
+    assert!(r.env.pastes().is_empty(), "no paste while the chord is held (it would be KeysStillHeld)");
+    let released = Instant::now();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 600 }).unwrap();
+    wait_until("both pasted", 3_000, || r.env.pastes().len() == 2);
+    assert_eq!(r.env.pastes(), vec!["First one.".to_string(), "Second one.".to_string()]);
+    assert!(r.env.paste_at.lock()[0] >= released, "the first paste came after the second hold ended");
+}
+
+#[test]
+fn a_notice_during_a_hands_free_recording_is_shown_when_it_ends() {
+    let r = rig();
+    r.env.paste_results.lock().push_back(PasteResult::FocusChanged);
+    r.env.reply("First one.", 200);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || r.env.recorder.active.lock().is_none());
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("first paste attempted", 2_000, || r.env.pastes().len() == 1);
+    sleep(100);
+    let notice = PopupState::NotPasted { text: "First one.".into() };
+    assert!(!r.env.popups().contains(&notice), "not over the hands-free popup");
+    r.hk.send(HotkeyEvent::HandsFreeStop).unwrap();
+    wait_until("notice after the recording", 1_000, || r.env.popups().contains(&notice));
+    let p = r.env.popups();
+    let hf = p.iter().rposition(|s| matches!(s, PopupState::HandsFree { .. })).unwrap();
+    assert!(p.iter().rposition(|s| *s == notice).unwrap() > hf);
+}
+
+#[test]
+fn an_error_during_a_hold_is_shown_when_the_hold_ends() {
+    let r = rig();
+    r.env.replies.lock().push_back((Err(EngineError::Internal("x".into())), 150));
+    r.env.replies.lock().push_back((Err(EngineError::Internal("x".into())), 0));
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || r.env.recorder.active.lock().is_none());
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    wait_until("saved untranscribed", 2_000, || r.env.rows().len() == 1);
+    sleep(50);
+    let error = PopupState::Error { message: NOT_TRANSCRIBED_MESSAGE.into() };
+    assert!(!r.env.popups().contains(&error));
+    r.hk.send(HotkeyEvent::Tap).unwrap();
+    wait_until("error shown", 1_000, || r.env.popups().last() == Some(&error));
+}
+
+#[test]
+fn a_tap_does_not_hide_an_earlier_notice() {
+    let r = rig();
+    r.env.paste_results.lock().push_back(PasteResult::FocusChanged);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    let notice = PopupState::NotPasted { text: "Hello there.".into() };
+    wait_until("notice", 2_000, || r.env.popups().last() == Some(&notice));
+    let before = r.env.events().len();
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::Tap).unwrap(); // Ctrl+Win+Right style: inside the popup delay
+    wait_until("cancel", 1_000, || r.env.recorder.cancels.load(Ordering::SeqCst) == 1);
+    sleep(POPUP_DELAY_MS + 50);
+    let after: Vec<Ev> = r.env.events()[before..].to_vec();
+    assert!(!after.contains(&Ev::Hide) && !after.contains(&Ev::Popup(PopupState::Hidden)), "{after:?}");
+}
+
+#[test]
+fn a_notice_covered_by_a_recording_comes_back_when_it_is_discarded() {
+    let r = rig();
+    r.env.paste_results.lock().push_back(PasteResult::FocusChanged);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    let notice = PopupState::NotPasted { text: "Hello there.".into() };
+    wait_until("notice", 2_000, || r.env.popups().last() == Some(&notice));
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    wait_until("listening", 1_000, || r.env.popups().last() == Some(&PopupState::Listening { cpu: false }));
+    r.hk.send(HotkeyEvent::Tap).unwrap();
+    wait_until("notice again", 1_000, || r.env.popups().last() == Some(&notice));
+}
+
+#[test]
+fn the_warm_up_grace_is_measured_to_the_moment_of_pasting() {
+    let r = rig();
+    *r.env.status.lock() = EngineStatus::WarmingUp;
+    r.env.reply("First one.", 0);
+    r.env.reply("Second one.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || r.env.recorder.active.lock().is_none());
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    sleep(300);
+    // Ready well inside the grace, but the first paste must wait for the held chord past it.
+    *r.env.status.lock() = EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 };
+    sleep(WARMUP_PASTE_GRACE_MS);
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 5_300 }).unwrap();
+    wait_until("second pasted", 3_000, || r.env.pastes().len() == 1);
+    assert_eq!(r.env.pastes(), vec!["Second one.".to_string()], "the late first one is saved, not pasted");
+    wait_until("rows", 1_000, || r.env.rows().len() == 2);
+}
+
+#[test]
+fn the_target_is_read_before_the_recording_stops() {
+    let r = rig();
+    r.env.recorder.switch_fg_on_stop.store(true, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("row", 2_000, || r.env.rows().len() == 1);
+    assert_eq!(r.env.rows()[0].target_process, "msedge.exe");
+}
+
+#[test]
+fn quitting_saves_a_long_hands_free_recording() {
+    let r = rig();
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.starts.load(Ordering::SeqCst) == 1);
+    assert!(r.session.shutdown(Duration::from_millis(QUIT_DRAIN_MAX_MS)), "drained");
+    let rows = r.env.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].final_text, "Hello there.", "transcribed");
+    assert!(r.env.pastes().is_empty(), "never pasted at quit");
+}
+
+#[test]
+fn quitting_with_the_engine_not_ready_keeps_the_audio_untranscribed() {
+    let r = rig();
+    *r.env.status.lock() = EngineStatus::WarmingUp;
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.starts.load(Ordering::SeqCst) == 1);
+    let t = Instant::now();
+    assert!(r.session.shutdown(Duration::from_millis(QUIT_DRAIN_MAX_MS)));
+    assert!(t.elapsed() < Duration::from_millis(QUIT_ENGINE_WAIT_MS + 1_000), "{:?}", t.elapsed());
+    let rows = r.env.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].paste_outcome, PasteOutcome::Failed);
+    assert_eq!(rows[0].final_text, "");
+    assert_eq!(std::fs::read_dir(r.env.audio_dir()).unwrap().count(), 1);
+}
+
+#[test]
+fn quitting_drops_a_short_recording() {
+    let r = rig();
+    r.env.recorder.elapsed.store(CANCEL_SAVE_AFTER_MS - 1, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.starts.load(Ordering::SeqCst) == 1);
+    assert!(r.session.shutdown(Duration::from_millis(QUIT_DRAIN_MAX_MS)));
+    assert!(r.env.rows().is_empty());
+    assert_eq!(r.env.recorder.cancels.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -688,10 +901,11 @@ fn a_result_does_not_cover_a_new_recording() {
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
     r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
     wait_until("stopped", 1_000, || r.env.recorder.active.lock().is_none());
-    r.hk.send(HotkeyEvent::HoldStart).unwrap();
-    wait_until("listening", 1_000, || r.env.popups().contains(&PopupState::Listening { cpu: false }));
+    // Hands-free (keys up), so the first one pastes while it records; a hold would make it wait.
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("hands-free", 1_000, || r.env.popups().iter().any(|p| matches!(p, PopupState::HandsFree { .. })));
     wait_until("first pasted", 2_000, || r.env.pastes().len() == 1);
     sleep(50);
-    assert_eq!(r.env.popups().last(), Some(&PopupState::Listening { cpu: false }), "{:?}", r.env.popups());
-    r.hk.send(HotkeyEvent::Tap).unwrap();
+    assert!(matches!(r.env.popups().last(), Some(PopupState::HandsFree { .. })), "{:?}", r.env.popups());
+    r.session.send(Msg::Discard);
 }

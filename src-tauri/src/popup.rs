@@ -8,11 +8,22 @@
 //! `set_focus`, `set_ignore_cursor_events`, `set_position`…). Tauri/tao keep their own idea of the
 //! window's flags; any setter makes tao rewrite both style words from that idea, which hides the
 //! popup (tao never saw our Win32 show) and puts `WS_EX_APPWINDOW` back (Alt+Tab, taskbar).
-//! Everything here therefore goes straight through Win32, asynchronously, so it is safe to call
-//! from the session thread without waiting on the UI thread.
+//! Everything here therefore goes straight through Win32.
+//!
+//! **Threading.** The session thread calls these, so none of them may wait on the main (UI) thread:
+//! - the popup's HWND is read once in `create` (main thread) and cached — `WebviewWindow::hwnd()` off
+//!   the main thread is a blocking round trip to it;
+//! - `show`/`hide` use `SetWindowPos(SWP_ASYNCWINDOWPOS)` and `ShowWindowAsync`, which only post;
+//! - changing extended styles (`SetWindowLongPtrW(GWL_EXSTYLE)`) *sends* WM_STYLECHANGING/CHANGED to
+//!   the window's thread and waits, so `set_clickable` and the style repair in `show` hand that to the
+//!   main thread with `run_on_main_thread` (a post) and return at once;
+//! - `emit_state`/`emit_level` post to the webview.
+//!
+//! `is_own_window` still asks Tauri for each window's handle: call it on the main thread only.
 
 use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_WINDOW_H, POPUP_WINDOW_W};
 use serde::Serialize;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -29,6 +40,9 @@ pub const POPUP_LABEL: &str = "popup";
 pub const POPUP_STATE_EVENT: &str = "popup://state";
 /// Event carrying mic level (0..1) about 30 times a second while listening.
 pub const POPUP_LEVEL_EVENT: &str = "popup://level";
+
+/// The popup's HWND, read once on the main thread in `create` (0 = not created).
+static POPUP_HWND: AtomicIsize = AtomicIsize::new(0);
 
 /// Create the popup window, hidden and click-through. Call once from `setup` (main thread).
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -52,6 +66,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let _ = win.set_ignore_cursor_events(true);
     if let Some(hwnd) = hwnd_of(&win) {
         apply_styles(hwnd);
+        POPUP_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
     }
     Ok(())
 }
@@ -61,21 +76,39 @@ fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
     win.hwnd().ok().map(|h| HWND(h.0 as *mut core::ffi::c_void))
 }
 
-fn popup_hwnd(app: &AppHandle) -> Option<HWND> {
-    app.get_webview_window(POPUP_LABEL).as_ref().and_then(hwnd_of)
+/// The cached popup HWND (no Tauri call, so no main-thread round trip).
+fn popup_hwnd(_app: &AppHandle) -> Option<HWND> {
+    match POPUP_HWND.load(Ordering::SeqCst) {
+        0 => None,
+        h => Some(HWND(h as *mut core::ffi::c_void)),
+    }
 }
 
-/// Non-activating tool window, never in Alt+Tab or the taskbar. Idempotent.
+/// The extended style the popup should have now (non-activating tool window, never in Alt+Tab or
+/// the taskbar), or None if it already has it. Reading styles never blocks.
+fn wanted_styles(hwnd: HWND) -> Option<isize> {
+    let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
+    let unwanted = WS_EX_APPWINDOW.0 as isize;
+    let new = (ex | wanted) & !unwanted;
+    (new != ex).then_some(new)
+}
+
+/// Apply the styles directly. Main thread only (it sends WM_STYLECHANGING to the window's thread).
 fn apply_styles(hwnd: HWND) {
-    unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
-        let unwanted = WS_EX_APPWINDOW.0 as isize;
-        let new = (ex | wanted) & !unwanted;
-        if new != ex {
+    if let Some(new) = wanted_styles(hwnd) {
+        unsafe {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
-            refresh_frame(hwnd);
         }
+        refresh_frame(hwnd);
+    }
+}
+
+/// Run `f(hwnd)` on the main thread without waiting for it.
+fn on_main(app: &AppHandle, hwnd: HWND, f: impl FnOnce(HWND) + Send + 'static) {
+    let raw = hwnd.0 as isize;
+    if let Err(err) = app.run_on_main_thread(move || f(HWND(raw as *mut core::ffi::c_void))) {
+        tracing::warn!(error = %err, "popup: cannot post to the main thread");
     }
 }
 
@@ -97,7 +130,9 @@ fn refresh_frame(hwnd: HWND) {
 /// without activating it. Safe to call repeatedly and from any thread.
 pub fn show(app: &AppHandle) {
     let Some(hwnd) = popup_hwnd(app) else { return };
-    apply_styles(hwnd);
+    if wanted_styles(hwnd).is_some() {
+        on_main(app, hwnd, apply_styles);
+    }
     unsafe {
         let fg = GetForegroundWindow();
         let anchor = if fg.0.is_null() { hwnd } else { fg };
@@ -135,22 +170,26 @@ pub fn hide(app: &AppHandle) {
 }
 
 /// Let the popup receive clicks (for "click to copy", "Undo", "×") or pass them through.
-/// Toggles only `WS_EX_TRANSPARENT`; `WS_EX_LAYERED` from creation stays. Any thread.
+/// Toggles only `WS_EX_TRANSPARENT`; `WS_EX_LAYERED` from creation stays. Any thread: the style
+/// change itself runs on the main thread (posted; this returns at once).
 pub fn set_clickable(app: &AppHandle, clickable: bool) {
     let Some(hwnd) = popup_hwnd(app) else { return };
-    unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let transparent = WS_EX_TRANSPARENT.0 as isize;
-        let new = if clickable { ex & !transparent } else { ex | transparent };
-        if new != ex {
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
-            refresh_frame(hwnd);
+    on_main(app, hwnd, move |hwnd| {
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let transparent = WS_EX_TRANSPARENT.0 as isize;
+            let new = if clickable { ex & !transparent } else { ex | transparent };
+            if new != ex {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
+                refresh_frame(hwnd);
+            }
         }
-    }
-    apply_styles(hwnd);
+        apply_styles(hwnd);
+    });
 }
 
-/// True if `hwnd` is one of Wren's own windows (used to refuse pasting into ourselves).
+/// True if `hwnd` is one of Wren's own windows (used to refuse pasting into ourselves). Asks Tauri
+/// for each window's handle: main thread only (the session uses a list cached at start-up).
 pub fn is_own_window(app: &AppHandle, hwnd: isize) -> bool {
     app.webview_windows()
         .values()
