@@ -44,12 +44,23 @@ Wren is Maximilian's free, local Windows dictation app (a Willow / Glaido replac
 
 ## Left / follow-ups
 
-- M-4 (final review): an out-of-memory error retries on the same GPU state; with Unity filling VRAM every
-  dictation fails until "Restart engine". Proposed: restart the engine (→ CPU fallback) before the retry.
+Maximilian, 2026-11-02 morning: using Wren, "working perfectly well"; **don't fix the two engine-failure glitches
+for now — just keep them noted.** Start with Windows is on in Wren; he took Willow/Glaido out of startup.
+
+- **Deferred glitch 1 — GPU out of memory (final review M-4):** an `Oom` from the sidecar is retried once on the
+  same, still-Ready engine (`session.rs` ~1008-1029), then saved without text. With Unity or a big Ollama model
+  filling VRAM, every dictation fails until Settings → Restart engine. Proposed fix: restart the engine (it falls
+  back to CPU small.en if the card is still full) before the retry, and say "graphics card is full" in the error.
+- **Deferred glitch 2 — lingering invisible popup (fix-wave re-review):** when the engine is Failed, the
+  engine-stopped error shown during a hold has no hide time; if the recording then ends via the discard path (tap,
+  Ctrl+Win+→, Cancel, Pause, quiet save — `session.rs` ~504-509) the window stays shown and clickable after the
+  page fades it: an invisible pill-sized area at the bottom centre swallows clicks (opens Wren) until the next popup
+  state. Proposed fix: in `recording_ended()`, also hide when the current state is an error with no hide time.
 - Fix-a-word Undo leaves that dictation's corrected text in History (needs a `history_set_text` command).
 - Not verifiable by automation (he checks): real-keyboard Start menu, Win+Shift+S / Win+V passthrough, first-word
   clipping with the real mic, accent accuracy live in Claude.
-- Rebuild/reinstall: `powershell -ExecutionPolicy Bypass -File scriptselease.ps1` (runs every step via WMI,
+- Rebuild/reinstall: `powershell -ExecutionPolicy Bypass -File scripts
+elease.ps1` (runs every step via WMI,
   outside the Claude app's MSIX sandbox). Don't run `cargo fmt` on the crate (reformats ~40 files).
 
 ## Things to tell Maximilian (all in docs/MORNING.md)
