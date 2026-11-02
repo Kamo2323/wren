@@ -23,6 +23,8 @@ pub struct DayPoint {
     /// `YYYY-MM-DD`, local.
     pub date: String,
     pub words: u64,
+    /// Speaking time that day (sum of `hourly_totals.speaking_ms`), for the words-per-minute trend.
+    pub speaking_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -67,7 +69,8 @@ pub fn compute(rows: &[HourRow], today: NaiveDate, typing_wpm: u32) -> Stats {
     let (mut words_today, mut ms_today) = (0u64, 0u64);
     let (mut words_week, mut ms_week) = (0u64, 0u64);
     let mut hourly = vec![0u64; 24];
-    let mut per_day: std::collections::BTreeMap<NaiveDate, u64> = Default::default();
+    // per local date in the window: (words, speaking ms)
+    let mut per_day: std::collections::BTreeMap<NaiveDate, (u64, u64)> = Default::default();
     let mut active_days = std::collections::HashSet::new();
 
     for r in rows {
@@ -89,7 +92,9 @@ pub fn compute(rows: &[HourRow], today: NaiveDate, typing_wpm: u32) -> Stats {
             if let Some(slot) = hourly.get_mut(r.hour as usize) {
                 *slot += r.words;
             }
-            *per_day.entry(r.date).or_default() += r.words;
+            let day = per_day.entry(r.date).or_default();
+            day.0 += r.words;
+            day.1 += r.speaking_ms;
         }
     }
 
@@ -117,10 +122,8 @@ pub fn compute(rows: &[HourRow], today: NaiveDate, typing_wpm: u32) -> Stats {
         .rev()
         .map(|back| {
             let date = today - Duration::days(back);
-            DayPoint {
-                date: date.format("%Y-%m-%d").to_string(),
-                words: per_day.get(&date).copied().unwrap_or(0),
-            }
+            let (words, speaking_ms) = per_day.get(&date).copied().unwrap_or((0, 0));
+            DayPoint { date: date.format("%Y-%m-%d").to_string(), words, speaking_ms }
         })
         .collect();
 
@@ -192,10 +195,26 @@ mod tests {
 
         assert_eq!(s.daily.len(), 30);
         assert_eq!(s.daily.first().unwrap().date, "2026-10-06");
-        assert_eq!(s.daily.last().unwrap(), &DayPoint { date: "2026-11-04".into(), words: 150 });
+        assert_eq!(s.daily.last().unwrap(), &DayPoint { date: "2026-11-04".into(), words: 150, speaking_ms: 90_000 });
         let words = |date: &str| s.daily.iter().find(|p| p.date == date).unwrap().words;
         assert_eq!((words("2026-11-03"), words("2026-11-02"), words("2026-11-01")), (52, 0, 260));
         assert_eq!(s.daily.iter().map(|p| p.words).sum::<u64>(), 462);
+    }
+
+    #[test]
+    fn daily_points_carry_speaking_time_per_local_date() {
+        let s = compute(&fixture(), d("2026-11-04"), 52);
+        let day = |date: &str| s.daily.iter().find(|p| p.date == date).unwrap().clone();
+        // 4 Nov: two hours summed (60 000 + 30 000); 3 Nov: one hour; 2 Nov: nothing spoken.
+        assert_eq!(day("2026-11-04").speaking_ms, 90_000);
+        assert_eq!(day("2026-11-03").speaking_ms, 20_000);
+        assert_eq!(day("2026-11-02").speaking_ms, 0);
+        assert_eq!(day("2026-11-01").speaking_ms, 120_000);
+        // the 1 Sep row is outside the 30-day window, so the series only sums the window
+        assert_eq!(s.daily.iter().map(|p| p.speaking_ms).sum::<u64>(), 230_000);
+        // serialised for the UI as camelCase
+        let json = serde_json::to_string(&day("2026-11-03")).unwrap();
+        assert_eq!(json, r#"{"date":"2026-11-03","words":52,"speakingMs":20000}"#);
     }
 
     #[test]

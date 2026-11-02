@@ -597,6 +597,32 @@ fn fix_word_adds_an_active_replacement_and_term() {
 }
 
 #[test]
+fn fix_word_rewrites_the_transcription_text() {
+    let (_d, store) = open();
+    let at = Utc::now() - Duration::minutes(5);
+    store.insert_transcription(&tx("t1", at, "Klode said ask klode about the pie test", 4_000)).unwrap();
+    store.insert_transcription(&tx("t2", at, "Klode is somewhere else", 2_000)).unwrap();
+    let words_before = store.stats(Local::now(), 52).unwrap().words_all;
+    store.fix_word("t1", "klode", "Claude").unwrap();
+    let row = store.get("t1").unwrap().unwrap();
+    // every whole-word occurrence; the one at the start keeps its capital
+    assert_eq!(row.final_text, "Claude said ask Claude about the pie test");
+    assert_eq!(row.words, 8);
+    // a two-word fix changes the word count
+    store.fix_word("t1", "pie test", "pytest").unwrap();
+    let row = store.get("t1").unwrap().unwrap();
+    assert_eq!((row.final_text.as_str(), row.words), ("Claude said ask Claude about the pytest", 7));
+    // other transcriptions are left alone (the rule applies to new dictations)
+    assert_eq!(store.get("t2").unwrap().unwrap().final_text, "Klode is somewhere else");
+    // stats keep counting what was dictated
+    assert_eq!(store.stats(Local::now(), 52).unwrap().words_all, words_before);
+    // search sees the fixed text
+    assert_eq!(store.search("pytest").unwrap().len(), 1);
+    // an unknown transcription still teaches the dictionary
+    assert!(store.fix_word("gone", "Shivon", "Siobhan").is_ok());
+}
+
+#[test]
 fn fix_word_reenables_a_disabled_term() {
     let (_d, store) = open();
     let t = store.add_term("Claude", Source::Manual).unwrap();

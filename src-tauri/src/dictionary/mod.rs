@@ -154,9 +154,66 @@ pub fn is_common_word(word: &str) -> bool {
     words.iter().all(|w| set.contains(w.as_str()))
 }
 
+/// Letters, digits and the apostrophe make up a word; anything else is a boundary.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '\'' || c == '\u{2019}'
+}
+
+/// Replace every whole-word occurrence of `from` in `text` with `to`, ignoring case when matching.
+/// Case-aware: an occurrence typed exactly like `from` gets `to` as written; one that differs only
+/// in case and starts with a capital (e.g. at the start of a sentence) gets `to` with a capital first
+/// letter. Used by History "fix a word"; the UI mirrors it in `src/lib/api.ts` (`replaceWord`).
+pub fn replace_whole_word(text: &str, from: &str, to: &str) -> String {
+    let needle: Vec<char> = from.chars().collect();
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let hay: Vec<char> = text.chars().collect();
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < hay.len() {
+        let end = i + needle.len();
+        let fits = end <= hay.len()
+            && (i == 0 || !is_word_char(hay[i - 1]))
+            && (end == hay.len() || !is_word_char(hay[end]))
+            && hay[i..end].iter().zip(&needle).all(|(&a, &b)| same(a, b));
+        if !fits {
+            out.push(hay[i]);
+            i += 1;
+            continue;
+        }
+        let found: String = hay[i..end].iter().collect();
+        let capital = found != from && found.chars().next().is_some_and(char::is_uppercase);
+        match (capital, to.chars().next()) {
+            (true, Some(first)) if first.is_lowercase() => {
+                out.extend(first.to_uppercase());
+                out.push_str(&to[first.len_utf8()..]);
+            }
+            _ => out.push_str(to),
+        }
+        i = end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replace_whole_word_matches_whole_words_only_and_keeps_capitals() {
+        let r = replace_whole_word;
+        assert_eq!(r("Ask Klode, then klode again.", "Klode", "Claude"), "Ask Claude, then Claude again.");
+        // exact-case occurrence gets `to` as typed; a capitalised one gets a capital
+        assert_eq!(r("cash is king. Cash flow", "cash", "cache"), "cache is king. Cache flow");
+        // not inside other words, nor across apostrophes
+        assert_eq!(r("cashew cash cash's", "cash", "cache"), "cashew cache cash's");
+        assert_eq!(r("pie test, pie testing", "pie test", "pytest"), "pytest, pie testing");
+        assert_eq!(r("café café", "café", "cafe"), "cafe cafe");
+        assert_eq!(r("nothing here", "klode", "Claude"), "nothing here");
+        assert_eq!(r("x", "", "y"), "x");
+    }
 
     #[test]
     fn common_word_list_is_loaded_without_its_header() {
