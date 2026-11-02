@@ -82,7 +82,7 @@ export const DEFAULT_CONSTANTS: UiConstants = {
   popupPastedMs: 400,
   popupStillWorkingAfterMs: 1500,
   popupNothingMs: 1500,
-  popupNoSoundMs: 2500,
+  popupNoSoundMs: 4000,
   popupNotPastedMs: 4000,
   popupLearnedMs: 6000,
   popupErrorMs: 5000,
@@ -193,6 +193,17 @@ export const popupDiscard = (): Promise<void> => (inTauri ? call("popup_discard"
 export const popupOpenMain = (): Promise<void> => (inTauri ? call("popup_open_main") : later(undefined));
 /** "No sound from your mic" click: Windows' microphone privacy settings. */
 export const popupOpenMicSettings = (): Promise<void> => (inTauri ? call("popup_open_mic_settings") : later(undefined));
+/** Where the pill sits inside the popup window (CSS px), so only the pill catches clicks. */
+export const popupHitRect = (r: { x: number; y: number; w: number; h: number }): Promise<void> =>
+  inTauri ? call("popup_hit_rect", r) : Promise.resolve();
+
+let readySent = false;
+/** The main window has painted its first screen: Rust shows the window (once). Safe to call often. */
+export function mainReady(): void {
+  if (readySent || !inTauri) return;
+  readySent = true;
+  void call("main_ready").catch(() => {});
+}
 
 /** Accepts the Rust `EngineStatus` however serde tags it (unit strings, external or internal tags). */
 export function normaliseEngineStatus(raw: unknown): EngineStatus {

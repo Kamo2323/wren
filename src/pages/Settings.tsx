@@ -127,7 +127,7 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
   return (
     <Group id="mic" title="Microphone" icon={<Mic size={17} strokeWidth={2} />}>
       <SetRow
-        title="Microphone"
+        title="Which microphone"
         htmlFor="mic-select"
         desc={missing ? "That microphone isn't plugged in. Wren is using the Windows default for now." : "Wren follows the Windows default unless you pick one here."}
         control={
@@ -275,7 +275,7 @@ function WatcherSection({ settings, update }: { settings: SettingsData; update: 
             </Status>
           )}
           {automatic ? (
-            <span className="setrow__aside">Set automatically from that check</span>
+            <span className="setrow__aside">Wren chose this from the check</span>
           ) : (
             <button type="button" className="linkbtn" onClick={() => void update({ watcherEnabled: null })}>
               Go back to automatic
@@ -479,10 +479,13 @@ export default function Settings({
   engine,
   others,
   onSaved,
+  focus,
 }: {
   engine: EngineStatus;
   others: string[];
   onSaved: (s: SettingsData) => void;
+  /** A group to scroll to once the settings are on screen (the sidebar's engine status opens "engine"). */
+  focus?: { group: "engine"; at: number } | null;
 }) {
   const constants = useConstants();
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -507,6 +510,16 @@ export default function Settings({
       .then(setVersion)
       .catch(() => {});
   }, [load]);
+
+  const loaded = settings != null;
+  useEffect(() => {
+    if (!loaded || !focus) return;
+    const id = requestAnimationFrame(() => {
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      document.getElementById(`set-${focus.group}`)?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [loaded, focus]);
 
   /** Apply a change at once, save it, and put it back if the save fails. */
   const update = useCallback(
@@ -556,7 +569,7 @@ export default function Settings({
             />
             <SetRow
               title="Start with Windows"
-              desc="Off by default. It's safe to turn on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
+              desc="Turn this on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
               control={<Toggle checked={settings.startWithWindows} onChange={(v) => void update({ startWithWindows: v })} label="Start with Windows" />}
             />
           </Group>

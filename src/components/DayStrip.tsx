@@ -8,6 +8,17 @@ function label(date: string): string {
   return new Date(y, m - 1, d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
 }
 
+/** Holds the strip's exact height while the stats load, so the "Recent" heading never moves. */
+export function DayStripPlaceholder() {
+  return (
+    <div className="strip is-placeholder" aria-hidden="true">
+      <div className="strip__head">&nbsp;</div>
+      <div className="strip__bars" />
+      <div className="strip__axis">&nbsp;</div>
+    </div>
+  );
+}
+
 export function DayStrip({ days }: { days: DayPoint[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const max = Math.max(1, ...days.map((d) => d.words));
@@ -47,6 +58,9 @@ export function DayStrip({ days }: { days: DayPoint[] }) {
             </div>
           );
         })}
+      </div>
+      <div className="strip__axis" aria-hidden="true">
+        Today
       </div>
     </div>
   );

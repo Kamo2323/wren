@@ -738,6 +738,7 @@
   margin-top: 4px;
   font-size: 13.5px;
   color: var(--text-2);
+  text-wrap: pretty;
 }
 
 /* column chart */
@@ -972,6 +973,7 @@
   gap: 28px;
 }
 .setgroup {
+  scroll-margin-top: 24px;
   animation: rise-in 420ms var(--ease-out-far) both;
 }
 .setgroup:nth-child(2) {
