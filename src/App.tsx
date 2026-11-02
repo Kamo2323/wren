@@ -51,6 +51,16 @@ export default function App() {
     return () => window.removeEventListener("focus", check);
   }, []);
 
+  // follow #page links (and the back button in a browser)
+  useEffect(() => {
+    const onHash = () => {
+      const h = location.hash.replace("#", "") as PageId;
+      if (h in TITLES) setPage(h);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
   useEffect(() => {
     if (location.hash !== `#${page}`) history.replaceState(null, "", `${location.pathname}${location.search}#${page}`);
     document.title = page === "home" ? "Wren" : `${TITLES[page]} · Wren`;

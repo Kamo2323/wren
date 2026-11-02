@@ -327,13 +327,14 @@ export default function Dictionary() {
   async function setLearned(row: LearnedRow, status: "active" | "disabled", announce: boolean) {
     const targets = [row.main, termGoesWith(row)].filter((x): x is DictionaryEntry => x !== null);
     const before = targets.map((t) => ({ id: t.id, status: t.status }));
+    const wasCandidate = row.main.status === "candidate";
     targets.forEach((t) => patch(t.id, { status }));
     try {
       await Promise.all(targets.map((t) => dictionarySetStatus(t.id, status)));
       if (announce) {
         const what = row.main.kind === "replacement" ? `“${row.main.fromText}” → “${row.main.toText}”` : `“${row.main.toText}”`;
         const text =
-          status === "disabled" ? `Undone. Wren won't learn ${what} again.` : row.main.status === "candidate" ? `Kept: ${what}` : `Back on: ${what}`;
+          status === "disabled" ? `Undone. Wren won't learn ${what} again.` : wasCandidate ? `Kept: ${what}` : `Back on: ${what}`;
         toast.show(text, {
           action: status === "disabled" ? { label: "Undo", onClick: () => void setLearned(row, "active", false) } : undefined,
         });

@@ -31,6 +31,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 // ---------- mock store (browser only) ----------
+// Every mock read hands out copies, like the real IPC does, so the pages can't share objects with the store.
 
 const mock = {
   history: mockEmpty ? [] : mockTranscriptions(),
@@ -94,12 +95,12 @@ export const saveSettings = (settings: Settings): Promise<void> => {
 // ---------- Task 4: history, stats, dictionary ----------
 
 export const historyRecent = (limit: number): Promise<TranscriptionRow[]> =>
-  inTauri ? call("history_recent", { limit }) : later(mock.history.slice(0, limit));
+  inTauri ? call("history_recent", { limit }) : later(structuredClone(mock.history.slice(0, limit)));
 
 export const historySearch = (query: string): Promise<TranscriptionRow[]> => {
   if (inTauri) return call("history_search", { query });
   const q = query.trim().toLowerCase();
-  return later(mock.history.filter((r) => r.finalText.toLowerCase().includes(q)));
+  return later(structuredClone(mock.history.filter((r) => r.finalText.toLowerCase().includes(q))));
 };
 
 export const historyDelete = (id: string): Promise<void> => {
@@ -135,23 +136,23 @@ export const historyFixWord = (id: string, from: string, to: string): Promise<Fi
     createdAt: new Date().toISOString(),
   };
   mock.dictionary.push(entry);
-  return later({ replacement: entry, term: null });
+  return later(structuredClone({ replacement: entry, term: null }));
 };
 
-export const dictionaryList = (): Promise<DictionaryEntry[]> => (inTauri ? call("dictionary_list") : later([...mock.dictionary]));
+export const dictionaryList = (): Promise<DictionaryEntry[]> => (inTauri ? call("dictionary_list") : later(structuredClone(mock.dictionary)));
 
 export const dictionaryAddTerm = (word: string): Promise<DictionaryEntry> => {
   if (inTauri) return call("dictionary_add_term", { word });
   const e: DictionaryEntry = { id: mock.nextId++, kind: "term", fromText: null, toText: word, source: "manual", status: "active", observations: 0, hits: 0, createdAt: new Date().toISOString() };
   mock.dictionary.push(e);
-  return later(e);
+  return later(structuredClone(e));
 };
 
 export const dictionaryAddReplacement = (from: string, to: string): Promise<DictionaryEntry> => {
   if (inTauri) return call("dictionary_add_replacement", { from, to });
   const e: DictionaryEntry = { id: mock.nextId++, kind: "replacement", fromText: from, toText: to, source: "manual", status: "active", observations: 0, hits: 0, createdAt: new Date().toISOString() };
   mock.dictionary.push(e);
-  return later(e);
+  return later(structuredClone(e));
 };
 
 export const dictionarySetStatus = (id: number, status: EntryStatus): Promise<void> => {
