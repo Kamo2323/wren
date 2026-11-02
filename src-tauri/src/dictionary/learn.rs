@@ -32,7 +32,8 @@ use crate::constants::{
 
 /// A word as written (punctuation trimmed, curly apostrophe made straight) and the same word
 /// lower-cased. The diff runs on `shown`, so a case fix next to a real fix joins the same run
-/// ("clawed code" → "Claude Code"); runs that differ only in case are dropped afterwards.
+/// ("clawed code" → "Claude Code"); runs that differ only in case or punctuation are dropped
+/// afterwards.
 struct Token {
     shown: String,
     key: String,
@@ -58,18 +59,32 @@ fn tokens(text: &str) -> Vec<Token> {
     out
 }
 
-/// Drop a case-only pair at either end of a run when it is just sentence capitalisation
-/// ("hello klode" → "Hello Claude" teaches "klode" → "Claude", not the greeting).
-fn trim_sentence_case(old: &[Token], new: &[Token], o: &mut std::ops::Range<usize>, n: &mut std::ops::Range<usize>) {
-    while o.len() > 1 && n.len() > 1 && old[o.start].key == new[n.start].key && old[o.start].sentence_start {
+/// Letters and digits only, lower-cased: two runs with the same skeleton differ only in case,
+/// punctuation or spacing ("its" / "it's", "e mail" / "e-mail"), which teaches nothing.
+fn skeleton(words: &[Token]) -> String {
+    words.iter().flat_map(|t| t.key.chars().filter(|c| c.is_alphanumeric())).collect()
+}
+
+/// A boundary pair that carries no real change: punctuation only, or case only where the case
+/// is just sentence capitalisation (either side starts a sentence) or a plain lower-casing.
+/// ("hello klode" → "Hello Claude", "klode Is" → "Claude is", "klode see" → "Claude. See").
+/// A case change that is not about sentences stays ("clawed code" → "Claude Code").
+fn is_noise_pair(old: &Token, new: &Token) -> bool {
+    if skeleton(std::slice::from_ref(old)) != skeleton(std::slice::from_ref(new)) {
+        return false;
+    }
+    let punctuation_changed = old.key != new.key;
+    let only_lower_cased = new.shown == new.key && old.shown != new.shown;
+    punctuation_changed || old.sentence_start || new.sentence_start || only_lower_cased
+}
+
+/// Trim noise pairs off both ends of a run (never below one word on each side).
+fn trim_noise(old: &[Token], new: &[Token], o: &mut std::ops::Range<usize>, n: &mut std::ops::Range<usize>) {
+    while o.len() > 1 && n.len() > 1 && is_noise_pair(&old[o.start], &new[n.start]) {
         o.start += 1;
         n.start += 1;
     }
-    while o.len() > 1
-        && n.len() > 1
-        && old[o.end - 1].key == new[n.end - 1].key
-        && old[o.end - 1].sentence_start
-    {
+    while o.len() > 1 && n.len() > 1 && is_noise_pair(&old[o.end - 1], &new[n.end - 1]) {
         o.end -= 1;
         n.end -= 1;
     }
@@ -126,13 +141,12 @@ pub fn diff_corrections(pasted: &str, edited: &str) -> Vec<Correction> {
     if let Some(e) = open.take() {
         edits.push(e);
     }
-    // A run that differs only in case is no edit at all (spec: ignore case-only changes).
     for (o, n) in edits.iter_mut() {
-        trim_sentence_case(&old, &new, o, n);
+        trim_noise(&old, &new, o, n);
     }
-    edits.retain(|(o, n)| {
-        !old[o.clone()].iter().map(|t| &t.key).eq(new[n.clone()].iter().map(|t| &t.key))
-    });
+    // A run that differs only in case, punctuation or spacing is no edit at all (spec §8), and
+    // does not count towards the rewrite limit either.
+    edits.retain(|(o, n)| skeleton(&old[o.clone()]) != skeleton(&new[n.clone()]));
     if edits.len() > MAX_EDITS {
         return Vec::new();
     }
@@ -212,6 +226,26 @@ mod tests {
             diff_corrections("thanks klode. see you", "thanks Claude. See you"),
             vec![c("klode", "Claude")]
         );
+        // the new text starts a sentence where the old did not
+        assert_eq!(
+            diff_corrections("thanks klode see you", "thanks Claude. See you"),
+            vec![c("klode", "Claude")]
+        );
+        // a neighbour that was only lower-cased
+        assert_eq!(
+            diff_corrections("the klode Is great", "the Claude is great"),
+            vec![c("klode", "Claude")]
+        );
+        // a neighbour whose only change is punctuation
+        assert_eq!(
+            diff_corrections("ask klode its fine", "ask Claude it's fine"),
+            vec![c("klode", "Claude")]
+        );
+        // a deliberate capital on a neighbour is part of the phrase
+        assert_eq!(
+            diff_corrections("open clawed code now", "open Claude Code now"),
+            vec![c("clawed code", "Claude Code")]
+        );
     }
 
     #[test]
@@ -229,8 +263,13 @@ mod tests {
         assert_eq!(diff_corrections("hello there", "hello there"), none);
         // case only
         assert_eq!(diff_corrections("send it to claude", "send it to Claude"), none);
-        // punctuation only
+        // punctuation only — including apostrophes and hyphens inside a word, which would
+        // otherwise pass as "spelt alike" and rewrite every "its"
         assert_eq!(diff_corrections("hello there how are you", "Hello there, how are you?"), none);
+        assert_eq!(diff_corrections("its time to go", "it's time to go"), none);
+        assert_eq!(diff_corrections("we were late", "we we're late"), none);
+        assert_eq!(diff_corrections("send an e mail now", "send an e-mail now"), none);
+        assert_eq!(diff_corrections("I cant say", "I can't say"), none);
         // pure insertion
         assert_eq!(diff_corrections("stand in the queue", "stand in the long queue"), none);
         // pure deletion

@@ -604,3 +604,67 @@ fn fix_word_reenables_a_disabled_term() {
     let (_, term) = store.fix_word("t1", "Klode", "Claude").unwrap();
     assert_eq!(term.map(|e| (e.id, e.status)), Some((t.id, Status::Active)));
 }
+
+// ---------- review round 1 ----------
+
+#[test]
+fn switching_a_replacement_on_removes_other_live_rules_for_the_same_word() {
+    let (_d, store) = open();
+    let a = store.add_replacement("Klode", "Claude", Source::Manual, Status::Candidate).unwrap();
+    let b = store.add_replacement("klode", "Clode", Source::Manual, Status::Candidate).unwrap();
+    let c = store.add_replacement("KLODE", "Cloud", Source::Manual, Status::Candidate).unwrap();
+    store.set_status(c.id, Status::Disabled).unwrap(); // disabling never removes anything
+    assert_eq!(store.dictionary_list().unwrap().len(), 3);
+
+    store.set_status(b.id, Status::Active).unwrap();
+    let ids: Vec<i64> = store.dictionary_list().unwrap().into_iter().map(|e| e.id).collect();
+    assert!(!ids.contains(&a.id), "the live candidate for the same word is superseded");
+    assert!(ids.contains(&c.id), "a disabled rule stays as the record of the user's no");
+    assert_eq!(store.active_replacements().unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>(), [b.id]);
+
+    store.set_status(c.id, Status::Active).unwrap();
+    assert_eq!(store.active_replacements().unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>(), [c.id]);
+    // A term switched on touches nothing else.
+    let t = store.add_term("Klode", Source::Manual).unwrap();
+    store.set_status(t.id, Status::Active).unwrap();
+    assert_eq!(store.dictionary_list().unwrap().len(), 2);
+}
+
+fn file_contains(path: &Path, needle: &[u8]) -> bool {
+    std::fs::read(path).map(|b| b.windows(needle.len()).any(|w| w == needle)).unwrap_or(false)
+}
+
+fn wal_len(dir: &TempDir) -> u64 {
+    std::fs::metadata(dir.0.join("db").join("wren.db-wal")).map(|m| m.len()).unwrap_or(0)
+}
+
+#[test]
+fn deleted_text_does_not_linger_in_the_wal_or_the_database_file() {
+    let (d, store) = open();
+    let secret = "zebra quartz marmalade";
+    store.insert_transcription_in(&tx("a", utc("2026-11-02T09:00:00Z"), secret, 1_000), &utc_tz()).unwrap();
+    store.insert_transcription_in(&tx("b", utc("2026-11-02T09:01:00Z"), "keep me", 1_000), &utc_tz()).unwrap();
+    assert!(wal_len(&d) > 0, "writes go to the WAL first");
+    store.delete_all_history().unwrap();
+    assert_eq!(wal_len(&d), 0, "delete-all truncates the WAL");
+    let db = d.0.join("db").join("wren.db");
+    assert!(!file_contains(&db, secret.as_bytes()));
+    assert!(!file_contains(&d.0.join("db").join("wren.db-wal"), secret.as_bytes()));
+}
+
+#[test]
+fn the_sweep_and_single_deletes_truncate_the_wal_too() {
+    let (d, store) = open();
+    let now = Utc::now();
+    let old = tx("old", now - Duration::hours(RETENTION_HOURS + 1), "old secret words", 1_000);
+    store.insert_transcription_in(&old, &utc_tz()).unwrap();
+    assert!(wal_len(&d) > 0);
+    assert_eq!(store.sweep(now, &d.audio()).unwrap().rows_deleted, 1);
+    assert_eq!(wal_len(&d), 0, "a sweep that deleted rows truncates the WAL");
+
+    store.insert_transcription_in(&tx("one", now, "single secret", 1_000), &utc_tz()).unwrap();
+    assert!(wal_len(&d) > 0);
+    store.delete_transcription("one").unwrap();
+    assert_eq!(wal_len(&d), 0);
+    assert!(!file_contains(&d.0.join("db").join("wren.db"), b"single secret"));
+}

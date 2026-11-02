@@ -64,8 +64,6 @@ pub fn run() {
     let _log_guard = logging::init(&paths.logs_dir());
     let settings = Settings::load(&paths.settings_file());
     tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, "Wren starting");
-    let store = open_store(&paths);
-    sweep_store(&store, &paths);
 
     tauri::Builder::default()
         // Must be first: a second launch just brings the running Wren forward.
@@ -77,22 +75,25 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            paths,
-            settings: RwLock::new(settings),
-            store,
-        })
         .setup(move |app| {
+            // The database is opened here, after the plugins' setup, so a second launch (which
+            // the single-instance plugin ends before this point) never opens, migrates or sweeps it.
+            let store = open_store(&paths);
+            app.manage(AppState {
+                paths,
+                settings: RwLock::new(settings),
+                store,
+            });
             tray::build(app.handle())?;
             popup::create(app.handle())?;
-            // Hourly retention sweep (the startup one already ran).
+            // Retention sweep now (off the main thread) and then every SWEEP_INTERVAL_MS.
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("wren-sweep".into())
                 .spawn(move || loop {
-                    std::thread::sleep(std::time::Duration::from_millis(constants::SWEEP_INTERVAL_MS));
                     let state = handle.state::<AppState>();
                     sweep_store(&state.store, &state.paths);
+                    std::thread::sleep(std::time::Duration::from_millis(constants::SWEEP_INTERVAL_MS));
                 })?;
             if !start_hidden {
                 if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {

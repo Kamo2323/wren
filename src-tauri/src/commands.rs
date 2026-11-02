@@ -38,24 +38,26 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(
 
 // ---- history, stats and dictionary (Task 4) ----
 // Errors come back as the store's message (British English, no dictated text).
+// `async` runs them on Tauri's worker pool, so database and file work (e.g. delete-all removing
+// 72 h of WAVs under the store's lock) never blocks the main event loop.
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_recent(state: State<'_, AppState>, limit: u32) -> Result<Vec<TranscriptionRow>, String> {
     state.store.recent(limit).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_search(state: State<'_, AppState>, query: String) -> Result<Vec<TranscriptionRow>, String> {
     state.store.search(&query).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.store.delete_transcription(&id).map_err(|e| e.to_string())
 }
 
 /// Returns how many dictations were deleted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_delete_all(state: State<'_, AppState>) -> Result<usize, String> {
     state.store.delete_all_history().map_err(|e| e.to_string())
 }
@@ -68,7 +70,7 @@ pub struct FixWordResult {
     pub term: Option<DictionaryEntry>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_fix_word(
     state: State<'_, AppState>,
     id: String,
@@ -79,23 +81,23 @@ pub fn history_fix_word(
     Ok(FixWordResult { replacement, term })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stats_get(state: State<'_, AppState>) -> Result<Stats, String> {
     let typing_wpm = state.settings.read().typing_wpm;
     state.store.stats(chrono::Local::now(), typing_wpm).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dictionary_list(state: State<'_, AppState>) -> Result<Vec<DictionaryEntry>, String> {
     state.store.dictionary_list().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dictionary_add_term(state: State<'_, AppState>, word: String) -> Result<DictionaryEntry, String> {
     state.store.add_term(&word, Source::Manual).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dictionary_add_replacement(
     state: State<'_, AppState>,
     from: String,
@@ -107,12 +109,12 @@ pub fn dictionary_add_replacement(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dictionary_set_status(state: State<'_, AppState>, id: i64, status: Status) -> Result<(), String> {
     state.store.set_status(id, status).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn dictionary_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     state.store.delete_entry(id).map_err(|e| e.to_string())
 }

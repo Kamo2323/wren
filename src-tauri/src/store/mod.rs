@@ -369,6 +369,17 @@ fn remove_audio(path: &Path) -> bool {
     }
 }
 
+/// Fold the write-ahead log back into the database and truncate it, so text that was just
+/// deleted does not linger in `wren.db-wal` (`secure_delete` already zeroes the main file).
+fn checkpoint_truncate(conn: &Connection) {
+    let res = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+    match res {
+        Ok(0) => {}
+        Ok(_) => tracing::warn!("WAL checkpoint was blocked; deleted text stays in the log until the next one"),
+        Err(e) => tracing::warn!(error = %e, "WAL checkpoint failed"),
+    }
+}
+
 fn trimmed_pair<'a>(from: &'a str, to: &'a str) -> StoreResult<(&'a str, &'a str)> {
     let (from, to) = (from.trim(), to.trim());
     if from.is_empty() || to.is_empty() {
@@ -388,7 +399,10 @@ impl Store {
         }
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS))?;
-        conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
+        let mode = conn.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get::<_, String>(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            tracing::warn!(journal_mode = %mode, "the database did not switch to WAL; carrying on");
+        }
         conn.pragma_update_and_check(None, "secure_delete", true, |r| r.get::<_, i64>(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         if let schema::Migrated::TooNew { found, known } = schema::migrate(&mut conn)? {
@@ -532,6 +546,7 @@ impl Store {
         txn.execute("DELETE FROM correction_events WHERE transcription_id = ?1", [id])?;
         txn.execute("DELETE FROM transcriptions WHERE id = ?1", [id])?;
         txn.commit()?;
+        checkpoint_truncate(&conn);
         Ok(())
     }
 
@@ -550,6 +565,7 @@ impl Store {
         txn.execute("DELETE FROM correction_events", [])?;
         let n = txn.execute("DELETE FROM transcriptions", [])?;
         txn.commit()?;
+        checkpoint_truncate(&conn);
         Ok(n)
     }
 
@@ -579,6 +595,9 @@ impl Store {
             [],
         )?;
         txn.commit()?;
+        if report.rows_deleted > 0 || report.events_deleted > 0 {
+            checkpoint_truncate(&conn);
+        }
 
         let referenced: HashSet<String> = {
             let mut st = conn.prepare("SELECT audio_path FROM transcriptions WHERE audio_path IS NOT NULL")?;
@@ -693,9 +712,20 @@ impl Store {
         Ok(entry)
     }
 
+    /// Change an entry's status. Switching a replacement on removes any other live rule for
+    /// the same `from`, so one heard word never has two active rules.
     pub fn set_status(&self, id: i64, status: Status) -> StoreResult<()> {
-        let conn = self.conn()?;
-        update_status(&conn, id, status)
+        let mut conn = self.conn()?;
+        let txn = conn.transaction()?;
+        update_status(&txn, id, status)?;
+        if status == Status::Active {
+            let entry = entry_by_id(&txn, id)?;
+            if let (EntryKind::Replacement, Some(from)) = (entry.kind, entry.from_text.as_deref()) {
+                drop_superseded(&txn, id, from)?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     pub fn delete_entry(&self, id: i64) -> StoreResult<()> {
