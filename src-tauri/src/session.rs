@@ -20,9 +20,11 @@
 //! it after a successful paste) and [`Env::ai_cleanup`] (the optional AI step handed to
 //! `pipeline::run`).
 
+pub mod app;
+
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -762,6 +764,9 @@ impl SessionLoop {
 // Finisher: engine → pipeline → store → paste, one dictation at a time in start order
 // ---------------------------------------------------------------------------------------------
 
+/// The optional AI clean-up step as `pipeline::run` takes it.
+type AiStep<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 fn drop_audio(job: &Job) {
     let _ = std::fs::remove_file(&job.recording.wav_path);
 }
@@ -840,7 +845,7 @@ fn finish_job(env: &dyn Env, popup: &PopupCtl, job: Job) {
     });
     let t = Instant::now();
     let ai_step = |tidied: &str| env.ai_cleanup(tidied);
-    let ai: Option<&dyn Fn(&str) -> Option<String>> = if settings.ai_cleanup.enabled { Some(&ai_step) } else { None };
+    let ai: Option<AiStep> = if settings.ai_cleanup.enabled { Some(&ai_step) } else { None };
     let out = pipeline::run(
         &PipelineInput {
             raw: &result.text,

@@ -1,0 +1,305 @@
+//! The real [`Env`]: Tauri (events, managed state), the microphone, the speech engine, the hotkey,
+//! the popup window and the clipboard. `start_services` builds and starts all of it from `setup`.
+
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use crossbeam_channel::Sender;
+use parking_lot::{Mutex, RwLock};
+use tauri::{AppHandle, Emitter, Listener, Manager};
+
+use super::{Env, HotkeyCmd, Msg, PopupState, Recorder, SessionHandle, Sound};
+use crate::AppState;
+use crate::audio::AudioRecorder;
+use crate::constants::{ENGINE_SAMPLE_RATE, SOUND_START_HZ, SOUND_STOP_HZ, SOUND_TICK_AMPLITUDE, SOUND_TICK_MS};
+use crate::engine::{Engine, EngineError, EngineStatus, TranscribeRequest, TranscribeResult};
+use crate::hotkey::HotkeyService;
+use crate::paste::{self, ForegroundInfo, PasteResult};
+use crate::settings::{EngineSettings, Settings};
+use crate::store::Store;
+use crate::{popup, tray};
+
+/// Payload: `EngineStatus`, on every change.
+pub const EVENT_ENGINE_STATUS: &str = "app://engine-status";
+/// No payload: History rows were added, changed or deleted.
+pub const EVENT_HISTORY_CHANGED: &str = "app://history-changed";
+
+pub struct AppEnv {
+    app: AppHandle,
+    recorder: Option<Arc<AudioRecorder>>,
+    /// Replaced (not restarted) when the engine settings change.
+    engine: RwLock<Arc<Engine>>,
+    status_tx: Sender<EngineStatus>,
+    hotkey: Mutex<Option<HotkeyService>>,
+    /// Wren's own window handles, read once on the main thread at start-up.
+    own_windows: Vec<isize>,
+}
+
+impl AppEnv {
+    fn state(&self) -> &AppState {
+        self.app.state::<AppState>().inner()
+    }
+
+    pub fn engine(&self) -> Arc<Engine> {
+        self.engine.read().clone()
+    }
+
+    pub fn audio_recorder(&self) -> Option<&AudioRecorder> {
+        self.recorder.as_deref()
+    }
+
+    /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
+    /// background; dictations meanwhile wait for it like a warm-up.
+    pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) {
+        let me = self.clone();
+        let spawned = std::thread::Builder::new().name("wren-engine-replace".into()).spawn(move || {
+            tracing::info!("engine settings changed; restarting the speech engine");
+            me.engine().shutdown();
+            let paths = me.state().paths.clone();
+            let fresh = Arc::new(Engine::start(&paths, &settings, me.status_tx.clone()));
+            *me.engine.write() = fresh;
+        });
+        if let Err(err) = spawned {
+            tracing::error!(error = %err, "cannot restart the speech engine");
+        }
+    }
+
+    /// On quit: unhook, stop the sidecar, and put back any clipboard a paste still owes.
+    pub fn shutdown(&self) {
+        drop(self.hotkey.lock().take());
+        self.engine().shutdown();
+        paste::flush();
+    }
+}
+
+impl Env for AppEnv {
+    fn store(&self) -> &Store {
+        &self.state().store
+    }
+    fn settings(&self) -> Settings {
+        self.state().settings.read().clone()
+    }
+    fn audio_dir(&self) -> PathBuf {
+        self.state().paths.audio_dir()
+    }
+    fn recorder(&self) -> Option<&dyn Recorder> {
+        self.recorder.as_deref().map(|r| r as &dyn Recorder)
+    }
+    fn engine_status(&self) -> EngineStatus {
+        self.engine().status()
+    }
+    fn transcribe(&self, req: TranscribeRequest, timeout: Duration) -> Result<TranscribeResult, EngineError> {
+        self.engine().transcribe(req, timeout)
+    }
+    fn foreground(&self) -> ForegroundInfo {
+        paste::foreground()
+    }
+    fn paste(&self, text: &str, target: &ForegroundInfo) -> PasteResult {
+        paste::paste_text(text, target, &|hwnd| self.own_windows.contains(&hwnd))
+    }
+    fn copy_text(&self, text: &str) -> anyhow::Result<()> {
+        paste::copy_text(text)
+    }
+    fn popup_emit(&self, state: &PopupState) {
+        popup::emit_state(&self.app, state);
+    }
+    fn popup_show(&self) {
+        popup::show(&self.app);
+    }
+    fn popup_hide(&self) {
+        popup::hide(&self.app);
+    }
+    fn popup_clickable(&self, clickable: bool) {
+        popup::set_clickable(&self.app, clickable);
+    }
+    fn history_changed(&self) {
+        let _ = self.app.emit(EVENT_HISTORY_CHANGED, ());
+    }
+    fn hotkey(&self, cmd: HotkeyCmd) {
+        let guard = self.hotkey.lock();
+        let Some(h) = guard.as_ref() else { return };
+        match cmd {
+            HotkeyCmd::ForceIdle => h.force_idle(),
+            HotkeyCmd::SetPaused(paused) => h.set_paused(paused),
+            HotkeyCmd::Reinstall => h.reinstall(),
+        }
+    }
+    fn play(&self, sound: Sound) {
+        play_tick(sound);
+    }
+}
+
+/// Everything started at launch, kept in Tauri's managed state.
+pub struct Services {
+    pub env: Arc<AppEnv>,
+    pub session: SessionHandle,
+}
+
+impl Services {
+    pub fn shutdown(&self) {
+        self.session.send(Msg::Shutdown);
+        self.env.shutdown();
+    }
+}
+
+/// Start the recorder, engine, hotkey and session. Call from `setup`, after `AppState` is managed
+/// and the windows exist (main thread).
+pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
+    let state = app.state::<AppState>();
+    let settings = state.settings.read().clone();
+
+    // Microphone, with its level meter going to the popup.
+    let (level_tx, level_rx) = crossbeam_channel::unbounded::<f32>();
+    let recorder = match AudioRecorder::new(settings.mic_device.clone(), level_tx) {
+        Ok(r) => Some(Arc::new(r)),
+        Err(err) => {
+            tracing::error!(error = %err, "cannot set up the microphone");
+            None
+        }
+    };
+    {
+        let app = app.clone();
+        std::thread::Builder::new().name("wren-levels".into()).spawn(move || {
+            for level in level_rx {
+                popup::emit_level(&app, level);
+            }
+        })?;
+    }
+
+    // Speech engine, its status forwarded to the UI.
+    let (status_tx, status_rx) = crossbeam_channel::unbounded::<EngineStatus>();
+    let engine = Engine::start(&state.paths, &settings.engine, status_tx.clone());
+    {
+        let app = app.clone();
+        std::thread::Builder::new().name("wren-engine-status".into()).spawn(move || {
+            for status in status_rx {
+                match &status {
+                    EngineStatus::Ready { model, device, vram_mb } => {
+                        tracing::info!(ready = true, %model, %device, vram_mb, "engine status")
+                    }
+                    other => tracing::info!(ready = false, status = ?other, "engine status"),
+                }
+                let _ = app.emit(EVENT_ENGINE_STATUS, &status);
+            }
+        })?;
+    }
+
+    // Hotkey (its events go straight to the session).
+    let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
+    let hotkey = match HotkeyService::start(hotkey_tx) {
+        Ok(h) => Some(h),
+        Err(err) => {
+            tracing::error!(error = %err, "cannot install the Ctrl+Win hotkey");
+            None
+        }
+    };
+    let hotkey_failed = hotkey.is_none();
+
+    let own_windows = app
+        .webview_windows()
+        .values()
+        .filter_map(|w| w.hwnd().ok().map(|h| h.0 as isize))
+        .collect();
+    let env = Arc::new(AppEnv {
+        app: app.clone(),
+        recorder,
+        engine: RwLock::new(Arc::new(engine)),
+        status_tx,
+        hotkey: Mutex::new(hotkey),
+        own_windows,
+    });
+    let session = super::start(env.clone(), hotkey_rx)?;
+
+    // Tray: pause and reinstall.
+    {
+        let session = session.clone();
+        app.listen(tray::EVENT_PAUSE_TOGGLED, move |event| {
+            let paused = serde_json::from_str::<bool>(event.payload()).unwrap_or(false);
+            session.send(Msg::SetPaused(paused));
+        });
+    }
+    {
+        let session = session.clone();
+        app.listen(tray::EVENT_REINSTALL_HOOK, move |_| session.send(Msg::ReinstallHook));
+    }
+
+    if hotkey_failed || env.recorder.is_none() {
+        // Say so once the popup page has loaded.
+        let session = session.clone();
+        let message = if hotkey_failed {
+            "Wren couldn't set up Ctrl + Win. Restart Wren to try again."
+        } else {
+            "Wren can't use your microphone."
+        };
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(3));
+            session.popup_result(PopupState::Error { message: message.into() });
+        });
+    }
+    tracing::info!(hotkey = !hotkey_failed, microphone = env.recorder.is_some(), "services started");
+    Ok(Services { env, session })
+}
+
+// ---- optional start/stop sounds (off by default) ----
+
+/// A soft sine tick as a complete 16-bit mono WAV file (Hann envelope, so no click at the ends).
+pub fn tick_wav(freq_hz: f32) -> Vec<u8> {
+    let rate = ENGINE_SAMPLE_RATE;
+    let n = (rate as u64 * SOUND_TICK_MS / 1000) as usize;
+    let mut pcm = Vec::with_capacity(n * 2);
+    for i in 0..n {
+        let t = i as f32 / rate as f32;
+        let env = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n - 1).max(1) as f32).cos();
+        let s = SOUND_TICK_AMPLITUDE * env * (2.0 * std::f32::consts::PI * freq_hz * t).sin();
+        pcm.extend_from_slice(&((s * i16::MAX as f32) as i16).to_le_bytes());
+    }
+    let mut wav = Vec::with_capacity(44 + pcm.len());
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    wav.extend_from_slice(&pcm);
+    wav
+}
+
+fn play_tick(sound: Sound) {
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    static START: OnceLock<Vec<u8>> = OnceLock::new();
+    static STOP: OnceLock<Vec<u8>> = OnceLock::new();
+    let bytes = match sound {
+        Sound::Start => START.get_or_init(|| tick_wav(SOUND_START_HZ)),
+        Sound::Stop => STOP.get_or_init(|| tick_wav(SOUND_STOP_HZ)),
+    };
+    // SND_MEMORY reads the WAV from this (static, so always alive) buffer; SND_ASYNC returns at once.
+    unsafe {
+        let _ = PlaySoundW(windows::core::PCWSTR(bytes.as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_is_a_valid_short_quiet_wav() {
+        let wav = tick_wav(SOUND_START_HZ);
+        let reader = hound::WavReader::new(std::io::Cursor::new(wav)).expect("valid WAV");
+        let spec = reader.spec();
+        assert_eq!((spec.channels, spec.sample_rate, spec.bits_per_sample), (1, ENGINE_SAMPLE_RATE, 16));
+        let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len() as u64, ENGINE_SAMPLE_RATE as u64 * SOUND_TICK_MS / 1000);
+        let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!(peak as f32 <= SOUND_TICK_AMPLITUDE * i16::MAX as f32 + 1.0, "soft: {peak}");
+        assert!(peak > 0);
+        assert!(samples[0].unsigned_abs() < 50 && samples.last().unwrap().unsigned_abs() < 50, "no click at the ends");
+    }
+}

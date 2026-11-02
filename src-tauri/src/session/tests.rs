@@ -5,6 +5,7 @@ use super::*;
 use crate::dictionary::Source;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 // ---------- pure helpers and the popup contract ----------
 
