@@ -102,6 +102,8 @@ let go. Your words appear about a third of a second later. Wren is already runni
 - App: `%LOCALAPPDATA%\Programs\Wren\wren.exe` (Start menu → Wren). Data: `%LOCALAPPDATA%\Wren`, settings:
   `%APPDATA%\Wren`. Uninstalling never touches your data.
 - Code: `C:\Wren` (git). Start with `README.md`; the design is `docs/design/SPEC.md`; the handoff is
-  `docs/HANDOFF.md`; every decision I made overnight (30 of them, each with its cost if wrong) is in
+  `docs/HANDOFF.md`; every decision I made overnight (29 of them, each with its cost if wrong) is in
   `docs/RULINGS.md`; reviews are in `docs/reviews/`.
+- `C:\Wren-wt` holds ~275 MB of leftover live-test scratch (test databases from test audio, copied exes, logs).
+  Safe to delete; my delete was blocked by a safety check, so it's yours to remove.
 - Rebuild + reinstall after a change: `powershell -ExecutionPolicy Bypass -File scripts\release.ps1`.
