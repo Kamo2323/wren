@@ -477,10 +477,24 @@ impl PopupCtl {
         self.current = state;
     }
 
+    /// Keep `notice` to show when the recording ends. One slot: a newer notice replaces the waiting
+    /// one unless the waiting one matters more (M-2) — "Not pasted · click to copy" (he must act)
+    /// over an error over a "Learned" toast.
+    fn defer(&mut self, notice: PopupState) {
+        let rank = |s: &PopupState| match s {
+            PopupState::NotPasted { .. } => 3,
+            PopupState::Error { .. } => 2,
+            _ => 1,
+        };
+        if self.deferred.as_ref().is_none_or(|waiting| rank(&notice) >= rank(waiting)) {
+            self.deferred = Some(notice);
+        }
+    }
+
     /// A recording's own look. A notice still on screen is kept to be shown again when it ends.
     fn set_recording(&mut self, state: PopupState) {
         if is_notice(&self.current) && self.hide_at.is_some() {
-            self.deferred = Some(self.current.clone());
+            self.defer(self.current.clone());
         }
         self.set(state, true);
     }
@@ -681,7 +695,7 @@ impl SessionLoop {
                     self.popup.set(state, false);
                 } else if is_notice(&state) {
                     // Not lost: shown when this recording ends.
-                    self.popup.deferred = Some(state);
+                    self.popup.defer(state);
                 }
             }
             Msg::Shutdown => {}

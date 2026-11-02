@@ -823,6 +823,38 @@ fn a_notice_during_a_hands_free_recording_is_shown_when_it_ends() {
     assert!(p.iter().rposition(|s| *s == notice).unwrap() > hf);
 }
 
+/// M-2: one deferred slot — a later "Learned" toast must not replace a waiting "Not pasted · click
+/// to copy" (the one he needs to act on).
+#[test]
+fn a_waiting_not_pasted_notice_is_not_replaced_by_a_learned_toast() {
+    let r = rig();
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.active.lock().is_some());
+    let not_pasted = PopupState::NotPasted { text: "First one.".into() };
+    let learned = PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 };
+    r.session.popup_result(not_pasted.clone());
+    r.session.popup_result(learned.clone());
+    sleep(100);
+    r.hk.send(HotkeyEvent::HandsFreeStop).unwrap();
+    wait_until("notice after the recording", 1_000, || r.env.popups().contains(&not_pasted));
+    assert!(!r.env.popups().contains(&learned));
+}
+
+/// …but a newer notice of the same kind (or a more important one) does replace it.
+#[test]
+fn a_later_not_pasted_notice_replaces_a_waiting_learned_toast() {
+    let r = rig();
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.active.lock().is_some());
+    let not_pasted = PopupState::NotPasted { text: "First one.".into() };
+    let learned = PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 };
+    r.session.popup_result(learned.clone());
+    r.session.popup_result(not_pasted.clone());
+    sleep(100);
+    r.hk.send(HotkeyEvent::HandsFreeStop).unwrap();
+    wait_until("notice after the recording", 1_000, || r.env.popups().contains(&not_pasted));
+}
+
 #[test]
 fn an_error_during_a_hold_is_shown_when_the_hold_ends() {
     let r = rig();
