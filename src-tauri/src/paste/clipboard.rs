@@ -209,8 +209,17 @@ fn is_skipped_registered(format: u32) -> bool {
 }
 
 /// Empties the clipboard and writes `formats`. The clipboard must be open by an owner window.
+///
+/// The exclusion formats go on first: putting the user's own earlier copy back is not a new copy,
+/// so clipboard history must not record it again (measured: without this every restore added a
+/// duplicate entry to Win+V history and pushed older entries out). A saved format of the same name
+/// (the original copy was itself excluded) is written afterwards and wins.
 unsafe fn write_formats_open(formats: &[SavedFormat]) -> anyhow::Result<()> {
     unsafe { EmptyClipboard() }.context("EmptyClipboard failed")?;
+    if formats.is_empty() {
+        return Ok(()); // it was empty: leave it empty
+    }
+    unsafe { set_exclusion_formats() };
     let mut failed = 0;
     for saved in formats {
         if unsafe { set_bytes(saved.format, &saved.data) }.is_err() {
@@ -856,11 +865,13 @@ mod desktop_tests {
             .unwrap();
     }
 
-    /// Another app writing to the clipboard (no Wren lock).
+    /// Another app writing to the clipboard (no Wren lock). Marked excluded so the test does not
+    /// add entries to the user's clipboard history.
     fn other_app_copies(text: &str) {
         with_owner_window(|hwnd| {
             let _open = OpenGuard::open(hwnd)?;
             unsafe { EmptyClipboard() }?;
+            unsafe { set_exclusion_formats() };
             unsafe { set_bytes(CF_UNICODETEXT, &wide_bytes(text)) }
         })
         .unwrap();
