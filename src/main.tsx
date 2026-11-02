@@ -4,6 +4,7 @@ import "@fontsource-variable/inter/opsz.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/components.css";
+import "./styles/pages.css";
 import App from "./App";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import type { TranscriptionRow } from "../lib/types";
 import { appName, whenLabel } from "../lib/format";
+import { markMatches } from "../lib/text";
 import { Check, Copy, PenLine, Trash2, X } from "./Icon";
 import { Button, IconButton } from "./Button";
 
@@ -14,7 +15,10 @@ export interface TranscriptCardProps {
   onDelete: (row: TranscriptionRow) => Promise<void>;
   onFix: (row: TranscriptionRow, from: string, to: string) => Promise<void>;
   now?: number;
+  /** Search words to mark in the text (History search). The whole text shows while searching. */
+  highlight?: string;
 }
+
 
 type Token = { text: string; word: boolean; core: string; lead: string; trail: string };
 
@@ -30,7 +34,7 @@ export function tokenise(text: string): Token[] {
 
 const COPIED_MS = 1600;
 
-export function TranscriptCard({ row, onCopy, onDelete, onFix, now }: TranscriptCardProps) {
+export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight }: TranscriptCardProps) {
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [fixing, setFixing] = useState(false);
@@ -239,7 +243,11 @@ export function TranscriptCard({ row, onCopy, onDelete, onFix, now }: Transcript
           </div>
         </div>
       ) : (
-        <p className="tcard__text">{row.finalText}</p>
+        <p className={`tcard__text ${highlight?.trim() ? "tcard__text--full" : ""}`}>
+          {highlight?.trim()
+            ? markMatches(row.finalText, highlight).map((p, i) => (p.match ? <mark key={i}>{p.text}</mark> : <span key={i}>{p.text}</span>))
+            : row.finalText}
+        </p>
       )}
     </div>
   );

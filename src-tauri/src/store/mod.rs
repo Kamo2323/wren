@@ -9,7 +9,7 @@ use crate::constants::{
     RETENTION_HOURS,
 };
 use crate::dictionary::learn::{Correction, LearnDecision};
-use crate::dictionary::{is_common_word, DictionaryEntry, EntryKind, Replacement, Source, Status};
+use crate::dictionary::{is_common_word, replace_whole_word, DictionaryEntry, EntryKind, Replacement, Source, Status};
 use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Timelike, Utc};
 use parking_lot::{Mutex, MutexGuard};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -855,7 +855,10 @@ impl Store {
     }
 
     /// History "fix a word" (spec §8): an active replacement `from → to` and an active term `to`,
-    /// whatever the word. Returns the replacement and the term if it was added or switched back on.
+    /// whatever the word, and the transcription's `final_text` rewritten the same way (whole word,
+    /// case-aware) so the fix survives a reload. `words` follows the new text; `hourly_totals` stay as
+    /// they were (stats count what was dictated). Returns the replacement and the term if it was added
+    /// or switched back on.
     pub fn fix_word(&self, transcription_id: &str, from: &str, to: &str) -> StoreResult<(DictionaryEntry, Option<DictionaryEntry>)> {
         let (from, to) = trimmed_pair(from, to)?;
         let batch = uuid::Uuid::new_v4().to_string();
@@ -865,6 +868,18 @@ impl Store {
         let id = activate_replacement(&txn, from, to, Source::LearnedHistory, origin, Some(&batch))?;
         let term = ensure_term(&txn, to, Source::LearnedHistory, origin, Some(&batch), true)?;
         record_event(&txn, transcription_id, from, to, Source::LearnedHistory, "fixed")?;
+        let text: Option<String> = txn
+            .query_row("SELECT final_text FROM transcriptions WHERE id = ?1", params![transcription_id], |r| r.get(0))
+            .optional()?;
+        if let Some(text) = text {
+            let fixed = replace_whole_word(&text, from, to);
+            if fixed != text {
+                txn.execute(
+                    "UPDATE transcriptions SET final_text = ?1, words = ?2 WHERE id = ?3",
+                    params![fixed, word_count(&fixed) as i64, transcription_id],
+                )?;
+            }
+        }
         let rep = entry_by_id(&txn, id)?;
         txn.commit()?;
         Ok((rep, term))

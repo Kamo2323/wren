@@ -1,16 +1,17 @@
 // Home: four big stat tiles, the 30-day strip, then every recent dictation as a big card.
 // Click a card to copy it.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Stats, TranscriptionRow } from "../lib/types";
-import { copyText, historyDelete, historyFixWord, historyRecent, onHistoryChanged, replaceWord, statsGet, subscribe } from "../lib/api";
-import { dayLabel, formatNumber, formatSaved, formatSavedText, hourLabel, retentionLabel } from "../lib/format";
+import { historyRecent, onHistoryChanged, statsGet, subscribe } from "../lib/api";
+import { formatNumber, formatSaved, formatSavedText, hourLabel, retentionLabel } from "../lib/format";
+import { useDayGroups, useTranscriptActions } from "../lib/useTranscriptActions";
 import { useConstants } from "../lib/useConstants";
 import { SectionHeader } from "../components/Card";
 import { StatTile } from "../components/StatTile";
 import { DayStrip } from "../components/DayStrip";
+import { ChordKeys, EmptyState } from "../components/Empty";
 import { TranscriptCard } from "../components/TranscriptCard";
-import { useToast } from "../components/Toast";
-import { Check, Clock, Flame, Gauge, Timer } from "../components/Icon";
+import { Clock, Flame, Gauge, Timer } from "../components/Icon";
 
 const RECENT_LIMIT = 100;
 
@@ -70,27 +71,10 @@ function StatsRow({ stats, typingWpm }: { stats: Stats | null; typingWpm: number
 
 function EmptyRecent({ kept }: { kept: string }) {
   return (
-    <div className="empty">
-      <div className="empty__keys" aria-hidden="true">
-        <kbd className="key">Ctrl</kbd>
-        <span className="empty__plus">+</span>
-        <kbd className="key">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="1" y="1" width="6.5" height="6.5" rx="1" />
-            <rect x="8.5" y="1" width="6.5" height="6.5" rx="1" />
-            <rect x="1" y="8.5" width="6.5" height="6.5" rx="1" />
-            <rect x="8.5" y="8.5" width="6.5" height="6.5" rx="1" />
-          </svg>
-          Win
-        </kbd>
-      </div>
-      <h3 className="empty__title">Hold, speak, let go</h3>
-      <p className="empty__text">
-        Hold the left Ctrl and Windows keys while you talk. When you let go, Wren types it where your cursor is.
-        Double-tap them for hands-free.
-      </p>
-      <p className="empty__note">Your dictations show up here for {kept}. Click one to copy it again.</p>
-    </div>
+    <EmptyState art={<ChordKeys />} title="Hold, speak, let go" note={`Your dictations show up here for ${kept}. Click one to copy it again.`}>
+      Hold the left Ctrl and Windows keys while you talk. When you let go, Wren types it where your cursor is.
+      Double-tap them for hands-free.
+    </EmptyState>
   );
 }
 
@@ -102,7 +86,7 @@ export default function Home({ typingWpm: typingWpmSetting }: { typingWpm?: numb
   const [stats, setStats] = useState<Stats | null>(null);
   const [rows, setRows] = useState<TranscriptionRow[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const toast = useToast();
+  const { onCopy, onDelete, onFix } = useTranscriptActions(setRows);
 
   const load = useCallback(async () => {
     const [s, r] = await Promise.all([statsGet().catch(() => null), historyRecent(RECENT_LIMIT).catch(() => [])]);
@@ -124,53 +108,7 @@ export default function Home({ typingWpm: typingWpmSetting }: { typingWpm?: numb
     };
   }, [load]);
 
-  const groups = useMemo(() => {
-    const out: Array<{ label: string; rows: TranscriptionRow[] }> = [];
-    for (const r of rows ?? []) {
-      const label = dayLabel(r.createdAtUtc, new Date(now));
-      const g = out[out.length - 1];
-      if (g && g.label === label) g.rows.push(r);
-      else out.push({ label, rows: [r] });
-    }
-    return out;
-  }, [rows, now]);
-
-  const onCopy = useCallback(
-    async (row: TranscriptionRow) => {
-      const ok = await copyText(row.finalText);
-      if (!ok) toast.show("Couldn't copy. Try again.", { tone: "danger" });
-      return ok;
-    },
-    [toast],
-  );
-
-  const onDelete = useCallback(
-    async (row: TranscriptionRow) => {
-      try {
-        await historyDelete(row.id);
-        setRows((rs) => (rs ?? []).filter((r) => r.id !== row.id));
-        toast.show("Deleted");
-      } catch (err) {
-        toast.show("Couldn't delete that one.", { tone: "danger" });
-        throw err;
-      }
-    },
-    [toast],
-  );
-
-  const onFix = useCallback(
-    async (row: TranscriptionRow, from: string, to: string) => {
-      try {
-        await historyFixWord(row.id, from, to);
-        setRows((rs) => (rs ?? []).map((r) => (r.id === row.id ? { ...r, finalText: replaceWord(r.finalText, from, to) } : r)));
-        toast.show(`Fixed. Wren will write “${to}” from now on.`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} />, ms: 3200 });
-      } catch {
-        toast.show("Couldn't save that fix.", { tone: "danger" });
-        throw new Error("fix failed");
-      }
-    },
-    [toast],
-  );
+  const groups = useDayGroups(rows, now);
 
   return (
     <div className="page page--home">

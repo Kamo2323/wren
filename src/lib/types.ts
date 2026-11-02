@@ -80,6 +80,7 @@ export interface TranscriptionRow {
 export interface DayPoint {
   date: string; // YYYY-MM-DD, local
   words: number;
+  speakingMs: number; // speaking time that day; 0 = nothing spoken (a gap in the WPM trend)
 }
 
 export interface Stats {
@@ -127,7 +128,16 @@ export type EngineStatus =
   | { state: "failed"; reason: string }
   | { state: "unknown" };
 
-export interface OtherApps {
-  willow: boolean;
-  glaido: boolean;
+/** Task 9 `watcher_status`: whether the correction watcher runs, and the probe's verdict. */
+export interface WatcherStatus {
+  enabled: boolean;
+  verdict: string | null;
+  reason: string | null;
+}
+
+/** Task 9 `ai_cleanup_status`. */
+export interface AiCleanupStatus {
+  ollamaReachable: boolean;
+  modelPresent: boolean;
+  model: string;
 }
