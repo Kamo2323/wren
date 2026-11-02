@@ -41,7 +41,13 @@ let go. Your words appear about a third of a second later. Wren is already runni
 - Correction learning live: "drizzly" → "drizzle" learned 0.17 s after editing, in a plain box and a chat composer.
 - Claude's message box can be read instantly (< 1 ms), so correction learning is **on** by default.
 - Installed self-test: hotkey, mic, database, GPU engine — PASS.
-- ~230 automated Rust tests + sidecar Python tests + front-end checks, all green.
+- Popup clicks tested for real: "Not pasted · click to copy" copies the text, "Undo" on a learned word turns it
+  off, × in hands-free throws the recording away — and focus stayed in the page every time.
+- The final whole-branch review found 3 Important issues (no Critical); all fixed and live-tested. The one you'd
+  have noticed: starting a new dictation while the previous one was still pasting could make the paste collide
+  with the keys you were holding.
+- 248 automated Rust tests + 39 sidecar Python tests + 42 page checks, all green; the final installed build passes
+  its self-test (engine on the GPU, 1.2 GB, warm-up 314 ms).
 
 ## Things that happened overnight you should know about
 
@@ -71,7 +77,22 @@ let go. Your words appear about a third of a second later. Wren is already runni
 
 ## Known limits / not done
 
-<!-- filled in at the end of the night -->
+- **Graphics memory:** if something else fills your graphics card (e.g. Unity with a big scene, or a large Ollama
+  model), Wren's speech engine can run out of memory and that dictation fails ("saved in History, not
+  transcribed"). Quick fix: Settings → Restart engine (it falls back to the CPU if the card is still full). I left
+  an automatic version of this undone on purpose — it changes how the engine restarts and couldn't be tested
+  overnight. Ask me and I'll add it.
+- **Start menu:** automation can't prove the "stop Start opening" trick is needed (injected Ctrl+Win never opened
+  Start even without Wren). Your real keyboard is the real test.
+- **Win+Shift+S / Win+V** passthrough can't be checked by automation without leaving windows open — please try them.
+- **First-word clipping** with your real mic is unmeasured (tests feed audio from files).
+- **If the speech engine crashes**, it restarts by itself in about 7–9 s; a dictation in flight is retried once,
+  then saved to History as "couldn't transcribe" (the audio is kept).
+- **AI clean-up** (off by default) can occasionally answer a question instead of tidying it; there are guards
+  (length, 80 % word overlap, a strict prompt) but no guarantee.
+- **"Fix a word" → Undo** turns the learned rule off but leaves that one dictation's corrected text in History.
+- Remote desktop / VM clipboard sharing is untested (Wren marks its clipboard writes "don't sync").
+- The warm-up clip hears the name "Wren" as "Ren" — add "Wren" to your Dictionary if you dictate the name.
 
 ## Where everything is
 

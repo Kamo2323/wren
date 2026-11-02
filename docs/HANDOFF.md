@@ -29,28 +29,34 @@ Wren is Maximilian's free, local Windows dictation app (a Willow / Glaido replac
 - Tauri 2 (Rust + WebView2) + Python sidecar for speech. Rust gives a reliable low-level keyboard hook and
   small footprint (Glaido is Tauri); Python faster-whisper on CUDA is already proven on this PC (Overseer).
 
-## Progress (updated ~05:35 UTC 2026-11-02)
+## Status (2026-11-02 ~10:10 UTC) — BUILT, INSTALLED, RUNNING
 
-- Research done: Goldfish review, Willow + Glaido teardowns, STT benchmark (`docs/research/stt-benchmark.md`:
-  large-v3-turbo int8 beam 1 + VAD + Glossary prompt).
-- Merged on main: Task 1 foundation, Task 2 hotkey, Task 3 voice in (audio + sidecar + engine), Task 4 store/stats,
-  Task 5 pipeline + paste (review running), Task 6 design system + popup + Home.
-- In progress: Task 7 pages (fix round), Task 8 session wiring (worktree C:\Wren-wt	ask-8-session).
-- Remaining: Task 9 watcher + Claude probe + AI clean-up, Task 10 installer + live verification, Task 11 UX polish,
-  final review, morning note.
-- Every ruling and review outcome: `.superpowers/sdd/PLAN/progress.md` (git-ignored ledger).
-- Speech runtime + models installed for real at `%LOCALAPPDATA%\Wren\{runtime,models}` (via WMI, because processes
-  started from the Claude desktop app get AppData writes redirected into Claude's package cache).
+- All 11 plan tasks done, each reviewed (spec + quality) with fix rounds; UX polish pass; final whole-branch
+  review (ready with fixes) → one fix wave → scoped re-review. Main = merge of `final-fixes`.
+- Installed at `%LOCALAPPDATA%\Programs\Wren\wren.exe` (NOT `%LOCALAPPDATA%\Wren`, which is the data root —
+  Tauri's per-user default would have put it there; uninstall would have deleted the data). Running in the tray.
+- Verified on the installed build: self-test PASS; live test PASS (holds 10/10, hands-free, composer, focus never
+  stolen, Start 0/50, release→paste p50 ~324 ms, Win+V history untouched, graceful quit, no orphan python);
+  Task 9 live (learning 0.17 s, not-editable → copy); popup click rounds (copy / Undo / ×).
+- Tests: cargo lib 248 pass; sidecar pytest 39; page checks 42; unit 11.
+- Morning note for Maximilian: `docs/MORNING.md`. Every ruling: `.superpowers/sdd/PLAN/progress.md` (git-ignored
+  ledger) — the morning note lists the ones that matter to him.
 
-## Things to tell Maximilian in the morning
+## Left / follow-ups
 
-- Glaido was closed (not uninstalled) for the hotkey tests and left closed so Wren doesn't double-paste.
-- Task 5's first paste tests added 12 entries to his Win+V clipboard history, pushing ~12 older unpinned entries
-  out (unrecoverable). Root-fixed; Wren never adds history entries now.
-- A Glaido debug relaunch at 02:07 UTC saw real (non-injected) "g", "l" key presses — someone was at the PC.
-- Task 2's live probe opened Notepad, which reopened his FILM5-DESIGN.md tab (unchanged).
-- wordfreq's word list (used to judge "common words") is CC BY-SA — fine for a personal app.
+- M-4 (final review): an out-of-memory error retries on the same GPU state; with Unity filling VRAM every
+  dictation fails until "Restart engine". Proposed: restart the engine (→ CPU fallback) before the retry.
+- Fix-a-word Undo leaves that dictation's corrected text in History (needs a `history_set_text` command).
+- Not verifiable by automation (he checks): real-keyboard Start menu, Win+Shift+S / Win+V passthrough, first-word
+  clipping with the real mic, accent accuracy live in Claude.
+- Rebuild/reinstall: `powershell -ExecutionPolicy Bypass -File scriptselease.ps1` (runs every step via WMI,
+  outside the Claude app's MSIX sandbox). Don't run `cargo fmt` on the crate (reformats ~40 files).
 
-## Next step
+## Things to tell Maximilian (all in docs/MORNING.md)
 
-Finish Tasks 5/7 reviews, merge Task 8, then dispatch Task 9, Task 10, Task 11, final review, morning note.
+- Glaido closed (not uninstalled); Willow wasn't running; both should come out of Windows startup before he turns
+  on Wren's "Start with Windows".
+- Win+V history lost ~12 older unpinned entries during Task 5's first tests (root-fixed).
+- Notepad reopened his FILM5-DESIGN.md tab (unchanged); someone pressed real keys at 03:07 Prague; two OpenWith
+  pickers closed; the Glaido study sent 5 silent clips to Glaido's servers.
+- Downloads: models 2.0 GB, runtime 2.3 GB, Ollama qwen2.5:3b 1.9 GB, Handy source (MIT) for reference.
