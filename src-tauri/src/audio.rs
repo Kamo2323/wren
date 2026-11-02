@@ -161,13 +161,40 @@ impl AudioRecorder {
     }
 
     /// Start capturing into `wav_path` (the stream is opened here). One recording at a time.
+    ///
+    /// The device is opened *before* the recorder's lock is taken (a cold WASAPI open can take over a
+    /// second), so `silence_ms`/`elapsed_ms`/`stop` callers are never blocked behind it.
     pub fn start(&self, wav_path: PathBuf) -> Result<()> {
-        let mut active = self.active.lock();
-        if active.is_some() {
+        if self.active.lock().is_some() {
             bail!("already recording");
         }
         if let Some(dir) = wav_path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+        }
+        let clock = Arc::new(Clock::new());
+        let (tx, rx) = crossbeam_channel::unbounded::<Chunk>();
+        // Blocks are buffered in the channel until the writer thread starts below.
+        let (rate, stream, feeder) = match &self.test_audio {
+            Some(path) => start_feeder(path, tx.clone()).map(|(rate, feeder)| (rate, None, Some(feeder)))?,
+            None => {
+                let name = self.device.lock().clone();
+                open_stream(name.as_deref(), tx.clone()).map(|(rate, stream)| (rate, Some(stream), None))?
+            }
+        };
+        let stop_source = |stream: Option<cpal::Stream>, feeder: Option<Feeder>| {
+            drop(stream);
+            if let Some(f) = feeder {
+                f.stop.store(true, Ordering::Relaxed);
+                let _ = f.handle.join();
+            }
+        };
+
+        let mut active = self.active.lock();
+        if active.is_some() {
+            // Another start() won the race while the device was opening.
+            drop(active);
+            stop_source(stream, feeder);
+            bail!("already recording");
         }
         let spec = hound::WavSpec {
             channels: 1,
@@ -175,33 +202,29 @@ impl AudioRecorder {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let wav = hound::WavWriter::create(&wav_path, spec)
-            .with_context(|| format!("cannot create {}", wav_path.display()))?;
-        let clock = Arc::new(Clock::new());
-        let (tx, rx) = crossbeam_channel::unbounded::<Chunk>();
-
-        let opened = match &self.test_audio {
-            Some(path) => start_feeder(path, tx.clone()).map(|(rate, feeder)| (rate, None, Some(feeder))),
-            None => {
-                let name = self.device.lock().clone();
-                open_stream(name.as_deref(), tx.clone()).map(|(rate, stream)| (rate, Some(stream), None))
-            }
-        };
-        let (rate, stream, feeder) = match opened {
-            Ok(v) => v,
+        let wav = match hound::WavWriter::create(&wav_path, spec) {
+            Ok(w) => w,
             Err(err) => {
-                drop(wav);
-                let _ = std::fs::remove_file(&wav_path);
-                return Err(err);
+                drop(active);
+                stop_source(stream, feeder);
+                return Err(anyhow!("cannot create {}: {err}", wav_path.display()));
             }
         };
         let writer = {
             let clock = clock.clone();
             let level_tx = self.level_tx.clone();
-            std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("wren-audio-writer".into())
                 .spawn(move || run_writer(rx, rate, wav, &clock, &level_tx))
-                .context("cannot start the audio writer thread")?
+            {
+                Ok(h) => h,
+                Err(err) => {
+                    drop(active);
+                    stop_source(stream, feeder);
+                    let _ = std::fs::remove_file(&wav_path);
+                    return Err(anyhow!("cannot start the audio writer thread: {err}"));
+                }
+            }
         };
         *active = Some(Active { stream, feeder, tx, writer, wav_path, clock });
         Ok(())
@@ -765,5 +788,26 @@ mod tests {
         let rec = AudioRecorder::with_test_audio(None, tx, None);
         assert!(rec.set_device(Some("No Such Microphone 12345".into())).is_err());
         assert!(rec.set_device(None).is_ok());
+    }
+
+    #[test]
+    fn concurrent_starts_give_exactly_one_recording() {
+        let dir = temp_dir("race");
+        let src = dir.join("in.wav");
+        write_tone(&src, 16_000, 1, 1.0, 0.3);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let rec = Arc::new(AudioRecorder::with_test_audio(None, tx, Some(src)));
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let rec = rec.clone();
+                let out = dir.join(format!("out{i}.wav"));
+                std::thread::spawn(move || rec.start(out).is_ok())
+            })
+            .collect();
+        let ok = handles.into_iter().map(|h| h.join().unwrap()).filter(|&ok| ok).count();
+        assert_eq!(ok, 1, "one recording at a time, even when starts race (the device opens outside the lock)");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(rec.stop().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

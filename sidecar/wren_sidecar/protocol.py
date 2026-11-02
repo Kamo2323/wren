@@ -72,7 +72,8 @@ def ready(*, model: str, device: str, compute: str, vram_mb: int) -> dict[str, A
         "device": device,
         "compute": compute,
         "vram_mb": int(vram_mb),
-        "caps": {"hotwords": True, "prompt": True, "vad": True},
+        # hotwords False: bias terms travel only as a Glossary prompt (benchmark, spec §5).
+        "caps": {"hotwords": False, "prompt": True, "vad": True},
     }
 
 

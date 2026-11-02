@@ -33,7 +33,7 @@ def test_ready_roundtrip():
         "device": "cuda",
         "compute": "int8_float16",
         "vram_mb": 1400,
-        "caps": {"hotwords": True, "prompt": True, "vad": True},
+        "caps": {"hotwords": False, "prompt": True, "vad": True},
     }
     assert roundtrip(msg) == msg
 
@@ -304,13 +304,86 @@ def test_build_prompt_glossary_only():
     assert build_prompt(["", "  ", "Wren"], "") == "Glossary: Wren."
 
 
-def test_build_prompt_stays_under_the_budget_keeping_best_terms():
-    from wren_sidecar.engine import MAX_PROMPT_CHARS, build_prompt
+def test_build_prompt_estimate_budget_drops_lowest_ranked_terms():
+    from wren_sidecar.engine import PROMPT_TOKEN_BUDGET, build_prompt, estimate_tokens
 
     terms = [f"Term{i:03d}" for i in range(200)]
     p = build_prompt(terms, "A sentence.")
-    assert len(p) <= MAX_PROMPT_CHARS
+    assert estimate_tokens(p) <= PROMPT_TOKEN_BUDGET
     assert p.startswith("A sentence. Glossary: Term000, Term001,") and p.endswith(".")
+    kept = p[len("A sentence. Glossary: "):-1].split(", ")
+    assert kept == terms[: len(kept)], "a prefix of the ranked list: only the lowest-ranked go"
+
+
+LONG_NAMES = [
+    "Anastasia Wolfenbarger-Pettigrew", "Bartholomew Oyelaran-Fitzgerald", "Cressida Montgomery-Whitlock",
+    "Dmitri Vasilievich Rachmaninov", "Evangeline Thistlethwaite", "Fitzwilliam Abernathy-Coates",
+    "Guinevere Kowalczyk-Lindqvist", "Hieronymus Featherstonehaugh", "Isadora Szczepanski-Moreau",
+    "Jedediah Okonkwo-Hargreaves", "Konstantinos Papadopoulos", "Leopoldina Castellanos-Urquhart",
+    "Maximilian Haskell-Brightwater", "Nebuchadnezzar Quigley", "Ottoline Venkataraman-Shaw",
+    "Peregrine Wojciechowski", "Quentin Achterberg-Delacroix", "Rosalind Nakamura-Ellsworth",
+    "Sebastiano Giordano-Pemberton", "Theodosia Ravenscroft", "Ulysses Bjornstad-Okafor",
+    "Valentina Hrabovsky-Carmichael", "Wilhelmina Zuckerberg-Ashdown", "Xenophon Lindqvist-Barrington",
+    "Yevgenia Tchaikovskaya", "Zebedee Fairweather-Mbeki", "Aurelio Bustamante-Holloway",
+    "Bronwen Llewellyn-Prendergast", "Cornelius Vanderbilt-Oyelowo", "Delphine Marchetti-Rothschild",
+    "Ezekiel Abernethy-Nakashima", "Florentyna Grzybowski", "Gwendolyn Featherby-Okonjo",
+    "Horatio Wainwright-Szabo", "Ingeborg Halvorsen-Mackintosh", "Jacquetta Pemberton-Oduya",
+    "Kristoffer Sandvik-Albuquerque", "Ludovica Brambilla-Kensington", "Montgomery Ashworth-Ferreira",
+    "Nathaniel Okwuosa-Pendlebury", "Octavia Rutherford-Yamamoto", "Ptolemy Cavendish-Adeyemi",
+    "Rasmus Kierkegaard-Whitfield", "Seraphina Dubrovnik-Hale", "Tobias Fenwick-Oyelaran",
+    "Ursula Krzyzanowski-Bell", "Vivienne Hollingsworth-Tanaka", "Wolfgang Oberhauser-Quaye",
+    "Ximena Valderrama-Hughes", "Zachariah Pennington-Okoro",
+]
+
+
+def test_fifty_long_names_fit_the_real_token_window():
+    """Review r1: 50 realistic names overflowed faster-whisper's window and lost the front. Counted
+    with the model's own tokenizer, the prompt stays <= PROMPT_TOKEN_BUDGET and keeps the label and
+    the best-ranked terms; only the lowest-ranked are dropped."""
+    tokenizers = pytest.importorskip("tokenizers")
+    from wren_sidecar.engine import PROMPT_TOKEN_BUDGET, build_prompt
+
+    tok_file = models_dir() / os.environ.get("WREN_TEST_MODEL", "large-v3-turbo") / "tokenizer.json"
+    if not tok_file.is_file():
+        pytest.skip(f"no tokenizer at {tok_file}")
+    tok = tokenizers.Tokenizer.from_file(str(tok_file))
+
+    def count(text):
+        return len(tok.encode(" " + text.strip(), add_special_tokens=False).ids)
+
+    assert len(LONG_NAMES) == 50
+    sentence = "Dictation by Maximilian, in British English."
+    untrimmed = sentence + " Glossary: " + ", ".join(LONG_NAMES) + "."
+    assert count(untrimmed) > 223, "the case the review measured: too long for the window"
+    p = build_prompt(LONG_NAMES, sentence, count)
+    n = count(p)
+    assert n <= PROMPT_TOKEN_BUDGET, n
+    assert p.startswith(sentence + " Glossary: " + LONG_NAMES[0] + ", " + LONG_NAMES[1])
+    kept = p[len(sentence + " Glossary: "):-1].split(", ")
+    assert kept == LONG_NAMES[: len(kept)] and 0 < len(kept) < 50
+    # The next-ranked term really would not have fitted.
+    assert count(sentence + " Glossary: " + ", ".join(LONG_NAMES[: len(kept) + 1]) + ".") > PROMPT_TOKEN_BUDGET
+
+
+def test_transcriber_counts_with_the_model_tokenizer(handler):
+    from wren_sidecar.engine import estimate_tokens
+
+    t = handler.transcriber
+    assert t.count_tokens is not estimate_tokens
+    assert 0 < t.count_tokens("Glossary: Wren, Glaido.") < 15
+
+
+def test_oom_markers():
+    from wren_sidecar.engine import is_oom
+
+    for msg in [
+        "CUDA failed with error out of memory",
+        "CUDA error: out of memory",
+        "cuBLAS failed with status CUBLAS_STATUS_ALLOC_FAILED",
+        "cuDNN failed with status CUDNN_STATUS_ALLOC_FAILED",
+    ]:
+        assert is_oom(RuntimeError(msg)), msg
+    assert not is_oom(RuntimeError("some other failure"))
 
 
 def test_bias_terms_never_become_hotwords():

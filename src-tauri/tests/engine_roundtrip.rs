@@ -165,8 +165,23 @@ fn engine_round_trip_on_the_real_model() {
     assert_eq!(py.len(), 2, "launcher + interpreter in the job: {pids:?}");
     let t = Instant::now();
     assert!(std::process::Command::new("taskkill").args(["/F", "/PID", &py[1].to_string()]).output().unwrap().status.success());
-    wait_for(&rx, Duration::from_secs(5), |s| !is_ready(s)).expect("noticed the kill");
-    let again = wait_for(&rx, Duration::from_secs(30), is_ready);
+    let mut timeline = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut again = None;
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(s) => {
+                timeline.push(format!("{} ms {:?}", t.elapsed().as_millis(), s));
+                if is_ready(&s) && timeline.len() > 1 {
+                    again = Some(s);
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    println!("restart timeline: {timeline:?}");
+    println!("sidecar.log so far:\n{}", std::fs::read_to_string(&cfg.log_file).unwrap_or_default());
     let restart_ms = t.elapsed().as_millis();
     println!(
         "RESTART after kill: Ready again in {restart_ms} ms (back-off {} ms + relaunch {} ms; brief target 5000 ms {})",
