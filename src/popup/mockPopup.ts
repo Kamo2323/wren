@@ -1,9 +1,10 @@
-// Popup preview without Tauri: popup.html?state=<kind>[&hold=1][&silent=1][&cpu=1][&slow=1]
+// Popup preview without Tauri: popup.html?state=<kind>[&hold=1][&silent=1][&cpu=1][&slow=1][&hf=1]
+// (hf=1: the cap warning arrives during hands-free)
 // `state=demo` walks through every state on a loop. Levels come from a speech-like generator.
 import type { PopupKind, PopupState } from "../lib/types";
 import { levelBus } from "./LevelBars";
 
-export function samplePopupState(kind: PopupKind, opts: { cpu?: boolean; slow?: boolean } = {}): PopupState {
+export function samplePopupState(kind: PopupKind, opts: { cpu?: boolean; slow?: boolean; handsFree?: boolean } = {}): PopupState {
   const now = Date.now();
   switch (kind) {
     case "listening":
@@ -19,7 +20,7 @@ export function samplePopupState(kind: PopupKind, opts: { cpu?: boolean; slow?: 
     case "error":
       return { kind, message: "Microphone unplugged" };
     case "capWarning":
-      return { kind, remainingMs: 60_000 };
+      return { kind, remainingMs: 60_000, mode: opts.handsFree ? "handsFree" : "hold" };
     default:
       return { kind } as PopupState;
   }

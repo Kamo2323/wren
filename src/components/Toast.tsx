@@ -1,5 +1,5 @@
 // In-window toasts: a dark pill at the bottom centre of the content, one at a time, 2.4 s.
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 export type ToastTone = "default" | "success" | "danger";
 
@@ -41,9 +41,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => clearTimers, []);
+  const api = useMemo<ToastApi>(() => ({ show }), [show]);
 
   return (
-    <ToastContext.Provider value={{ show }}>
+    <ToastContext.Provider value={api}>
       {children}
       <div className="toast-layer" aria-live="polite">
         {item && (

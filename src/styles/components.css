@@ -308,19 +308,7 @@
   transform: translateX(16px);
 }
 
-/* ---------- cards + chips ---------- */
-.card {
-  border-radius: var(--r-lg);
-}
-.card--plain {
-  background: var(--panel);
-  border: 1px solid var(--line);
-}
-.card--tile {
-  background: var(--surface);
-  border-radius: var(--r-xl);
-}
-
+/* ---------- chips + section heads ---------- */
 .chip {
   display: inline-flex;
   align-items: center;
@@ -429,8 +417,11 @@
   color: var(--text-1);
   white-space: nowrap;
 }
+.stat__part + .stat__part {
+  margin-left: 0.22em;
+}
 .stat__unit {
-  margin-left: 0.18em;
+  margin-left: 0.14em;
   font-size: 0.4em;
   font-weight: 560;
   letter-spacing: 0;
@@ -610,7 +601,7 @@
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: var(--text-3);
+  background: var(--text-decor);
 }
 .tcard__meta .chip {
   margin-left: 4px;

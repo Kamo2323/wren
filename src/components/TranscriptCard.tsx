@@ -10,6 +10,7 @@ import { Button, IconButton } from "./Button";
 export interface TranscriptCardProps {
   row: TranscriptionRow;
   onCopy: (row: TranscriptionRow) => Promise<boolean>;
+  /** Rejects if the delete failed; the card then comes back. */
   onDelete: (row: TranscriptionRow) => Promise<void>;
   onFix: (row: TranscriptionRow, from: string, to: string) => Promise<void>;
   now?: number;
@@ -99,10 +100,20 @@ export function TranscriptCard({ row, onCopy, onDelete, onFix, now }: Transcript
       return;
     }
     setLeaving(true);
-    timers.current.push(window.setTimeout(() => void onDelete(row), 200));
+    timers.current.push(
+      window.setTimeout(() => {
+        onDelete(row).catch(() => {
+          // the page has said it failed; bring the card back
+          setLeaving(false);
+          setConfirmDelete(false);
+        });
+      }, 200),
+    );
   }
 
   function onKey(e: KeyboardEvent<HTMLDivElement>) {
+    // keys on the buttons inside the card (Fix a word, Delete) are theirs, not a copy
+    if (e.target !== e.currentTarget) return;
     if (fixing) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();

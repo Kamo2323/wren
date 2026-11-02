@@ -2,7 +2,7 @@
 // Home is built here (Task 6); History, Dictionary, Stats and Settings arrive with Task 7.
 import { useEffect, useState } from "react";
 import type { EngineStatus } from "./lib/types";
-import { engineStatus, getSettings, onEngineStatus } from "./lib/api";
+import { engineStatus, getSettings, onEngineStatus, subscribe } from "./lib/api";
 import { Sidebar, type PageId } from "./components/Sidebar";
 import { ToastProvider } from "./components/Toast";
 import Home from "./pages/Home";
@@ -32,16 +32,14 @@ function ComingSoon({ page }: { page: PageId }) {
 export default function App() {
   const [page, setPage] = useState<PageId>(initialPage);
   const [engine, setEngine] = useState<EngineStatus>({ state: "unknown" });
-  const [typingWpm, setTypingWpm] = useState(52);
+  const [typingWpm, setTypingWpm] = useState<number | undefined>(undefined); // Home falls back to the constants default
 
   useEffect(() => {
     void engineStatus().then(setEngine).catch(() => setEngine({ state: "unknown" }));
     void getSettings()
       .then((s) => setTypingWpm(s.typingWpm))
       .catch(() => {});
-    let unlisten: (() => void) | undefined;
-    void onEngineStatus(setEngine).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    return subscribe(onEngineStatus(setEngine));
   }, []);
 
   useEffect(() => {

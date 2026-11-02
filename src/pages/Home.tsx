@@ -2,8 +2,10 @@
 // Click a card to copy it.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Stats, TranscriptionRow } from "../lib/types";
-import { copyText, historyDelete, historyFixWord, historyRecent, onHistoryChanged, replaceWord, statsGet } from "../lib/api";
-import { dayLabel, formatNumber, formatSaved, hourLabel } from "../lib/format";
+import { copyText, historyDelete, historyFixWord, historyRecent, onHistoryChanged, replaceWord, statsGet, subscribe } from "../lib/api";
+import { dayLabel, formatNumber, formatSaved, formatSavedText, hourLabel, retentionLabel } from "../lib/format";
+import { useConstants } from "../lib/useConstants";
+import { SectionHeader } from "../components/Card";
 import { StatTile } from "../components/StatTile";
 import { DayStrip } from "../components/DayStrip";
 import { TranscriptCard } from "../components/TranscriptCard";
@@ -14,8 +16,6 @@ const RECENT_LIMIT = 100;
 
 function StatsRow({ stats, typingWpm }: { stats: Stats | null; typingWpm: number }) {
   if (!stats) return <div className="stats stats--loading" aria-hidden="true" />;
-  const saved = formatSaved(stats.timeSavedMsAll);
-  const week = formatSaved(stats.timeSavedMsWeek);
   const wpm = stats.wpmAll != null ? Math.round(stats.wpmAll) : null;
   const factor = wpm != null && typingWpm > 0 ? wpm / typingWpm : null;
   const hour = stats.busiestHour;
@@ -26,9 +26,8 @@ function StatsRow({ stats, typingWpm }: { stats: Stats | null; typingWpm: number
       <StatTile
         icon={<Timer size={17} strokeWidth={2} />}
         label="Time saved"
-        value={saved.value}
-        unit={saved.unit}
-        caption={empty ? "Starts when you dictate" : stats.timeSavedMsWeek > 0 ? `${week.value} ${week.unit} this week` : "None yet this week"}
+        parts={formatSaved(stats.timeSavedMsAll)}
+        caption={empty ? "Starts when you dictate" : stats.timeSavedMsWeek > 0 ? `${formatSavedText(stats.timeSavedMsWeek)} this week` : "None yet this week"}
         explain={`Words ÷ your typing speed (${typingWpm} wpm), minus the time spent speaking.`}
         muted={empty}
       />
@@ -69,7 +68,7 @@ function StatsRow({ stats, typingWpm }: { stats: Stats | null; typingWpm: number
   );
 }
 
-function EmptyRecent() {
+function EmptyRecent({ kept }: { kept: string }) {
   return (
     <div className="empty">
       <div className="empty__keys" aria-hidden="true">
@@ -90,12 +89,16 @@ function EmptyRecent() {
         Hold the left Ctrl and Windows keys while you talk. When you let go, Wren types it where your cursor is.
         Double-tap them for hands-free.
       </p>
-      <p className="empty__note">Your dictations show up here for 3 days. Click one to copy it again.</p>
+      <p className="empty__note">Your dictations show up here for {kept}. Click one to copy it again.</p>
     </div>
   );
 }
 
-export default function Home({ typingWpm = 52 }: { typingWpm?: number }) {
+/** `typingWpm` is the user's setting; until it loads, the default from the shared constants is used. */
+export default function Home({ typingWpm: typingWpmSetting }: { typingWpm?: number }) {
+  const constants = useConstants();
+  const typingWpm = typingWpmSetting ?? constants.typingWpmDefault;
+  const kept = retentionLabel(constants.retentionHours);
   const [stats, setStats] = useState<Stats | null>(null);
   const [rows, setRows] = useState<TranscriptionRow[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -110,13 +113,12 @@ export default function Home({ typingWpm = 52 }: { typingWpm?: number }) {
 
   useEffect(() => {
     void load();
-    let unlisten: (() => void) | undefined;
-    void onHistoryChanged(() => void load()).then((u) => (unlisten = u));
+    const unlisten = subscribe(onHistoryChanged(() => void load()));
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
     const tick = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => {
-      unlisten?.();
+      unlisten();
       window.removeEventListener("focus", onFocus);
       window.clearInterval(tick);
     };
@@ -125,13 +127,13 @@ export default function Home({ typingWpm = 52 }: { typingWpm?: number }) {
   const groups = useMemo(() => {
     const out: Array<{ label: string; rows: TranscriptionRow[] }> = [];
     for (const r of rows ?? []) {
-      const label = dayLabel(r.createdAtUtc);
+      const label = dayLabel(r.createdAtUtc, new Date(now));
       const g = out[out.length - 1];
       if (g && g.label === label) g.rows.push(r);
       else out.push({ label, rows: [r] });
     }
     return out;
-  }, [rows]);
+  }, [rows, now]);
 
   const onCopy = useCallback(
     async (row: TranscriptionRow) => {
@@ -148,8 +150,9 @@ export default function Home({ typingWpm = 52 }: { typingWpm?: number }) {
         await historyDelete(row.id);
         setRows((rs) => (rs ?? []).filter((r) => r.id !== row.id));
         toast.show("Deleted");
-      } catch {
+      } catch (err) {
         toast.show("Couldn't delete that one.", { tone: "danger" });
+        throw err;
       }
     },
     [toast],
@@ -175,17 +178,13 @@ export default function Home({ typingWpm = 52 }: { typingWpm?: number }) {
       {stats && <DayStrip days={stats.daily} />}
 
       <section className="recent" aria-label="Recent dictations">
-        <div className="section-head">
-          <h2 className="section-head__title">Recent</h2>
-          {rows && rows.length > 0 && (
-            <span className="section-head__note">
-              {formatNumber(rows.length)} in the last 3 days · click one to copy it
-            </span>
-          )}
-        </div>
+        <SectionHeader
+          title="Recent"
+          note={rows && rows.length > 0 ? `${formatNumber(rows.length)} in the last ${kept} · click one to copy it` : undefined}
+        />
 
         {rows === null ? null : rows.length === 0 ? (
-          <EmptyRecent />
+          <EmptyRecent kept={kept} />
         ) : (
           groups.map((g) => (
             <div className="day" key={g.label}>

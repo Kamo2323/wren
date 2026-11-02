@@ -62,7 +62,8 @@ export function LevelBars({ mode, reducedMotion }: Props) {
     const c = 2 * zeta * Math.sqrt(k);
 
     const envAt = (t: number) => {
-      // newest first; find the first sample at or before t, interpolate with the next newer one
+      // hist is oldest first: scan back from the newest to the last sample at or before t, then
+      // interpolate towards the next newer sample
       for (let j = hist.length - 1; j >= 0; j--) {
         if (hist[j].t <= t) {
           const a = hist[j];

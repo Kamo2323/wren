@@ -35,7 +35,15 @@ const mock = {
   nextId: 100,
   settings: {
     version: 1,
-    engine: { model: "large-v3-turbo", computeType: "int8_float16", beamSize: 1, cpuFallbackModel: "small.en" },
+    engine: {
+      model: "large-v3-turbo",
+      computeType: "int8_float16",
+      beamSize: 1,
+      cpuFallbackModel: "small.en",
+      language: "en",
+      vadFilter: true,
+      conditionOnPreviousText: false,
+    },
     micDevice: null,
     alwaysOpenMic: false,
     typingWpm: 52,
@@ -51,10 +59,25 @@ const later = <T,>(value: T, ms = 60) => new Promise<T>((r) => setTimeout(() => 
 
 // ---------- Task 1: app + settings ----------
 
+/** Defaults matching src-tauri/src/constants.rs; used before `get_constants` answers and in mock mode. */
+export const DEFAULT_CONSTANTS: UiConstants = {
+  retentionHours: 72,
+  typingWpmDefault: 52,
+  popupWindowW: 360,
+  popupWindowH: 120,
+  recordingWarnMs: 540_000,
+  maxRecordingMs: 600_000,
+  popupPastedMs: 400,
+  popupStillWorkingAfterMs: 1500,
+  popupNothingMs: 1500,
+  popupNoSoundMs: 2500,
+  popupNotPastedMs: 4000,
+  popupLearnedMs: 6000,
+  popupErrorMs: 5000,
+};
+
 export const getConstants = (): Promise<UiConstants> =>
-  inTauri
-    ? call("get_constants")
-    : later({ retentionHours: 72, typingWpmDefault: 52, popupWindowW: 360, popupWindowH: 120, recordingWarnMs: 540000, maxRecordingMs: 600000 });
+  inTauri ? call<UiConstants>("get_constants").then((c) => ({ ...DEFAULT_CONSTANTS, ...c })) : later({ ...DEFAULT_CONSTANTS });
 
 export const appVersion = (): Promise<string> => (inTauri ? call("app_version") : later("0.1.0"));
 export const getSettings = (): Promise<Settings> => (inTauri ? call("get_settings") : later(structuredClone(mock.settings)));
@@ -106,7 +129,7 @@ export const historyFixWord = (id: string, from: string, to: string): Promise<Fi
     createdAt: new Date().toISOString(),
   };
   mock.dictionary.push(entry);
-  return later([entry, null] as FixWordResult);
+  return later({ replacement: entry, term: null });
 };
 
 export const dictionaryList = (): Promise<DictionaryEntry[]> => (inTauri ? call("dictionary_list") : later([...mock.dictionary]));
@@ -203,6 +226,25 @@ async function on<T>(event: string, handler: (payload: T) => void): Promise<Unli
   if (!inTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
   return listen<T>(event, (e) => handler(e.payload));
+}
+
+/**
+ * Subscribe from a React effect: returns a synchronous cleanup that also unsubscribes when `listen`
+ * resolves after the component has already gone (no leaked listeners).
+ */
+export function subscribe(start: Promise<Unlisten> | Array<Promise<Unlisten>>): Unlisten {
+  let cancelled = false;
+  const offs: Unlisten[] = [];
+  for (const p of Array.isArray(start) ? start : [start]) {
+    void p.then((u) => {
+      if (cancelled) u();
+      else offs.push(u);
+    });
+  }
+  return () => {
+    cancelled = true;
+    offs.splice(0).forEach((u) => u());
+  };
 }
 
 export const onPopupState = (h: (s: PopupState) => void) => on<PopupState>("popup://state", h);

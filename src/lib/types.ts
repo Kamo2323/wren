@@ -13,7 +13,7 @@ export type PopupState =
   | { kind: "notPasted"; text: string }
   | { kind: "learned"; from: string; to: string; entryId: number }
   | { kind: "error"; message: string }
-  | { kind: "capWarning"; remainingMs: number };
+  | { kind: "capWarning"; remainingMs: number; mode: "hold" | "handsFree" };
 
 export type PopupKind = PopupState["kind"];
 
@@ -24,6 +24,13 @@ export interface UiConstants {
   popupWindowH: number;
   recordingWarnMs: number;
   maxRecordingMs: number;
+  popupPastedMs: number;
+  popupStillWorkingAfterMs: number;
+  popupNothingMs: number;
+  popupNoSoundMs: number;
+  popupNotPastedMs: number;
+  popupLearnedMs: number;
+  popupErrorMs: number;
 }
 
 export interface EngineSettings {
@@ -31,6 +38,9 @@ export interface EngineSettings {
   computeType: string;
   beamSize: number;
   cpuFallbackModel: string;
+  language: string;
+  vadFilter: boolean;
+  conditionOnPreviousText: boolean;
 }
 
 export interface AiCleanupSettings {
@@ -104,7 +114,10 @@ export interface DictionaryEntry {
 }
 
 /** Result of `history_fix_word`: the replacement it created and, maybe, a new dictionary term. */
-export type FixWordResult = [DictionaryEntry, DictionaryEntry | null];
+export interface FixWordResult {
+  replacement: DictionaryEntry;
+  term: DictionaryEntry | null;
+}
 
 /** Normalised engine status for the UI (see `normaliseEngineStatus` in api.ts). */
 export type EngineStatus =

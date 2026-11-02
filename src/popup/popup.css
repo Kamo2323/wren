@@ -1,5 +1,5 @@
 /* The recording popup. The page background stays transparent; only the pill (and the hands-free
- * hint above it) is drawn. Sizes: pill 38 px tall, 116 px listening, ~142 px hands-free. */
+ * hint above it) is drawn. Sizes: pill 38 px tall, 116 px listening, ~148 px hands-free (timer + ×). */
 html,
 body,
 #popup-root {

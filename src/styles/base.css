@@ -18,7 +18,7 @@ body {
   font-family: var(--font-sans);
   font-size: var(--text-body);
   line-height: 1.5;
-  font-feature-settings: "cv11", "ss01"; /* Inter: single-storey a off, open digits */
+  font-feature-settings: "ss01"; /* Inter stylistic set 1: open digits (6, 9 and 4 read better at stat sizes) */
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   /* A desktop app, not a web page: no stray text selection while clicking cards. */

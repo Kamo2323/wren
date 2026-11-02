@@ -150,6 +150,7 @@ if (!only || only === "popup") {
     ["listening-cpu", "state=listening&cpu=1", 1500],
     ["handsfree", "state=handsfree", 1500],
     ["cap-warning", "state=capWarning", 1500],
+    ["cap-warning-handsfree", "state=capWarning&hf=1", 1500],
     ["warming", "state=warming", 900],
     ["transcribing", "state=transcribing", 900],
     ["transcribing-still-working", "state=transcribing&slow=1", 900],
@@ -186,6 +187,41 @@ if (!only || only === "popup") {
   await wait(450);
   await shoot(page, "popup-not-pasted-copied", { omitBackground: true });
   cells.push("not-pasted-copied");
+
+  // the bars' animation must stop once the popup has hidden
+  {
+    const rctx = await browser.newContext({ viewport: { width: 360, height: 120 } });
+    const p = await rctx.newPage();
+    await p.addInitScript(() => {
+      window.__raf = 0;
+      const orig = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (cb) => {
+        window.__raf++;
+        return orig(cb);
+      };
+    });
+    await p.goto(`${base}/popup.html?state=listening`);
+    await wait(1000);
+    const during = await p.evaluate(async () => {
+      const a = window.__raf;
+      await new Promise((r) => setTimeout(r, 1000));
+      return window.__raf - a;
+    });
+    await p.evaluate(() => window.__wrenPopup.apply({ kind: "hidden" }));
+    await wait(600); // exit animation + unmount
+    const after = await p.evaluate(async () => {
+      const a = window.__raf;
+      await new Promise((r) => setTimeout(r, 1000));
+      const anims = document.getAnimations().filter((x) => x.playState === "running");
+      return { raf: window.__raf - a, cssAnimations: anims.length, names: anims.map((x) => `${x.animationName ?? x.transitionProperty} on ${x.effect?.target?.className}`) };
+    });
+    console.log(`  rAF check: ${during} calls/s while listening; after hide ${after.raf} calls/s, ${after.cssAnimations} CSS animations running ${after.names.join(", ")}`);
+    if (after.raf > 2 || after.cssAnimations > 0) {
+      console.error("  rAF check FAILED: animation still running after the popup hid");
+      process.exitCode = 1;
+    }
+    await rctx.close();
+  }
 
   // hands-free hint (first 3.5 s)
   await page.goto(`${base}/popup.html?state=handsfree`);

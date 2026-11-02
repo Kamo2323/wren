@@ -1,28 +1,31 @@
 // The recording popup. Lives in a 360 × 120 transparent, click-through, never-focused window; the
 // pill sits bottom-centre and springs between sizes inside it. All states from spec §11.
 //
-// Timing contract with the session (Task 8): transient states dismiss themselves after DISMISS_MS
-// (pill shrinks and fades over EXIT_MS). The session can hide the window at DISMISS_MS + EXIT_MS, or
-// send { kind: "hidden" } at any time.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { PopupKind, PopupState } from "../lib/types";
-import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupOpenMain, popupUndoLearned } from "../lib/api";
+// Timing contract with the session (Task 8): transient states dismiss themselves after the popup*Ms
+// durations from `get_constants` (pill shrinks and fades over EXIT_MS). The session can hide the window
+// at duration + EXIT_MS, or send { kind: "hidden" } at any time. Timestamps in PopupState are epoch ms.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import type { PopupKind, PopupState, UiConstants } from "../lib/types";
+import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupOpenMain, popupUndoLearned, subscribe } from "../lib/api";
+import { useConstants } from "../lib/useConstants";
 import { formatTimer } from "../lib/format";
 import { POPUP_SPRING, springEasing, supportsLinearEasing } from "../lib/spring";
 import { Check, CircleAlert, Copy, MicOff, Sparkles, Undo2, WrenMark, X } from "../components/Icon";
 import { LevelBars, levelBus, type BarsMode } from "./LevelBars";
 import { DEMO_SEQUENCE, samplePopupState, startMockLevels } from "./mockPopup";
 
-export const DISMISS_MS: Partial<Record<PopupKind, number>> = {
-  pasted: 400,
-  nothing: 1500,
-  noSound: 2500,
-  notPasted: 4000,
-  learned: 6000,
-  error: 5000,
-};
+/** How long each self-dismissing state stays, from the shared constants. */
+export function dismissDurations(c: UiConstants): Partial<Record<PopupKind, number>> {
+  return {
+    pasted: c.popupPastedMs,
+    nothing: c.popupNothingMs,
+    noSound: c.popupNoSoundMs,
+    notPasted: c.popupNotPastedMs,
+    learned: c.popupLearnedMs,
+    error: c.popupErrorMs,
+  };
+}
 export const EXIT_MS = 200;
-const STILL_WORKING_AFTER_MS = 1500;
 const HINT_MS = 3500;
 const AFTER_ACTION_MS = 1100; // "Copied" / "Undone" stay this long
 
@@ -34,10 +37,8 @@ type Local = null | "copied" | "undone";
 
 const REC_KINDS: PopupKind[] = ["listening", "handsfree", "capWarning", "transcribing"];
 
-/** startedAtMs / sinceMs may be epoch ms or "ms elapsed" — accept both. */
-function toEpoch(v: number, receivedAt: number): number {
-  return v > 1e12 ? v : receivedAt - v;
-}
+/** Keep clicks from moving DOM focus: the popup window must never take focus. */
+const noFocus = (e: MouseEvent) => e.preventDefault();
 
 function useReducedMotion(): boolean {
   const q = "(prefers-reduced-motion: reduce)";
@@ -58,6 +59,8 @@ export default function Popup() {
   const params = new URLSearchParams(location.search);
   const mockKind = !inTauri ? (params.get("state") as PopupKind | "demo" | null) : null;
   const holdMock = params.get("hold") === "1";
+  const constants = useConstants();
+  const DISMISS_MS = useMemo(() => dismissDurations(constants), [constants]);
 
   const [state, setState] = useState<PopupState>({ kind: "hidden" });
   const [receivedAt, setReceivedAt] = useState(() => Date.now());
@@ -98,17 +101,19 @@ export default function Popup() {
   // ---- wire up: real events, or the mock preview ----
   useEffect(() => {
     if (inTauri) {
-      const offs: Array<() => void> = [];
-      void onPopupState(apply).then((u) => offs.push(u));
-      void onPopupLevel((v) => {
-        levelBus.push(v);
-        if (!heardRef.current && v > 0.02) {
-          heardRef.current = true;
-          setHeard(true);
-        }
-      }).then((u) => offs.push(u));
-      return () => offs.forEach((u) => u());
+      return subscribe([
+        onPopupState(apply),
+        onPopupLevel((v) => {
+          levelBus.push(v);
+          if (!heardRef.current && v > 0.02) {
+            heardRef.current = true;
+            setHeard(true);
+          }
+        }),
+      ]);
     }
+    // Browser preview only: lets scripts/screens.mjs drive state changes (e.g. the rAF check).
+    (window as unknown as { __wrenPopup?: unknown }).__wrenPopup = { apply };
     if (!mockKind) return;
     const silent = params.get("silent") === "1";
     const stopLevels = silent ? () => {} : startMockLevels();
@@ -116,7 +121,7 @@ export default function Popup() {
       heardRef.current = true;
       setHeard(true);
     }
-    const opts = { cpu: params.get("cpu") === "1", slow: params.get("slow") === "1" };
+    const opts = { cpu: params.get("cpu") === "1", slow: params.get("slow") === "1", handsFree: params.get("hf") === "1" };
     if (mockKind !== "demo") {
       const id = window.setTimeout(() => {
         apply(samplePopupState(mockKind, opts));
@@ -162,7 +167,15 @@ export default function Popup() {
     }
     return clearTimers;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+  }, [state, DISMISS_MS]);
+
+  // ---- once the exit animation is over, drop the content so the bars' rAF loop and the CSS
+  // animations (shimmer, breathing) stop while the popup is hidden ----
+  useEffect(() => {
+    if (shown) return;
+    const id = window.setTimeout(() => setDisplay({ kind: "hidden" }), EXIT_MS + 40);
+    return () => window.clearTimeout(id);
+  }, [shown]);
 
   // ---- clock for timers / "Still working…" ----
   const ticking = display.kind === "handsfree" || display.kind === "capWarning" || display.kind === "transcribing";
@@ -179,7 +192,8 @@ export default function Popup() {
     try {
       await popupCopyText(display.text);
     } catch {
-      /* the session reports failures itself */
+      apply({ kind: "error", message: "Couldn't copy it. Open Wren to copy." });
+      return;
     }
     clearTimers();
     setLocal("copied");
@@ -190,7 +204,8 @@ export default function Popup() {
     try {
       await popupUndoLearned(display.entryId);
     } catch {
-      /* ignore */
+      apply({ kind: "error", message: "Couldn't undo. Open Wren to change it." });
+      return;
     }
     clearTimers();
     setLocal("undone");
@@ -210,26 +225,26 @@ export default function Popup() {
 
   if (isRec) {
     group = "rec";
-    const handsfree = k === "handsfree";
     const cap = k === "capWarning";
+    // a cap warning during hands-free keeps the hands-free look and its ×
+    const handsfree = k === "handsfree" || (cap && display.mode === "handsFree");
     const transcribing = k === "transcribing";
-    const since = transcribing ? toEpoch(display.sinceMs, receivedAt) : 0;
-    const slow = transcribing && now - since >= STILL_WORKING_AFTER_MS;
+    const slow = transcribing && now - display.sinceMs >= constants.popupStillWorkingAfterMs;
     const cpu = (k === "listening" || k === "handsfree") && display.cpu;
     const barsMode: BarsMode = transcribing ? "frozen" : heard ? "live" : "waiting";
     tone = handsfree ? "handsfree" : cap ? "warn" : "default";
 
     let lead: ReactNode = <WrenMark size={17} className="pill__mark" />;
-    if (handsfree) {
-      lead = (
-        <span className="pill__time num" key="t">
-          {formatTimer(now - toEpoch(display.startedAtMs, receivedAt))}
-        </span>
-      );
-    } else if (cap) {
+    if (cap) {
       lead = (
         <span className="pill__time num" key="c">
           {formatTimer(display.remainingMs - (now - receivedAt))} left
+        </span>
+      );
+    } else if (k === "handsfree") {
+      lead = (
+        <span className="pill__time num" key="t">
+          {formatTimer(now - display.startedAtMs)}
         </span>
       );
     }
@@ -246,7 +261,7 @@ export default function Popup() {
         )}
         {cpu && <span className="cpu-badge">CPU</span>}
         {handsfree && (
-          <button type="button" className="pill__close" aria-label="Discard this dictation" title="Discard" onClick={discard} tabIndex={-1}>
+          <button type="button" className="pill__close" aria-label="Discard this dictation" title="Discard" onClick={discard} onMouseDown={noFocus} tabIndex={-1}>
             <X size={14} strokeWidth={2.4} />
           </button>
         )}
@@ -316,7 +331,7 @@ export default function Popup() {
           <strong>{display.to}</strong>
         </span>
         <span className="pill__sep" />
-        <button type="button" className="pill__action" onClick={undoLearned} tabIndex={-1}>
+        <button type="button" className="pill__action" onClick={undoLearned} onMouseDown={noFocus} tabIndex={-1}>
           Undo
         </button>
       </>
@@ -372,6 +387,7 @@ export default function Popup() {
         style={pillStyle}
         data-kind={k}
         onClick={clickable}
+        onMouseDown={noFocus}
         role={clickable ? "button" : undefined}
         aria-live="polite"
       >

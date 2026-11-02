@@ -1,18 +1,5 @@
-import type { HTMLAttributes, ReactNode } from "react";
-
-/** A white surface with the soft Wren border. `tone="tile"` is the filled variant used for stats. */
-export function Card({
-  tone = "plain",
-  className = "",
-  children,
-  ...rest
-}: HTMLAttributes<HTMLDivElement> & { tone?: "plain" | "tile"; children?: ReactNode }) {
-  return (
-    <div className={`card card--${tone} ${className}`} {...rest}>
-      {children}
-    </div>
-  );
-}
+// Section building blocks shared by the pages.
+import type { ReactNode } from "react";
 
 /** Page-section heading: title on the left, optional note or actions on the right. */
 export function SectionHeader({ title, note, actions }: { title: string; note?: ReactNode; actions?: ReactNode }) {

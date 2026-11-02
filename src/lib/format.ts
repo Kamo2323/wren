@@ -1,19 +1,44 @@
 // Small display helpers. British English, 24-hour clock.
 
-/** "9 h 42 min", "18 min", "40 s", "0 min". */
-export function formatSaved(ms: number): { value: string; unit: string } {
+export interface Part {
+  value: string;
+  unit: string;
+}
+
+/** Time saved as figure/unit pairs: [9 "h", 42 "min"], [18 "min"], [40 "s"], [0 "min"], [2 "hours"]. */
+export function formatSaved(ms: number): Part[] {
   const totalMin = Math.floor(ms / 60_000);
-  if (ms <= 0) return { value: "0", unit: "min" };
-  if (totalMin < 1) return { value: String(Math.round(ms / 1000)), unit: "s" };
-  if (totalMin < 60) return { value: String(totalMin), unit: "min" };
+  if (ms <= 0) return [{ value: "0", unit: "min" }];
+  if (totalMin < 1) return [{ value: String(Math.round(ms / 1000)), unit: "s" }];
+  if (totalMin < 60) return [{ value: String(totalMin), unit: "min" }];
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return { value: m ? `${h} h ${m}` : String(h), unit: m ? "min" : h === 1 ? "hour" : "hours" };
+  if (!m) return [{ value: String(h), unit: h === 1 ? "hour" : "hours" }];
+  return [
+    { value: String(h), unit: "h" },
+    { value: String(m), unit: "min" },
+  ];
+}
+
+/** The same as one line of text: "9 h 42 min". */
+export function formatSavedText(ms: number): string {
+  return formatSaved(ms)
+    .map((p) => `${p.value} ${p.unit}`)
+    .join(" ");
 }
 
 export function formatClock(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** 72 → "3 days", 36 → "36 hours", 24 → "1 day". */
+export function retentionLabel(hours: number): string {
+  if (hours > 0 && hours % 24 === 0) {
+    const d = hours / 24;
+    return d === 1 ? "1 day" : `${d} days`;
+  }
+  return hours === 1 ? "1 hour" : `${hours} hours`;
 }
 
 /** "Today", "Yesterday", or "Mon 2 Nov". */
@@ -31,7 +56,7 @@ export function whenLabel(iso: string, now = Date.now()): string {
   const diff = now - new Date(iso).getTime();
   if (diff < 60_000) return "Just now";
   if (diff < 3600_000) return `${Math.floor(diff / 60_000)} min ago`;
-  const day = dayLabel(iso);
+  const day = dayLabel(iso, new Date(now));
   if (day === "Today") return formatClock(iso);
   return `${day}, ${formatClock(iso)}`;
 }
