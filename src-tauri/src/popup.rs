@@ -3,7 +3,13 @@
 //! The popup must NEVER take keyboard focus: if it did, Ctrl+V would land in Wren instead of the
 //! app being dictated into. So it is created once at startup (hidden), made non-activating with
 //! Win32 extended styles, made click-through, and shown only with `SW_SHOWNOACTIVATE`.
-//! Never call Tauri's `show()` or `set_focus()` on it.
+//!
+//! **After `create`, never call a Tauri window setter on the popup** (`show`, `hide`,
+//! `set_focus`, `set_ignore_cursor_events`, `set_position`…). Tauri/tao keep their own idea of the
+//! window's flags; any setter makes tao rewrite both style words from that idea, which hides the
+//! popup (tao never saw our Win32 show) and puts `WS_EX_APPWINDOW` back (Alt+Tab, taskbar).
+//! Everything here therefore goes straight through Win32, asynchronously, so it is safe to call
+//! from the session thread without waiting on the UI thread.
 
 use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_WINDOW_H, POPUP_WINDOW_W};
 use serde::Serialize;
@@ -12,9 +18,10 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE,
-    HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST,
+    GetForegroundWindow, GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos, ShowWindowAsync,
+    GWL_EXSTYLE, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
 
 pub const POPUP_LABEL: &str = "popup";
@@ -23,7 +30,7 @@ pub const POPUP_STATE_EVENT: &str = "popup://state";
 /// Event carrying mic level (0..1) about 30 times a second while listening.
 pub const POPUP_LEVEL_EVENT: &str = "popup://level";
 
-/// Create the popup window, hidden. Call once from `setup`.
+/// Create the popup window, hidden and click-through. Call once from `setup` (main thread).
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let win = WebviewWindowBuilder::new(app, POPUP_LABEL, WebviewUrl::App("popup.html".into()))
         .title("Wren")
@@ -40,10 +47,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .focusable(false)
         .visible(false)
         .build()?;
-    // Click-through first: Tauri rewrites the extended styles when it changes cursor handling,
-    // so the non-activating styles must be applied after it (and again in `set_clickable`).
+    // The one Tauri setter we allow, once, at creation: it gives the window WS_EX_LAYERED with the
+    // alpha set up for click-through. Our own styles are applied after it, and again on every show.
     let _ = win.set_ignore_cursor_events(true);
-    make_non_activating(&win);
+    if let Some(hwnd) = hwnd_of(&win) {
+        apply_styles(hwnd);
+    }
     Ok(())
 }
 
@@ -52,22 +61,43 @@ fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
     win.hwnd().ok().map(|h| HWND(h.0 as *mut core::ffi::c_void))
 }
 
-fn make_non_activating(win: &WebviewWindow) {
-    let Some(hwnd) = hwnd_of(win) else { return };
+fn popup_hwnd(app: &AppHandle) -> Option<HWND> {
+    app.get_webview_window(POPUP_LABEL).as_ref().and_then(hwnd_of)
+}
+
+/// Non-activating tool window, never in Alt+Tab or the taskbar. Idempotent.
+fn apply_styles(hwnd: HWND) {
     unsafe {
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0) as isize;
-        // APPWINDOW would put it in Alt+Tab; TOOLWINDOW keeps it out.
+        let wanted = (WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize;
         let unwanted = WS_EX_APPWINDOW.0 as isize;
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | wanted) & !unwanted);
+        let new = (ex | wanted) & !unwanted;
+        if new != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
+            refresh_frame(hwnd);
+        }
+    }
+}
+
+fn refresh_frame(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS,
+        );
     }
 }
 
 /// Show the popup centred above the bottom of the monitor that holds the foreground window,
-/// without activating it. Safe to call repeatedly.
+/// without activating it. Safe to call repeatedly and from any thread.
 pub fn show(app: &AppHandle) {
-    let Some(win) = app.get_webview_window(POPUP_LABEL) else { return };
-    let Some(hwnd) = hwnd_of(&win) else { return };
+    let Some(hwnd) = popup_hwnd(app) else { return };
+    apply_styles(hwnd);
     unsafe {
         let fg = GetForegroundWindow();
         let anchor = if fg.0.is_null() { hwnd } else { fg };
@@ -85,25 +115,39 @@ pub fn show(app: &AppHandle) {
             let work = info.rcWork;
             let x = work.left + ((work.right - work.left) - w) / 2;
             let y = work.bottom - h - (POPUP_BOTTOM_MARGIN * scale).round() as i32;
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_ASYNCWINDOWPOS;
+            // Moving onto a monitor with a different DPI makes the window resize itself to Windows'
+            // suggested rect; a second identical call (no DPI change any more) puts it back.
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, flags);
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, flags);
         }
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
     }
 }
 
-/// Hide the popup (hiding never steals focus, so Tauri's hide is fine).
+/// Hide the popup. Any thread.
 pub fn hide(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window(POPUP_LABEL) {
-        let _ = win.hide();
+    if let Some(hwnd) = popup_hwnd(app) {
+        unsafe {
+            let _ = ShowWindowAsync(hwnd, SW_HIDE);
+        }
     }
 }
 
 /// Let the popup receive clicks (for "click to copy", "Undo", "×") or pass them through.
+/// Toggles only `WS_EX_TRANSPARENT`; `WS_EX_LAYERED` from creation stays. Any thread.
 pub fn set_clickable(app: &AppHandle, clickable: bool) {
-    if let Some(win) = app.get_webview_window(POPUP_LABEL) {
-        let _ = win.set_ignore_cursor_events(!clickable);
-        make_non_activating(&win);
+    let Some(hwnd) = popup_hwnd(app) else { return };
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let transparent = WS_EX_TRANSPARENT.0 as isize;
+        let new = if clickable { ex & !transparent } else { ex | transparent };
+        if new != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new);
+            refresh_frame(hwnd);
+        }
     }
+    apply_styles(hwnd);
 }
 
 /// True if `hwnd` is one of Wren's own windows (used to refuse pasting into ourselves).
@@ -122,4 +166,80 @@ pub fn emit_state<S: Serialize + Clone>(app: &AppHandle, state: &S) {
 /// Send a mic level (0..1) to the popup front end.
 pub fn emit_level(app: &AppHandle, level: f32) {
     let _ = app.emit_to(POPUP_LABEL, POPUP_LEVEL_EVENT, level);
+}
+
+/// Live check of the rules above, run from the calling thread (use a worker thread). Shows, toggles
+/// and hides the popup and checks visibility, styles and that the foreground window never changed.
+/// Returns the list of failures (empty = pass). Used by `--popup-check` and the self-test.
+pub fn self_check(app: &AppHandle) -> Vec<String> {
+    use std::time::Duration;
+    let mut failures = Vec::new();
+    let Some(hwnd) = popup_hwnd(app) else {
+        return vec!["popup window not found".into()];
+    };
+    let settle = || std::thread::sleep(Duration::from_millis(300));
+    let ex = || unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let visible = || unsafe { IsWindowVisible(hwnd).as_bool() };
+    let check_styles = |stage: &str, failures: &mut Vec<String>| {
+        let e = ex();
+        if e & WS_EX_NOACTIVATE.0 as isize == 0 {
+            failures.push(format!("{stage}: WS_EX_NOACTIVATE missing (0x{e:X})"));
+        }
+        if e & WS_EX_TOOLWINDOW.0 as isize == 0 {
+            failures.push(format!("{stage}: WS_EX_TOOLWINDOW missing (0x{e:X})"));
+        }
+        if e & WS_EX_APPWINDOW.0 as isize != 0 {
+            failures.push(format!("{stage}: WS_EX_APPWINDOW present (0x{e:X})"));
+        }
+    };
+    let fg_before = unsafe { GetForegroundWindow() };
+
+    show(app);
+    settle();
+    if !visible() {
+        failures.push("after show: not visible".into());
+    }
+    check_styles("after show", &mut failures);
+    if ex() & WS_EX_TRANSPARENT.0 as isize == 0 {
+        failures.push("after show: not click-through".into());
+    }
+
+    set_clickable(app, true);
+    settle();
+    if !visible() {
+        failures.push("after set_clickable(true): hidden".into());
+    }
+    if ex() & WS_EX_TRANSPARENT.0 as isize != 0 {
+        failures.push("after set_clickable(true): still click-through".into());
+    }
+    check_styles("after set_clickable(true)", &mut failures);
+
+    set_clickable(app, false);
+    settle();
+    if ex() & WS_EX_TRANSPARENT.0 as isize == 0 {
+        failures.push("after set_clickable(false): not click-through".into());
+    }
+
+    hide(app);
+    settle();
+    if visible() {
+        failures.push("after hide: still visible".into());
+    }
+
+    show(app);
+    settle();
+    if !visible() {
+        failures.push("after second show: not visible".into());
+    }
+    hide(app);
+    settle();
+    if visible() {
+        failures.push("after second hide: still visible".into());
+    }
+
+    let fg_after = unsafe { GetForegroundWindow() };
+    if fg_after != fg_before {
+        failures.push("foreground window changed during the check".into());
+    }
+    failures
 }

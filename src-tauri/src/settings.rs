@@ -14,6 +14,10 @@ pub struct EngineSettings {
     /// CTranslate2 compute type on the GPU.
     pub compute_type: String,
     pub beam_size: u32,
+    /// Spoken language passed to the model (forced; skips language detection).
+    pub language: String,
+    pub vad_filter: bool,
+    pub condition_on_previous_text: bool,
     /// Model used if CUDA is unavailable (runs on CPU, int8). Always announced to the user.
     pub cpu_fallback_model: String,
 }
@@ -24,6 +28,9 @@ impl Default for EngineSettings {
             model: "large-v3-turbo".into(),
             compute_type: "int8_float16".into(),
             beam_size: 1,
+            language: "en".into(),
+            vad_filter: true,
+            condition_on_previous_text: false,
             cpu_fallback_model: "small.en".into(),
         }
     }
@@ -98,7 +105,14 @@ impl Settings {
                     Self::default()
                 }
             },
-            Err(_) => Self::default(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(err) => {
+                // Unreadable but present (permissions, bad encoding): keep a copy so a later save
+                // cannot overwrite the only original.
+                tracing::warn!(%err, "settings file unreadable; using defaults");
+                let _ = std::fs::copy(path, path.with_extension("json.bad"));
+                Self::default()
+            }
         }
     }
 
@@ -109,7 +123,12 @@ impl Settings {
         }
         let tmp = path.with_extension("json.tmp");
         let text = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(&tmp, text)?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?; // data on disk before the rename, so a power cut can't leave an empty file
+        }
         std::fs::rename(&tmp, path)
     }
 }
@@ -117,6 +136,14 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A per-test folder under the system temp dir (removed again by `Cleanup`).
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("wren-settings-{name}-{}", std::process::id()));
@@ -128,6 +155,7 @@ mod tests {
     #[test]
     fn round_trips() {
         let dir = temp_dir("rt");
+        let _cleanup = Cleanup(dir.clone());
         let path = dir.join("settings.json");
         let mut s = Settings::default();
         s.typing_wpm = 55;
@@ -139,12 +167,14 @@ mod tests {
     #[test]
     fn missing_file_gives_defaults() {
         let dir = temp_dir("missing");
+        let _cleanup = Cleanup(dir.clone());
         assert_eq!(Settings::load(&dir.join("nope.json")), Settings::default());
     }
 
     #[test]
     fn partial_file_fills_defaults() {
         let dir = temp_dir("partial");
+        let _cleanup = Cleanup(dir.clone());
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"typingWpm": 70}"#).unwrap();
         let s = Settings::load(&path);
@@ -156,6 +186,7 @@ mod tests {
     #[test]
     fn corrupt_file_is_set_aside() {
         let dir = temp_dir("corrupt");
+        let _cleanup = Cleanup(dir.clone());
         let path = dir.join("settings.json");
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());

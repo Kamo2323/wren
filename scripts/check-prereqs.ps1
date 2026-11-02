@@ -1,4 +1,4 @@
-# Read-only check that this PC can build and run Wren. Changes nothing.
+# Read-only check that this PC can build and run Wren. Changes nothing except writing its report.
 # Exit code 0 = all required items present. Writes a report to docs\prereqs-report.txt.
 $ErrorActionPreference = 'Continue'
 $report = @()

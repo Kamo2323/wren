@@ -69,6 +69,20 @@ pub const LEVEL_EVENTS_HZ: u32 = 30;
 pub const AI_CLEANUP_TIMEOUT_MS: u64 = 2_500;
 pub const AI_CLEANUP_MAX_LENGTH_CHANGE: f32 = 0.30;
 
+/// Hotkey watchdog: reinstall the hook if Windows saw input but the hook saw nothing for this long.
+pub const HOOK_WATCHDOG_MS: u64 = 5_000;
+/// Correction watcher: first read this long after the paste; one retry this long later if empty.
+pub const WATCH_FIRST_READ_MS: u64 = 250;
+pub const WATCH_RETRY_MS: u64 = 300;
+
+/// How long each transient popup state stays up (spec §11).
+pub const POPUP_PASTED_MS: u64 = 400;
+pub const POPUP_STILL_WORKING_AFTER_MS: u64 = 1_500;
+pub const POPUP_NOTHING_MS: u64 = 1_500;
+pub const POPUP_NOT_PASTED_MS: u64 = 4_000;
+pub const POPUP_LEARNED_MS: u64 = 6_000;
+pub const POPUP_ERROR_MS: u64 = 5_000;
+
 /// Popup window size in logical pixels (the window is larger than the visible pill so it can animate).
 pub const POPUP_WINDOW_W: f64 = 360.0;
 pub const POPUP_WINDOW_H: f64 = 120.0;
@@ -85,6 +99,12 @@ pub struct UiConstants {
     pub popup_window_h: f64,
     pub recording_warn_ms: u64,
     pub max_recording_ms: u64,
+    pub popup_pasted_ms: u64,
+    pub popup_still_working_after_ms: u64,
+    pub popup_nothing_ms: u64,
+    pub popup_not_pasted_ms: u64,
+    pub popup_learned_ms: u64,
+    pub popup_error_ms: u64,
 }
 
 pub fn ui_constants() -> UiConstants {
@@ -95,5 +115,11 @@ pub fn ui_constants() -> UiConstants {
         popup_window_h: POPUP_WINDOW_H,
         recording_warn_ms: RECORDING_WARN_MS,
         max_recording_ms: MAX_RECORDING_MS,
+        popup_pasted_ms: POPUP_PASTED_MS,
+        popup_still_working_after_ms: POPUP_STILL_WORKING_AFTER_MS,
+        popup_nothing_ms: POPUP_NOTHING_MS,
+        popup_not_pasted_ms: POPUP_NOT_PASTED_MS,
+        popup_learned_ms: POPUP_LEARNED_MS,
+        popup_error_ms: POPUP_ERROR_MS,
     }
 }
