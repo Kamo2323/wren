@@ -16,6 +16,7 @@ pub mod session;
 pub mod settings;
 pub mod store;
 pub mod tray;
+pub mod watcher;
 
 use parking_lot::RwLock;
 use paths::Paths;
