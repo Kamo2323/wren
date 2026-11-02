@@ -1014,6 +1014,44 @@ mod desktop_tests {
         assert_eq!(outcome.finish(), Some(Finish::SkippedChangedByOthers));
     }
 
+    /// I-1: the chord keys are re-checked immediately before each Ctrl+V / Ctrl+Shift+V. Held
+    /// (he started the next dictation) → nothing is sent, the text is left on the clipboard.
+    #[test]
+    #[ignore = "uses the real desktop clipboard"]
+    fn keys_held_before_the_send_sends_nothing_and_leaves_the_text() {
+        use crate::paste::{Chord, Outcome, paste_via_clipboard};
+        use std::sync::atomic::AtomicUsize;
+        let _user = UserClipboard::save();
+        put_image_and_text();
+        let sends = AtomicUsize::new(0);
+        let send = |_: Chord| {
+            sends.fetch_add(1, Ordering::SeqCst);
+        };
+        let outcome = paste_via_clipboard("Held keys", &send, &|| true, &|| false);
+        assert_eq!(outcome, Outcome::KeysHeld);
+        assert_eq!(sends.load(Ordering::SeqCst), 0, "a chord was sent while the keys were held");
+        assert_eq!(read_text().as_deref(), Some("Held keys"));
+        assert!(excluded_formats_present());
+    }
+
+    /// I-1, the retry: Ctrl+V went out and was not read; before Ctrl+Shift+V the keys are down
+    /// again → no retry is sent.
+    #[test]
+    #[ignore = "uses the real desktop clipboard"]
+    fn keys_held_before_the_retry_skips_the_retry() {
+        use crate::paste::{Chord, Outcome, paste_via_clipboard};
+        let _user = UserClipboard::save();
+        put_image_and_text();
+        let sent = Mutex::new(Vec::new());
+        let send = |c: Chord| sent.lock().push(c);
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let keys_up = || checks.fetch_add(1, Ordering::SeqCst) == 0;
+        let outcome = paste_via_clipboard("Retry held", &send, &|| true, &keys_up);
+        assert_eq!(outcome, Outcome::KeysHeld);
+        assert_eq!(*sent.lock(), vec![Chord::CtrlV], "the retry was sent while the keys were held");
+        assert_eq!(read_text().as_deref(), Some("Retry held"));
+    }
+
     #[test]
     #[ignore = "uses the real desktop clipboard"]
     fn copy_text_is_plain_and_excluded() {
