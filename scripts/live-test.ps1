@@ -24,11 +24,17 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\live-test.ps1
   powershell -ExecutionPolicy Bypass -File scripts\live-test.ps1 -Holds 3 -Taps 10 -NoBuild
+  powershell -ExecutionPolicy Bypass -File scripts\live-test.ps1 -Task9 -Report $env:TEMP\wren-task9.md
+    (Task 9 only: fix a word after a paste in the textarea and in the composer and check Wren learns
+    it with the "Learned" toast; then dictate with nothing editable focused and check it is copied,
+    not pasted)
 #>
 param(
     [int]$Holds = 10,
     [int]$Taps = 50,
     [switch]$NoBuild,
+    [switch]$Task9,
+    [string]$Report = '',
     [string]$WorkDir = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -76,5 +82,8 @@ $driver = Join-Path $WorkDir 'bin\live_test.exe'
 foreach ($f in @($wren, $driver)) { if (-not (Test-Path $f)) { throw "missing $f (run without -NoBuild)" } }
 
 # The driver finds the fixtures and the test page through the source tree it was built from.
-& $driver --wren $wren --home (Join-Path $WorkDir 'home') --report (Join-Path $repo 'docs\live-test-report.md') --holds $Holds --taps $Taps
+if (-not $Report) { $Report = Join-Path $repo 'docs\live-test-report.md' }
+$extra = @()
+if ($Task9) { $extra += '--task9' }
+& $driver --wren $wren --home (Join-Path $WorkDir 'home') --report $Report --holds $Holds --taps $Taps @extra
 exit $LASTEXITCODE

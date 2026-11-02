@@ -222,3 +222,42 @@ pub const SIDECAR_SHUTDOWN_GRACE_MS: u64 = 2_000;
 pub const SIDECAR_CPU_AFTER_PRE_READY_CRASHES: usize = 2;
 /// How often the supervisor checks the sidecar process.
 pub const SIDECAR_POLL_MS: u64 = 50;
+
+// ---- Correction watcher, pre-paste check, AI clean-up (Task 9; spec §8, §10, ruling 24) ----
+
+/// Watcher: this many UI Automation failures in a row end the watch.
+pub const WATCH_MAX_FAILURES: u32 = 3;
+/// Watcher: this many slow calls (> `WATCH_SLOW_CALL_MS`) switch the watcher off for that app.
+pub const WATCH_MAX_SLOW_CALLS: u32 = 3;
+/// Watcher: a single UI Automation request is abandoned by Windows after this long.
+pub const WATCH_UIA_TIMEOUT_MS: u64 = 1_500;
+/// Watcher: dictations shorter than this (characters) are not watched.
+pub const WATCH_MIN_PASTE_CHARS: usize = 3;
+/// Watcher: a text box longer than this many times the dictation (or `WATCH_MAX_FIELD_CHARS`,
+/// whichever is larger) is not a box worth watching.
+pub const WATCH_MAX_FIELD_FACTOR: usize = 10;
+pub const WATCH_MAX_FIELD_CHARS: usize = 20_000;
+/// "Still resembles" (Willow's measure): the shorter text is at least this fraction of the longer…
+pub const WATCH_SIMILAR_MIN_LEN_RATIO: f64 = 0.25;
+/// …texts up to this many characters compare by normalised Levenshtein similarity…
+pub const WATCH_SIMILAR_SHORT_CHARS: usize = 64;
+pub const WATCH_SIMILAR_MIN_LEVENSHTEIN: f64 = 0.3;
+/// …longer ones by word-bigram (or character-4-gram) Dice coefficient.
+pub const WATCH_SIMILAR_MIN_DICE: f64 = 0.4;
+/// Pre-paste editable check (ruling 24): the whole UI Automation question must answer within this
+/// long, or Wren pastes anyway.
+pub const PREPASTE_CHECK_MAX_MS: u64 = 50;
+
+/// AI clean-up (spec §10): Ollama's local address.
+pub const OLLAMA_HOST: &str = "127.0.0.1:11434";
+/// How long Ollama keeps the clean-up model loaded after its last use (Ollama duration string).
+pub const AI_CLEANUP_KEEP_ALIVE: &str = "5m";
+/// Status checks (is Ollama up, is the model there) give up after this long.
+pub const OLLAMA_STATUS_TIMEOUT_MS: u64 = 1_500;
+/// Loading the model into memory ahead of a dictation may take this long.
+pub const AI_CLEANUP_WARM_TIMEOUT_MS: u64 = 60_000;
+/// Longest reply, in tokens, as a multiple of the input's word count (plus a floor).
+pub const AI_CLEANUP_MAX_TOKENS_FACTOR: usize = 3;
+pub const AI_CLEANUP_MIN_TOKENS: usize = 32;
+/// `ollama pull` of the clean-up model gives up after this long.
+pub const AI_CLEANUP_PULL_TIMEOUT_MS: u64 = 1_800_000;

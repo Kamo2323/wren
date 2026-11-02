@@ -142,7 +142,9 @@ impl PopupState {
 pub fn outcome_for(result: &PasteResult) -> (PasteOutcome, bool) {
     match result {
         PasteResult::Pasted => (PasteOutcome::Pasted, false),
-        PasteResult::FocusChanged | PasteResult::KeysStillHeld | PasteResult::OwnWindow => (PasteOutcome::NotPasted, true),
+        PasteResult::FocusChanged | PasteResult::KeysStillHeld | PasteResult::OwnWindow | PasteResult::NotEditable => {
+            (PasteOutcome::NotPasted, true)
+        }
         // Ctrl+V and Ctrl+Shift+V went out and nobody read: paste left the text on the clipboard.
         PasteResult::Failed(reason) if reason == REASON_NOT_READ => (PasteOutcome::Copied, false),
         PasteResult::Failed(_) => (PasteOutcome::Failed, true),
@@ -286,6 +288,11 @@ pub trait Env: Send + Sync + 'static {
     fn dictation_started(&self) {}
     /// Text was pasted and read by the target (Task 9: start the correction watcher here).
     fn pasted(&self, _dictation: &PastedDictation) {}
+    /// Ruling 24 (Task 9): true only when what has focus in `target` is definitely not editable, so
+    /// the text is copied instead of pasted. Must answer within `PREPASTE_CHECK_MAX_MS`.
+    fn target_not_editable(&self, _target: &ForegroundInfo) -> bool {
+        false
+    }
     /// The optional AI clean-up step (spec §10; Task 9). Only called when `aiCleanup.enabled` is on.
     /// Returns the cleaned text, or None (unreachable, slow, failed). `pipeline::run` checks the result.
     fn ai_cleanup(&self, _tidied: &str) -> Option<String> {
@@ -1109,7 +1116,7 @@ fn finish_job(env: &dyn Env, shared: &Shared, post: &Sender<Msg>, job: Job) {
     }
     if job.intent == Intent::Paste && !late {
         let t = Instant::now();
-        let r = env.paste(&text, &job.target);
+        let r = if env.target_not_editable(&job.target) { PasteResult::NotEditable } else { env.paste(&text, &job.target) };
         paste_ms = Some(ms(t.elapsed()));
         release_to_paste_ms = Some(ms(job.released.elapsed()));
         let (o, must_copy) = outcome_for(&r);

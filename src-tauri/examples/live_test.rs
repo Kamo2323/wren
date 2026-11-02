@@ -64,10 +64,12 @@ struct Args {
     taps: usize,
     /// Only observe what Win+Shift+S and Win+V do on this PC (no Wren), then exit.
     probe_shortcuts: bool,
+    /// Only the Task 9 rounds (watcher in the textarea and the composer, pre-paste check).
+    task9: bool,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50, probe_shortcuts: false };
+    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50, probe_shortcuts: false, task9: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| panic!("{arg} needs a value"));
@@ -78,6 +80,7 @@ fn parse_args() -> Args {
             "--holds" => a.holds = val().parse().expect("--holds N"),
             "--taps" => a.taps = val().parse().expect("--taps N"),
             "--probe-shortcuts" => a.probe_shortcuts = true,
+            "--task9" => a.task9 = true,
             other => panic!("unknown argument {other}"),
         }
     }
@@ -128,6 +131,9 @@ fn popup_window(wren_pid: u32) -> Option<HWND> {
 struct PageState {
     ta: String,
     ce: String,
+    /// Pastes the page received.
+    #[serde(default)]
+    n: u32,
     #[serde(default)]
     f: String,
     #[serde(default)]
@@ -328,12 +334,14 @@ fn open_page(edge: &Path, home: &Path, focus: &str) -> Result<Page, String> {
         }
         std::thread::sleep(Duration::from_millis(150));
     }
+    // ?focus=none puts focus on the (non-editable) log.
+    let want = if focus == "none" { "log" } else { focus };
     let t = Instant::now();
-    while p.state().f != focus {
+    while p.state().f != want {
         if t.elapsed() > Duration::from_secs(3) {
             let f = p.state().f;
             p.close();
-            return Err(format!("the page did not report focus on #{focus} (has {f:?})"));
+            return Err(format!("the page did not report focus on #{want} (has {f:?})"));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -677,6 +685,10 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     let popup = popup_window(wren_pid);
     if popup.is_none() {
         r.notes.push("Wren's popup window was not found, so popup visibility was not sampled".into());
+    }
+
+    if args.task9 {
+        return run_task9(args, &edge, popup, r);
     }
 
     // 2. Hold dictations into the textarea.
@@ -1180,4 +1192,234 @@ fn render(args: &Args, r: &Results) -> String {
          (Task 5). Here the page itself confirms the text arrived; in real use Task 9's watcher reads the focused element.\n",
     );
     s
+}
+
+// ---------- Task 9: correction watcher, pre-paste check (`--task9`) ----------
+
+const VK_BACK: u16 = 0x08;
+const VK_TAB: u16 = 0x09;
+const VK_RETURN: u16 = 0x0D;
+/// The fixture's one uncommon word (not in the bundled common-words list), so its fix becomes an
+/// active replacement at once, with the toast.
+const T9_FROM: &str = "drizzly";
+const T9_TO: &str = "drizzle";
+
+fn tap(page: HWND, vk: u16) -> Result<(), String> {
+    guarded(page, &[(vk, true), (vk, false)])?;
+    std::thread::sleep(Duration::from_millis(20));
+    Ok(())
+}
+
+/// Replaces the last `from` in the box with `to` (lower-case a–z) the way a person would: arrow
+/// keys to the end of the word, Backspace over it, type the new one.
+fn edit_word(page: &Page, field: &str, from: &str, to: &str) -> Result<String, String> {
+    let get = |s: &PageState| if field == "ce" { s.ce.clone() } else { s.ta.clone() };
+    let text = get(&page.state());
+    let lower = text.to_lowercase();
+    let pos = lower.rfind(from).ok_or_else(|| format!("{from:?} is not in the {field} box (the engine heard something else)"))?;
+    let after = text[pos + from.len()..].chars().count();
+    for _ in 0..after {
+        tap(page.hwnd, VK_LEFT)?;
+    }
+    for _ in 0..from.chars().count() {
+        tap(page.hwnd, VK_BACK)?;
+    }
+    for c in to.chars() {
+        tap(page.hwnd, c.to_ascii_uppercase() as u16)?;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let now = get(&page.state());
+    let want = format!("{}{to}{}", &text[..pos], &text[pos + from.len()..]);
+    if now != want {
+        return Err(format!("the edit did not come out as expected in the {field} box"));
+    }
+    Ok(now)
+}
+
+/// Saves the screen area of `hwnd` as a 32-bit BMP (to look at the popup's toast afterwards).
+fn grab_window(hwnd: HWND, path: &Path) -> Result<(), String> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r) }.map_err(|e| e.to_string())?;
+    let (w, h) = (r.right - r.left, r.bottom - r.top);
+    if w <= 0 || h <= 0 {
+        return Err("empty popup rectangle".into());
+    }
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(mem, bmp.into());
+        let _ = BitBlt(mem, 0, 0, w, h, Some(screen), r.left, r.top, SRCCOPY);
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        GetDIBits(mem, bmp, 0, h as u32, Some(pixels.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    let mut f = Vec::with_capacity(54 + pixels.len());
+    f.extend_from_slice(b"BM");
+    f.extend_from_slice(&(54 + pixels.len() as u32).to_le_bytes());
+    f.extend_from_slice(&[0; 4]);
+    f.extend_from_slice(&54u32.to_le_bytes());
+    f.extend_from_slice(&40u32.to_le_bytes());
+    f.extend_from_slice(&w.to_le_bytes());
+    f.extend_from_slice(&(-h).to_le_bytes());
+    f.extend_from_slice(&1u16.to_le_bytes());
+    f.extend_from_slice(&32u16.to_le_bytes());
+    f.extend_from_slice(&[0; 24]);
+    f.extend_from_slice(&pixels);
+    std::fs::write(path, f).map_err(|e| e.to_string())
+}
+
+fn db_path(home: &Path) -> PathBuf {
+    home.join("local").join("db").join("wren.db")
+}
+
+/// Log lines with `msg` written after the first `skip` of them.
+fn log_since(home: &Path, msg: &str, skip: usize) -> Vec<serde_json::Value> {
+    wren_log(home).into_iter().filter(|(m, _)| m == msg).skip(skip).map(|(_, f)| f).collect()
+}
+
+/// One watcher round: dictate (hands-free, the whole fixture) into `field`, fix `drizzly`, end the
+/// watch with `end_key` (Tab moves focus; Enter "sends" the composer), then check the log, the
+/// popup and the database.
+fn watcher_round(args: &Args, edge: &Path, popup: Option<HWND>, field: &str, end_key: u16, r: &mut Results) -> Result<(), String> {
+    let page = open_page(edge, &args.home, field)?;
+    let learned_before = log_count(&args.home, "learned from a correction");
+    let ended_before = log_count(&args.home, "watch ended");
+    let checks_before = log_count(&args.home, "pre-paste check");
+    let d = dictate(&page, popup, field, true, &FULL_EXPECT)?;
+    println!("[task9 {field}] dictation landed {} ({} words, page saw it {:?} ms after the stop press)", d.landed, d.words, d.page_ms);
+    let check = log_since(&args.home, "pre-paste check", checks_before);
+    println!("[task9 {field}] pre-paste check: {:?}", check.iter().map(|f| (f.get("decision").cloned(), f.get("control").cloned(), f.get("ms").cloned())).collect::<Vec<_>>());
+    if !d.landed {
+        page.close();
+        return Err(format!("[task9 {field}] the dictation did not land"));
+    }
+    let t_edit = Instant::now();
+    edit_word(&page, field, T9_FROM, T9_TO)?;
+    println!("[task9 {field}] fixed {T9_FROM} -> {T9_TO} with arrow keys, Backspace and typing ({} ms)", t_edit.elapsed().as_millis());
+    // Let the watcher see the change, then end the watch.
+    std::thread::sleep(Duration::from_millis(1_500));
+    let sampler = Sampler::start(popup);
+    let t_end = Instant::now();
+    tap(page.hwnd, end_key)?;
+    let mut learned = None;
+    while t_end.elapsed() < Duration::from_secs(6) {
+        if let Some(f) = log_since(&args.home, "learned from a correction", learned_before).into_iter().next() {
+            learned = Some((f, t_end.elapsed().as_millis() as u64));
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(700));
+    let grab = args.home.join(format!("toast-{field}.bmp"));
+    let grabbed = popup.map(|p| grab_window(p, &grab));
+    let (_, popup_seen, _) = sampler.finish();
+    let ended = log_since(&args.home, "watch ended", ended_before);
+    println!(
+        "[task9 {field}] watch ended: {:?}",
+        ended.iter().map(|f| (f.get("reason").cloned(), f.get("reads").cloned(), f.get("watched_ms").cloned())).collect::<Vec<_>>()
+    );
+    match &learned {
+        Some((f, ms)) => println!("[task9 {field}] learned {ms} ms after the end key: decisions {} entry ids {}", f["decisions"], f["entry_ids"]),
+        None => r.failures.push(format!("[task9 {field}] nothing was learned within 6 s")),
+    }
+    println!("[task9 {field}] popup visible after learning: {popup_seen}; toast grab: {grabbed:?} -> {}", grab.display());
+    if !popup_seen {
+        r.failures.push(format!("[task9 {field}] the learned toast was not seen"));
+    }
+    let store = wren_lib::store::Store::open(&db_path(&args.home)).map_err(|e| e.to_string())?;
+    let entries = store.dictionary_list().map_err(|e| e.to_string())?;
+    let rep = entries
+        .iter()
+        .find(|e| e.from_text.as_deref() == Some(T9_FROM) && e.to_text == T9_TO && e.kind == wren_lib::dictionary::EntryKind::Replacement);
+    match rep {
+        Some(e) => println!("[task9 {field}] dictionary: replacement #{} {T9_FROM} -> {T9_TO} status {:?} source {:?}", e.id, e.status, e.source),
+        None => r.failures.push(format!("[task9 {field}] no {T9_FROM} -> {T9_TO} replacement in the database")),
+    }
+    if let Some(e) = rep
+        && (e.status != wren_lib::dictionary::Status::Active || e.source != wren_lib::dictionary::Source::LearnedPaste)
+    {
+        r.failures.push(format!("[task9 {field}] the replacement is {:?}/{:?}, not active/learned_paste", e.status, e.source));
+    }
+    let term = entries.iter().any(|e| e.kind == wren_lib::dictionary::EntryKind::Term && e.to_text == T9_TO);
+    println!("[task9 {field}] dictionary: term {T9_TO} present {term}");
+    // Clear what was learned, so the next round can learn it again from scratch.
+    for e in entries.iter().filter(|e| e.to_text == T9_TO) {
+        let _ = store.delete_entry(e.id);
+    }
+    page.close();
+    r.notes.push(format!("task9 {field}: learned {}, popup seen {popup_seen}", learned.is_some()));
+    Ok(())
+}
+
+/// The pre-paste check on a page where nothing editable has focus: nothing reaches the page, the
+/// text is copied, the popup says "Not pasted".
+fn prepaste_round(args: &Args, edge: &Path, popup: Option<HWND>, r: &mut Results) -> Result<(), String> {
+    let page = open_page(edge, &args.home, "none")?;
+    let checks_before = log_count(&args.home, "pre-paste check");
+    let done_before = log_count(&args.home, "dictation done");
+    let sampler = Sampler::start(popup);
+    chord_down(page.hwnd)?;
+    std::thread::sleep(Duration::from_millis(HOLD_MS));
+    release_chord();
+    let t = Instant::now();
+    let mut done = None;
+    while t.elapsed() < Duration::from_secs(15) {
+        if let Some(f) = log_since(&args.home, "dictation done", done_before).into_iter().next() {
+            done = Some(f);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(1_000));
+    let (_, popup_seen, _) = sampler.finish();
+    let st = page.state();
+    let check = log_since(&args.home, "pre-paste check", checks_before);
+    println!(
+        "[task9 none] pre-paste check: {:?}",
+        check.iter().map(|f| (f.get("decision").cloned(), f.get("control").cloned(), f.get("writable_value").cloned(), f.get("ms").cloned())).collect::<Vec<_>>()
+    );
+    let outcome = done.as_ref().and_then(|f| f.get("outcome").cloned());
+    println!("[task9 none] outcome {outcome:?}; page pastes {} ta {:?} ce {:?}; popup seen {popup_seen}", st.n, st.ta.len(), st.ce.len());
+    if !check.iter().any(|f| f.get("decision").and_then(|d| d.as_str()) == Some("NotEditable")) {
+        r.failures.push("[task9 none] the pre-paste check did not hold the paste back".into());
+    }
+    if st.n != 0 || !st.ta.is_empty() || !st.ce.is_empty() {
+        r.failures.push("[task9 none] something reached the page".into());
+    }
+    if outcome.as_ref().and_then(|o| o.as_str()) != Some("NotPasted") {
+        r.failures.push(format!("[task9 none] outcome {outcome:?}, expected NotPasted"));
+    }
+    page.close();
+    Ok(())
+}
+
+fn run_task9(args: &Args, edge: &Path, popup: Option<HWND>, r: &mut Results) -> Result<(), String> {
+    watcher_round(args, edge, popup, "ta", VK_TAB, r)?;
+    std::thread::sleep(Duration::from_millis(500));
+    watcher_round(args, edge, popup, "ce", VK_RETURN, r)?;
+    std::thread::sleep(Duration::from_millis(500));
+    prepaste_round(args, edge, popup, r)?;
+    Ok(())
 }

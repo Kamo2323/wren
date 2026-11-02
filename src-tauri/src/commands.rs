@@ -309,6 +309,29 @@ fn running_process_names() -> Vec<String> {
     names
 }
 
+// ---- correction watcher, AI clean-up (Task 9) ----
+
+/// Whether the correction watcher runs (the setting, or the Claude-app probe's default) and why.
+#[tauri::command]
+pub fn watcher_status(state: State<'_, AppState>, services: State<'_, Services>) -> crate::watcher::WatcherStatus {
+    let setting = state.settings.read().watcher_enabled;
+    crate::watcher::status(setting, &services.env.watcher().slow_apps())
+}
+
+/// Is Ollama running, and is the clean-up model downloaded?
+#[tauri::command(async)]
+pub fn ai_cleanup_status(state: State<'_, AppState>) -> crate::ai_cleanup::AiCleanupStatus {
+    let model = state.settings.read().ai_cleanup.model.clone();
+    crate::ai_cleanup::status(&model)
+}
+
+/// Downloads the clean-up model with `ollama pull`; returns when it has finished.
+#[tauri::command(async)]
+pub fn ai_cleanup_pull_model(state: State<'_, AppState>) -> Result<(), String> {
+    let model = state.settings.read().ai_cleanup.model.clone();
+    crate::ai_cleanup::pull(&model)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
