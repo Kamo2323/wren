@@ -1,5 +1,6 @@
 //! Wren — local dictation for Windows. See docs/design/SPEC.md.
 
+pub mod ai_cleanup;
 pub mod audio;
 pub mod commands;
 pub mod constants;
@@ -180,6 +181,9 @@ pub fn run() {
             commands::audio_devices,
             commands::set_audio_device,
             commands::other_apps_running,
+            commands::watcher_status,
+            commands::ai_cleanup_status,
+            commands::ai_cleanup_pull_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wren")

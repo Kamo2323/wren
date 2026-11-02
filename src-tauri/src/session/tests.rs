@@ -97,6 +97,7 @@ fn paste_results_map_to_outcomes_and_copy_decisions() {
     assert_eq!(outcome_for(&PasteResult::FocusChanged), (PasteOutcome::NotPasted, true));
     assert_eq!(outcome_for(&PasteResult::KeysStillHeld), (PasteOutcome::NotPasted, true));
     assert_eq!(outcome_for(&PasteResult::OwnWindow), (PasteOutcome::NotPasted, true));
+    assert_eq!(outcome_for(&PasteResult::NotEditable), (PasteOutcome::NotPasted, true));
     // Ctrl+V and Ctrl+Shift+V were sent and nobody read: the text is already on the clipboard.
     assert_eq!(outcome_for(&PasteResult::Failed(REASON_NOT_READ.into())), (PasteOutcome::Copied, false));
     assert_eq!(outcome_for(&PasteResult::Failed("clipboard busy".into())), (PasteOutcome::Failed, true));
@@ -205,6 +206,8 @@ struct FakeEnv {
     paste_results: Mutex<VecDeque<PasteResult>>,
     events: Mutex<Vec<Ev>>,
     ai_calls: AtomicUsize,
+    /// The pre-paste check's answer (Task 9).
+    not_editable: std::sync::atomic::AtomicBool,
 }
 
 impl FakeEnv {
@@ -222,6 +225,7 @@ impl FakeEnv {
             paste_results: Mutex::new(VecDeque::new()),
             events: Mutex::new(Vec::new()),
             ai_calls: AtomicUsize::new(0),
+            not_editable: std::sync::atomic::AtomicBool::new(false),
         })
     }
     fn push(&self, e: Ev) {
@@ -311,6 +315,9 @@ impl Env for FakeEnv {
     }
     fn pasted(&self, d: &PastedDictation) {
         self.push(Ev::PastedHook(d.text.clone()));
+    }
+    fn target_not_editable(&self, _target: &ForegroundInfo) -> bool {
+        self.not_editable.load(Ordering::SeqCst)
     }
     fn ai_cleanup(&self, tidied: &str) -> Option<String> {
         self.ai_calls.fetch_add(1, Ordering::SeqCst);
@@ -505,6 +512,19 @@ fn not_pasted_copies_the_text_and_offers_click_to_copy() {
     wait_until("notPasted popup", 2_000, || r.env.popups().contains(&PopupState::NotPasted { text: "Hello there.".into() }));
     assert!(r.env.events().contains(&Ev::Copy("Hello there.".into())));
     assert!(r.env.events().contains(&Ev::Clickable(true)));
+    assert!(!r.env.events().iter().any(|e| matches!(e, Ev::PastedHook(_))), "no watcher without a paste");
+    wait_until("outcome", 1_000, || r.env.rows().first().map(|r| r.paste_outcome) == Some(PasteOutcome::NotPasted));
+}
+
+#[test]
+fn nothing_editable_in_focus_copies_instead_of_pasting() {
+    let r = rig();
+    r.env.not_editable.store(true, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("notPasted popup", 2_000, || r.env.popups().contains(&PopupState::NotPasted { text: "Hello there.".into() }));
+    assert!(r.env.pastes().is_empty(), "no Ctrl+V into a non-editable target");
+    assert!(r.env.events().contains(&Ev::Copy("Hello there.".into())));
     assert!(!r.env.events().iter().any(|e| matches!(e, Ev::PastedHook(_))), "no watcher without a paste");
     wait_until("outcome", 1_000, || r.env.rows().first().map(|r| r.paste_outcome) == Some(PasteOutcome::NotPasted));
 }

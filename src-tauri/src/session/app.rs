@@ -2,6 +2,7 @@
 //! the popup window and the clipboard. `start_services` builds and starts all of it from `setup`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ use crossbeam_channel::Sender;
 use parking_lot::{Mutex, RwLock};
 use tauri::{AppHandle, Emitter, Listener, Manager};
 
-use super::{Env, HotkeyCmd, Msg, PopupState, Recorder, SessionHandle, Sound};
+use super::{Env, HotkeyCmd, Msg, PastedDictation, PopupState, Recorder, SessionHandle, Sound};
 use crate::AppState;
 use crate::audio::AudioRecorder;
 use crate::constants::{ENGINE_SAMPLE_RATE, SOUND_START_HZ, SOUND_STOP_HZ, SOUND_TICK_AMPLITUDE, SOUND_TICK_MS};
@@ -18,7 +19,8 @@ use crate::hotkey::HotkeyService;
 use crate::paste::{self, ForegroundInfo, PasteResult};
 use crate::settings::{EngineSettings, Settings};
 use crate::store::Store;
-use crate::{popup, tray};
+use crate::watcher::{self, Watcher, prepaste};
+use crate::{ai_cleanup, popup, tray};
 
 /// Payload: `EngineStatus`, on every change.
 pub const EVENT_ENGINE_STATUS: &str = "app://engine-status";
@@ -34,6 +36,13 @@ pub struct AppEnv {
     hotkey: Mutex<Option<HotkeyService>>,
     /// Wren's own window handles, read once on the main thread at start-up.
     own_windows: Vec<isize>,
+    /// Correction watcher and pre-paste check (Task 9).
+    watcher: Watcher,
+    prepaste: Option<prepaste::Checker>,
+    /// Set once the session has started (the watcher shows its toast through it).
+    session: OnceLock<SessionHandle>,
+    /// An AI clean-up model load is in flight.
+    ai_warming: Arc<AtomicBool>,
 }
 
 impl AppEnv {
@@ -47,6 +56,10 @@ impl AppEnv {
 
     pub fn audio_recorder(&self) -> Option<&AudioRecorder> {
         self.recorder.as_deref()
+    }
+
+    pub fn watcher(&self) -> &Watcher {
+        &self.watcher
     }
 
     /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
@@ -67,6 +80,7 @@ impl AppEnv {
 
     /// On quit: unhook, stop the sidecar, and put back any clipboard a paste still owes.
     pub fn shutdown(&self) {
+        self.watcher.stop();
         drop(self.hotkey.lock().take());
         self.engine().shutdown();
         paste::flush();
@@ -127,6 +141,52 @@ impl Env for AppEnv {
     }
     fn play(&self, sound: Sound) {
         play_tick(sound);
+    }
+    fn dictation_started(&self) {
+        self.watcher.stop();
+        // Load the clean-up model while he speaks, so the AI step fits its time limit.
+        let ai = self.settings().ai_cleanup;
+        if ai.enabled && !self.ai_warming.swap(true, Ordering::SeqCst) {
+            let warming = self.ai_warming.clone();
+            let spawned = std::thread::Builder::new().name("wren-ai-warm".into()).spawn(move || {
+                ai_cleanup::warm(&ai.model);
+                warming.store(false, Ordering::SeqCst);
+            });
+            if spawned.is_err() {
+                self.ai_warming.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+    fn pasted(&self, d: &PastedDictation) {
+        let enabled = watcher::effective_enabled(self.settings().watcher_enabled);
+        let Some(session) = self.session.get().cloned() else { return };
+        let app = self.app.clone();
+        self.watcher.start(d.clone(), enabled, move |d, end| {
+            let store = &app.state::<AppState>().store;
+            let learned = watcher::learn_from(store, &d.id, &end);
+            if learned.is_empty() {
+                return;
+            }
+            tracing::info!(
+                id = %d.id,
+                corrections = learned.len(),
+                decisions = ?learned.iter().map(|l| &l.decision).collect::<Vec<_>>(),
+                entry_ids = ?learned.iter().map(|l| l.entry_id).collect::<Vec<_>>(),
+                "learned from a correction"
+            );
+            let _ = app.emit(EVENT_HISTORY_CHANGED, ());
+            if let Some(toast) = watcher::toast_for(&learned) {
+                session.popup_result(toast);
+            }
+        });
+    }
+    fn target_not_editable(&self, target: &ForegroundInfo) -> bool {
+        self.prepaste
+            .as_ref()
+            .is_some_and(|c| c.check(target.pid, &target.process_name) == prepaste::PrePaste::NotEditable)
+    }
+    fn ai_cleanup(&self, tidied: &str) -> Option<String> {
+        ai_cleanup::clean(&self.settings().ai_cleanup.model, tidied)
     }
 }
 
@@ -208,8 +268,13 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         status_tx,
         hotkey: Mutex::new(hotkey),
         own_windows,
+        watcher: Watcher::new(),
+        prepaste: prepaste::Checker::start().map_err(|e| tracing::warn!(error = %e, "no pre-paste check")).ok(),
+        session: OnceLock::new(),
+        ai_warming: Arc::new(AtomicBool::new(false)),
     });
     let session = super::start(env.clone(), hotkey_rx)?;
+    let _ = env.session.set(session.clone());
 
     // Tray: pause and reinstall.
     {

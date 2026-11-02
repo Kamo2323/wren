@@ -52,6 +52,8 @@ pub enum PasteResult {
     FocusChanged,
     KeysStillHeld,
     OwnWindow,
+    /// Not sent: the pre-paste check (ruling 24) found nothing editable in focus (Task 9).
+    NotEditable,
     Failed(String),
 }
 
