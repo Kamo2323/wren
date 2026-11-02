@@ -4,7 +4,12 @@
 import { useEffect, useState } from "react";
 import { inTauri } from "./api";
 
-export type MicTest = { state: "off" } | { state: "on"; level: number; device: string | null } | { state: "error"; message: string };
+/** `device` is the label of the track actually being read; `fellBack` is true when that isn't the
+ * microphone that was asked for (so a silent switch to the default is visible). */
+export type MicTest =
+  | { state: "off" }
+  | { state: "on"; level: number; device: string | null; fellBack: boolean }
+  | { state: "error"; message: string };
 
 /** RMS (0..1) → perceptual 0..1: -60 dBFS is silence, 0 dBFS is full. */
 export function perceptual(rms: number): number {
@@ -12,6 +17,8 @@ export function perceptual(rms: number): number {
   const db = 20 * Math.log10(rms);
   return Math.min(1, Math.max(0, (db + 60) / 60));
 }
+
+const MOCK_DEFAULT_MIC = "Microphone (Shure MV7)";
 
 export function useMicLevel(active: boolean, deviceName: string | null): MicTest {
   const [test, setTest] = useState<MicTest>({ state: "off" });
@@ -32,7 +39,7 @@ export function useMicLevel(active: boolean, deviceName: string | null): MicTest
       const loop = (t: number) => {
         const s = (t - t0) / 1000;
         const env = Math.max(0, Math.sin(s * 5.1) * 0.5 + Math.sin(s * 1.7) * 0.35 + 0.3);
-        setTest({ state: "on", level: Math.min(1, 0.18 + env * 0.62), device: deviceName });
+        setTest({ state: "on", level: Math.min(1, 0.18 + env * 0.62), device: deviceName ?? MOCK_DEFAULT_MIC, fellBack: false });
         if (!stopped) raf = requestAnimationFrame(loop);
       };
       raf = requestAnimationFrame(loop);
@@ -71,7 +78,7 @@ export function useMicLevel(active: boolean, deviceName: string | null): MicTest
           for (const v of buf) sum += v * v;
           const level = perceptual(Math.sqrt(sum / buf.length));
           smooth = level > smooth ? level : smooth * 0.9 + level * 0.1; // fast attack, slow release
-          setTest({ state: "on", level: smooth, device: label });
+          setTest({ state: "on", level: smooth, device: label, fellBack: deviceName != null && label !== deviceName });
           if (!stopped) raf = requestAnimationFrame(loop);
         };
         loop();

@@ -2,6 +2,7 @@
 // Bars are CSS grid columns so the x labels share the same columns; hover shows a tooltip above the bar.
 import { useState, type ReactNode } from "react";
 import { formatNumber } from "../lib/format";
+import { niceTicks } from "../lib/chart";
 
 export interface BarChartProps {
   values: number[];
@@ -22,17 +23,6 @@ export interface BarChartProps {
   className?: string;
 }
 
-/** Friendly axis ticks from 0 to just above `max`, about `target` steps: 1,480 → [0, 500, 1000, 1500]. */
-export function niceTicks(max: number, target = 3): number[] {
-  if (max <= 0) return [0];
-  const rough = max / target;
-  const pow = 10 ** Math.floor(Math.log10(rough));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((s) => s >= rough) ?? 10 * pow;
-  const top = Math.ceil(max / step) * step;
-  const out: number[] = [];
-  for (let v = 0; v <= top + step / 2; v += step) out.push(Math.round(v));
-  return out;
-}
 
 function compact(n: number): string {
   if (n >= 10_000) return `${Math.round(n / 1000)}k`;

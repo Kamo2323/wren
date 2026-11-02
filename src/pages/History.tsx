@@ -7,11 +7,11 @@ import { formatNumber, retentionLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { useDayGroups, useTranscriptActions } from "../lib/useTranscriptActions";
 import { TranscriptCard } from "../components/TranscriptCard";
-import { ChordKeys, EmptyState } from "../components/Empty";
+import { ChordKeys, EmptyState, LoadError } from "../components/Empty";
 import { Button } from "../components/Button";
 import { Clock, Search, X } from "../components/Icon";
 
-/** More than the 72-hour window can realistically hold; the Rust side caps it anyway. */
+/** Far more than 72 hours of dictation can hold, so in practice "everything that's kept". */
 const ALL_LIMIT = 5000;
 const SEARCH_DEBOUNCE_MS = 140;
 
@@ -22,6 +22,7 @@ export default function History() {
   const [rows, setRows] = useState<TranscriptionRow[] | null>(null);
   const [searchedFor, setSearchedFor] = useState(""); // the query the rows on screen belong to
   const [now, setNow] = useState(() => Date.now());
+  const [failed, setFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const { onCopy, onDelete, onFix } = useTranscriptActions(setRows);
@@ -29,8 +30,18 @@ export default function History() {
   const load = useCallback(async (q: string) => {
     const id = ++requestId.current;
     const trimmed = q.trim();
-    const result = await (trimmed ? historySearch(trimmed) : historyRecent(ALL_LIMIT)).catch(() => [] as TranscriptionRow[]);
+    let result: TranscriptionRow[];
+    try {
+      result = await (trimmed ? historySearch(trimmed) : historyRecent(ALL_LIMIT));
+    } catch {
+      if (id !== requestId.current) return;
+      setFailed(true);
+      setRows(null);
+      setSearchedFor(trimmed);
+      return;
+    }
     if (id !== requestId.current) return; // a newer search has started
+    setFailed(false);
     setRows(result);
     setSearchedFor(trimmed);
     setNow(Date.now());
@@ -131,7 +142,9 @@ export default function History() {
         </p>
       )}
 
-      {rows === null ? null : rows.length === 0 ? (
+      {failed ? (
+        <LoadError what={searchedFor ? "search results" : "your history"} onRetry={() => void load(query)} />
+      ) : rows === null ? null : rows.length === 0 ? (
         searching ? (
           <EmptyState
             icon={<Search size={22} strokeWidth={2} />}

@@ -23,6 +23,7 @@ const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 } })
 const page = await ctx.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
+page.on("console", (m) => m.type() === "error" && errors.push(`console.error: ${m.text()} ${m.location()?.url ?? ""}`));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0;
 const check = (name, ok, detail = "") => {
@@ -45,6 +46,33 @@ check("matches are marked", (await page.locator(".tcard mark").count()) >= some)
 await page.keyboard.press("Escape");
 await wait(300);
 check("Escape clears the search", (await page.locator(".tcard").count()) === all);
+
+// Fix a word: the card keeps the fix after leaving the page (the store rewrote it), and Undo works
+await page.goto(`${base}/index.html#history`);
+await page.waitForSelector(".tcard");
+const card = page.locator(".tcard", { hasText: "normaliseEngineStatus" });
+await card.hover();
+await card.getByRole("button", { name: "Fix a word" }).click();
+await page.locator(".tcard.is-fixing .word", { hasText: "normaliseEngineStatus" }).click();
+await page.keyboard.type("normaliseEngineState");
+await page.keyboard.press("Enter");
+await wait(300);
+check("fix shows Undo in its toast", (await toast())?.startsWith("Fixed") && (await page.locator(".toast__action").count()) === 1);
+await page.evaluate(() => (location.hash = "#home"));
+await page.waitForSelector(".page--home");
+await page.evaluate(() => (location.hash = "#history"));
+await page.waitForSelector(".tcard");
+check("the fix is still there after leaving History", (await page.locator(".tcard", { hasText: "normaliseEngineState " }).count()) === 1);
+const fixCard = page.locator(".tcard", { hasText: "normaliseEngineState " });
+await fixCard.hover();
+await fixCard.getByRole("button", { name: "Fix a word" }).click();
+await page.locator(".tcard.is-fixing .word", { hasText: "Rename" }).click();
+await page.keyboard.type("Retitle");
+await page.keyboard.press("Enter");
+await wait(250);
+await page.locator(".toast__action").click();
+await wait(300);
+check("Undo on a fix puts the card text back", (await page.locator(".tcard", { hasText: "Rename this function" }).count()) === 1, await toast());
 
 // Dictionary: arrow keys move tabs; add word; undo a removal
 await page.goto(`${base}/index.html#dictionary`);
@@ -75,7 +103,12 @@ await wait(150);
 check("replacement can be switched off", (await page.locator(".drow.is-muted").count()) === 1);
 await page.getByRole("tab", { name: /Learned/ }).click();
 await wait(200);
-const firstLearned = page.locator(".drow").first();
+const firstLearned = page.locator(".drow", { hasText: "cash" });
+await firstLearned.getByRole("button", { name: "Undo" }).click();
+await wait(250);
+await page.locator(".toast__action").click();
+await wait(300);
+check("undoing an Undo restores a candidate as a candidate", (await firstLearned.textContent())?.includes("Seen once"));
 await firstLearned.getByRole("button", { name: "Keep" }).click();
 await wait(250);
 { const t = await toast(); check("Keep promotes a candidate", t?.startsWith("Kept"), t); }
@@ -90,6 +123,10 @@ await page.waitForSelector("#typing-wpm");
 await page.locator("#typing-wpm").fill("70");
 await page.keyboard.press("Enter");
 await wait(200);
+await page.locator("#typing-wpm").fill("7");
+check("no error while still typing", (await page.locator("#typing-wpm").getAttribute("aria-invalid")) !== "true");
+await page.locator("#typing-wpm").fill("70");
+await page.keyboard.press("Enter");
 check("Reset link appears after a change", (await page.getByRole("button", { name: /Reset to 52/ }).count()) === 1);
 await page.getByRole("link", { name: "Stats" }).count(); // no-op
 await page.locator(".nav-item", { hasText: "Stats" }).click();
@@ -101,6 +138,11 @@ check("typing speed kept after leaving the page", (await page.locator("#typing-w
 await page.locator("#typing-wpm").fill("5");
 await page.keyboard.press("Tab");
 check("out-of-range speed is put back", (await page.locator("#typing-wpm").inputValue()) === "70");
+check("out-of-range speed is flagged", (await page.locator("#typing-wpm").getAttribute("aria-invalid")) === "true" && (await page.locator(".wpm__error").count()) === 1);
+await page.getByRole("button", { name: "Test microphone" }).click();
+await wait(300);
+check("mic test names the device it reads", (await page.locator(".mictest__note").textContent())?.includes("Listening to"));
+await page.getByRole("button", { name: "Stop test" }).click();
 await page.getByRole("switch", { name: "Sounds" }).click();
 check("toggle flips", (await page.getByRole("switch", { name: "Sounds" }).getAttribute("aria-checked")) === "true");
 await page.getByRole("button", { name: /Delete all/ }).click();
@@ -118,13 +160,30 @@ check("banner names Glaido", (await page.locator(".banner").textContent())?.incl
 await page.getByRole("button", { name: "Details" }).click();
 await page.waitForSelector(".setcard");
 check("Details opens Settings", (await page.locator(".page__title").textContent()) === "Settings");
+await page.evaluate(() => document.querySelector(".banner")?.setAttribute("data-probe", "1"));
+await page.locator(".nav-item", { hasText: "Stats" }).click();
+await page.waitForSelector(".stats-foot");
+check("banner is not remounted on a page switch", (await page.locator(".banner[data-probe]").count()) === 1);
 await page.getByRole("button", { name: "Hide this warning" }).click();
 check("banner can be hidden", (await page.locator(".banner").count()) === 0);
 await page.goto(`${base}/index.html#home`);
 await page.waitForSelector(".tcard");
 check("no banner when nothing else runs", (await page.locator(".banner").count()) === 0);
 
-check("no page errors", errors.length === 0, errors.join("; "));
+check("no page errors or console errors", errors.length === 0, errors.join("; "));
+
+// Load failures: a short "Couldn't load · Try again", never a misleading empty page
+for (const [hash, what] of [
+  ["history", "your history"],
+  ["dictionary", "your dictionary"],
+  ["stats", "your stats"],
+  ["settings", "your settings"],
+]) {
+  await page.goto(`${base}/index.html?fail=1#${hash}`);
+  await page.waitForSelector(".empty--error");
+  const text = await page.locator(".empty--error").textContent();
+  check(`${hash}: load error state`, text.includes(`Couldn't load ${what}`) && text.includes("Try again"), text.slice(0, 40));
+}
 await browser.close();
 server.close();
 console.log(failed ? `${failed} check(s) failed` : "all checks passed");

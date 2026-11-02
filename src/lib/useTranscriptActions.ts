@@ -2,7 +2,8 @@
 import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 import { createElement } from "react";
 import type { TranscriptionRow } from "./types";
-import { copyText, historyDelete, historyFixWord, replaceWord } from "./api";
+import { copyText, dictionarySetStatus, historyDelete, historyFixWord } from "./api";
+import { replaceWord, wordCount } from "./text";
 import { dayLabel } from "./format";
 import { useToast } from "../components/Toast";
 import { Check } from "../components/Icon";
@@ -38,12 +39,27 @@ export function useTranscriptActions(setRows: SetRows) {
   const onFix = useCallback(
     async (row: TranscriptionRow, from: string, to: string) => {
       try {
-        await historyFixWord(row.id, from, to);
-        setRows((rs) => (rs ?? []).map((r) => (r.id === row.id ? { ...r, finalText: replaceWord(r.finalText, from, to) } : r)));
+        const result = await historyFixWord(row.id, from, to);
+        const before = { finalText: row.finalText, words: row.words };
+        const fixed = replaceWord(row.finalText, from, to); // the same rewrite the store made
+        setRows((rs) => (rs ?? []).map((r) => (r.id === row.id ? { ...r, finalText: fixed, words: wordCount(fixed) } : r)));
+        const undo = async () => {
+          try {
+            // Stop the rule (and the word, if this fix added it); disabled = "the user said no" (spec §8).
+            await dictionarySetStatus(result.replacement.id, "disabled");
+            if (result.term) await dictionarySetStatus(result.term.id, "disabled");
+            // The card shows its old text again. The store keeps the fixed text (there is no command to
+            // put text back yet), so a reload shows the fix: see task-7-report fix round 1, finding 11.
+            setRows((rs) => (rs ?? []).map((r) => (r.id === row.id ? { ...r, ...before } : r)));
+            toast.show(`Undone. Wren won't change “${from}” any more.`);
+          } catch {
+            toast.show("Couldn't undo that fix.", { tone: "danger" });
+          }
+        };
         toast.show(`Fixed. Wren will write “${to}” from now on.`, {
           tone: "success",
           icon: createElement(Check, { size: 16, strokeWidth: 2.6 }),
-          ms: 3200,
+          action: { label: "Undo", onClick: () => void undo() },
         });
       } catch {
         toast.show("Couldn't save that fix.", { tone: "danger" });

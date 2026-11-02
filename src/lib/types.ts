@@ -80,6 +80,7 @@ export interface TranscriptionRow {
 export interface DayPoint {
   date: string; // YYYY-MM-DD, local
   words: number;
+  speakingMs: number; // speaking time that day; 0 = nothing spoken (a gap in the WPM trend)
 }
 
 export interface Stats {

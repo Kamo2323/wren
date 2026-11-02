@@ -2,17 +2,18 @@
 // (what Wren picked up from fixes in History and edits after a paste, with Undo and Delete).
 // Spec §8: a disabled entry records that the user said no, so Undo disables rather than deletes.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { DictionaryEntry, EntrySource } from "../lib/types";
+import type { DictionaryEntry, EntrySource, EntryStatus } from "../lib/types";
 import { dictionaryAddReplacement, dictionaryAddTerm, dictionaryDelete, dictionaryList, dictionarySetStatus } from "../lib/api";
 import { formatNumber } from "../lib/format";
 import { Tabs } from "../components/Tabs";
 import { Button, IconButton } from "../components/Button";
 import { Toggle } from "../components/Toggle";
-import { EmptyState } from "../components/Empty";
+import { EmptyState, LoadError } from "../components/Empty";
 import { useToast } from "../components/Toast";
 import { ArrowRight, BookA, Check, Plus, RotateCcw, Sparkles, Trash2, Undo2, X } from "../components/Icon";
 
 type TabId = "words" | "replacements" | "learned";
+type StatusChange = { id: number; status: EntryStatus };
 
 const LEARNED: EntrySource[] = ["learnedHistory", "learnedPaste"];
 const isLearned = (e: DictionaryEntry) => LEARNED.includes(e.source);
@@ -62,7 +63,9 @@ function AddWord({ existing, onAdd }: { existing: DictionaryEntry[]; onAdd: (wor
   const [word, setWord] = useState("");
   const [busy, setBusy] = useState(false);
   const w = word.trim();
-  const dupe = w !== "" && existing.some((e) => e.kind === "term" && lower(e.toText) === lower(w));
+  const match = w === "" ? undefined : existing.find((e) => e.kind === "term" && lower(e.toText) === lower(w));
+  const dupe = match !== undefined;
+  const dupeText = !match ? "" : isLearned(match) ? "Wren has already learned that one. It's under Learned." : "That one is already in your words.";
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -97,7 +100,7 @@ function AddWord({ existing, onAdd }: { existing: DictionaryEntry[]; onAdd: (wor
         </Button>
       </div>
       <p id="add-word-hint" className={`addbar__hint ${dupe ? "is-warn" : ""}`}>
-        {dupe ? "That one is already in your words." : "Wren listens out for these and spells them your way. The number is how often each one has helped."}
+        {dupe ? dupeText : "Wren listens out for these and spells them your way. The number is how often each one has helped."}
       </p>
     </form>
   );
@@ -111,12 +114,15 @@ function AddReplacement({ existing, onAdd }: { existing: DictionaryEntry[]; onAd
   const f = from.trim();
   const t = to.trim();
   const same = f !== "" && f === t;
-  const dupe =
-    f !== "" && existing.some((e) => e.kind === "replacement" && e.status !== "disabled" && e.fromText != null && lower(e.fromText) === lower(f));
+  const match =
+    f === "" ? undefined : existing.find((e) => e.kind === "replacement" && e.status !== "disabled" && e.fromText != null && lower(e.fromText) === lower(f));
+  const dupe = match !== undefined;
   const hint = same
     ? "Those are the same. Type what Wren should write instead."
-    : dupe
-      ? `There's already a replacement for “${f}”.`
+    : match
+      ? isLearned(match)
+        ? `Wren has already learned “${match.fromText}” → “${match.toText}”. It's under Learned.`
+        : `There's already a replacement for “${match.fromText}”, just below.`
       : "Whole words only, and it keeps your capitals at the start of a sentence.";
 
   async function submit(e: FormEvent) {
@@ -226,10 +232,14 @@ export default function Dictionary() {
     }
   };
 
+  const [failed, setFailed] = useState(false);
   const load = useCallback(async () => {
-    const list = await dictionaryList().catch(() => null);
-    if (list) setEntries(list);
-    else setEntries((e) => e ?? []);
+    try {
+      setEntries(await dictionaryList());
+      setFailed(false);
+    } catch {
+      setFailed(true); // keep what is on screen; the error state shows only when there is nothing
+    }
   }, []);
 
   useEffect(() => {
@@ -249,6 +259,11 @@ export default function Dictionary() {
     [all],
   );
   const learned = useMemo(() => learnedRows(all), [all]);
+
+  // the latest statuses, for undo and rollback from inside async handlers
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const statusOf = (e: DictionaryEntry) => entriesRef.current?.find((x) => x.id === e.id)?.status ?? e.status;
 
   const patch = (id: number, change: Partial<DictionaryEntry>) =>
     setEntries((es) => (es ?? []).map((e) => (e.id === id ? { ...e, ...change } : e)));
@@ -285,6 +300,7 @@ export default function Dictionary() {
       const e = await dictionaryAddReplacement(from, to);
       setEntries((es) => [...(es ?? []).filter((x) => x.id !== e.id), e]);
       toast.show(`Wren will write “${to}” for “${from}”`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
+      void load(); // an active rule can replace other rules for the same heard words (Rust drop_superseded)
     } catch {
       fail("add that replacement");
       throw new Error("add failed");
@@ -292,13 +308,22 @@ export default function Dictionary() {
   }
 
   async function setOn(e: DictionaryEntry, on: boolean) {
-    const status = on ? "active" : "disabled";
-    patch(e.id, { status });
+    const ok = await applyStatuses([{ id: e.id, status: on ? "active" : "disabled" }], [{ id: e.id, status: statusOf(e) }]);
+    if (!ok) fail(on ? "turn that on" : "turn that off");
+  }
+
+  /** Set statuses at once on screen, then in the store; put them back if that fails. Reloads after
+   * anything goes active (Rust may drop other rules for the same words) and after a failure. */
+  async function applyStatuses(changes: StatusChange[], previous: StatusChange[]): Promise<boolean> {
+    changes.forEach((c) => patch(c.id, { status: c.status }));
     try {
-      await dictionarySetStatus(e.id, status);
+      await Promise.all(changes.map((c) => dictionarySetStatus(c.id, c.status)));
+      if (changes.some((c) => c.status === "active")) void load();
+      return true;
     } catch {
-      patch(e.id, { status: e.status });
-      fail(on ? "turn that on" : "turn that off");
+      previous.forEach((p) => patch(p.id, { status: p.status }));
+      void load();
+      return false;
     }
   }
 
@@ -324,24 +349,27 @@ export default function Dictionary() {
     return shared ? null : row.term;
   }
 
-  async function setLearned(row: LearnedRow, status: "active" | "disabled", announce: boolean) {
+  async function setLearned(row: LearnedRow, status: "active" | "disabled") {
     const targets = [row.main, termGoesWith(row)].filter((x): x is DictionaryEntry => x !== null);
-    const before = targets.map((t) => ({ id: t.id, status: t.status }));
-    const wasCandidate = row.main.status === "candidate";
-    targets.forEach((t) => patch(t.id, { status }));
-    try {
-      await Promise.all(targets.map((t) => dictionarySetStatus(t.id, status)));
-      if (announce) {
-        const what = row.main.kind === "replacement" ? `“${row.main.fromText}” → “${row.main.toText}”` : `“${row.main.toText}”`;
-        const text =
-          status === "disabled" ? `Undone. Wren won't learn ${what} again.` : wasCandidate ? `Kept: ${what}` : `Back on: ${what}`;
-        toast.show(text, {
-          action: status === "disabled" ? { label: "Undo", onClick: () => void setLearned(row, "active", false) } : undefined,
-        });
-      }
-    } catch {
-      before.forEach((b) => patch(b.id, { status: b.status }));
-      fail("change that");
+    const before: StatusChange[] = targets.map((t) => ({ id: t.id, status: statusOf(t) }));
+    const wasCandidate = before[0].status === "candidate";
+    const ok = await applyStatuses(
+      targets.map((t) => ({ id: t.id, status })),
+      before,
+    );
+    if (!ok) return fail("change that");
+    const what = row.main.kind === "replacement" ? `“${row.main.fromText}” → “${row.main.toText}”` : `“${row.main.toText}”`;
+    if (status === "disabled") {
+      // Undo puts back exactly what was there before (a candidate stays a candidate)
+      toast.show(`Undone. Wren won't learn ${what} again.`, {
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void applyStatuses(before, targets.map((t) => ({ id: t.id, status }))).then((back) => back || fail("put that back")),
+        },
+      });
+    } else {
+      toast.show(wasCandidate ? `Kept: ${what}` : `Back on: ${what}`);
     }
   }
 
@@ -375,7 +403,9 @@ export default function Dictionary() {
       <Tabs items={tabs} value={tab} onChange={setTab} label="Dictionary lists" idPrefix="dict" />
 
       <div className="tabpanel" role="tabpanel" id={`dict-panel-${tab}`} aria-labelledby={`dict-tab-${tab}`} key={tab}>
-        {entries === null ? null : tab === "words" ? (
+        {entries === null ? (
+          failed ? <LoadError compact what="your dictionary" onRetry={() => void load()} /> : null
+        ) : tab === "words" ? (
           <>
             <AddWord existing={all} onAdd={addWord} />
             {words.length === 0 ? (
@@ -453,20 +483,20 @@ export default function Dictionary() {
                       <span className="drow__meta num">{waiting || off ? "" : usedLabel(e.hits)}</span>
                       <div className="drow__actions">
                         {off ? (
-                          <Button size="sm" variant="ghost" icon={<RotateCcw size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "active", true)}>
+                          <Button size="sm" variant="ghost" icon={<RotateCcw size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "active")}>
                             Turn back on
                           </Button>
                         ) : waiting ? (
                           <>
-                            <Button size="sm" variant="secondary" icon={<Check size={15} strokeWidth={2.4} />} onClick={() => void setLearned(row, "active", true)}>
+                            <Button size="sm" variant="secondary" icon={<Check size={15} strokeWidth={2.4} />} onClick={() => void setLearned(row, "active")}>
                               Keep
                             </Button>
-                            <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled", true)}>
+                            <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
                               Undo
                             </Button>
                           </>
                         ) : (
-                          <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled", true)}>
+                          <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
                             Undo
                           </Button>
                         )}

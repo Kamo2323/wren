@@ -1,6 +1,6 @@
 // Main window shell: sidebar on the canvas, one white content panel, toasts, and the app-wide banner
 // when another dictation app (Willow, Glaido) is running.
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { EngineStatus, Settings as SettingsData } from "./lib/types";
 import { engineStatus, getSettings, onEngineStatus, otherAppsRunning, subscribe } from "./lib/api";
 import { Sidebar, type PageId } from "./components/Sidebar";
@@ -66,6 +66,13 @@ export default function App() {
     document.title = page === "home" ? "Wren" : `${TITLES[page]} · Wren`;
   }, [page]);
 
+  // Only the page remounts on navigation (fresh entry animation); the panel and the banner stay, so the
+  // banner doesn't re-animate or get announced again. The panel's scroll goes back to the top instead.
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    panelRef.current?.scrollTo(0, 0);
+  }, [page]);
+
   const onSaved = useCallback((s: SettingsData) => setTypingWpm(s.typingWpm), []);
 
   // Hiding the banner lasts until the set of running apps changes.
@@ -76,7 +83,7 @@ export default function App() {
     <ToastProvider>
       <div className="shell">
         <Sidebar page={page} onSelect={setPage} engine={engine} />
-        <main className="panel" key={page}>
+        <main className="panel" ref={panelRef}>
           {showBanner && (
             <OthersBanner
               names={others}
@@ -84,11 +91,13 @@ export default function App() {
               onMore={page === "settings" ? undefined : () => setPage("settings")}
             />
           )}
-          {page === "home" && <Home typingWpm={typingWpm} />}
-          {page === "history" && <History />}
-          {page === "dictionary" && <Dictionary />}
-          {page === "stats" && <Stats typingWpm={typingWpm} />}
-          {page === "settings" && <Settings engine={engine} others={others} onSaved={onSaved} />}
+          <Fragment key={page}>
+            {page === "home" && <Home typingWpm={typingWpm} />}
+            {page === "history" && <History />}
+            {page === "dictionary" && <Dictionary />}
+            {page === "stats" && <Stats typingWpm={typingWpm} />}
+            {page === "settings" && <Settings engine={engine} others={others} onSaved={onSaved} />}
+          </Fragment>
         </main>
       </div>
     </ToastProvider>

@@ -122,20 +122,40 @@ function isoDate(d: Date): string {
 }
 
 /** A believable month: busy weekdays, quiet weekends, a few days off, growing use. */
-export function mockStats(now = new Date()): Stats {
+export function mockStats(now = new Date(), big = false): Stats {
   const pattern = [
     0, 0, 140, 320, 410, 0, 90, 520, 610, 380, 700, 0, 0, 450, 880, 960, 720, 1040, 160, 0, 1210, 980,
     1350, 1120, 870, 240, 610, 1480, 1260, 930,
   ];
+  // speaking speed drifts up over the month (≈128 → 150 wpm) with a little day-to-day wobble
+  const wobble = [3, -4, 6, -2, 1, -5, 4, 0, -3, 5, 2, -6, 3, 1, -2, 6, -4, 2, 0, -3, 5, -1, 3, -5, 4, 1, -2, 6, -3, 2];
   const daily = pattern.map((words, i) => {
     const d = new Date(now);
     d.setDate(d.getDate() - (29 - i));
-    return { date: isoDate(d), words };
+    const wpm = 128 + (i * 20) / 29 + wobble[i];
+    return { date: isoDate(d), words, speakingMs: words > 0 ? Math.round((words / wpm) * 60_000) : 0 };
   });
   const hourly = [
     0, 0, 0, 0, 0, 0, 0, 120, 640, 1320, 1810, 1560, 880, 940, 1690, 2240, 1980, 1210, 520, 380, 610, 840,
     450, 90,
   ];
+  if (big) {
+    // six-figure totals, for checking the tiles don't overflow at 960 px
+    return {
+      timeSavedMsAll: 31 * 3600_000 + 7 * MIN,
+      timeSavedMsWeek: 4 * 3600_000 + 51 * MIN,
+      wpmToday: 152.3,
+      wpmAll: 144.9,
+      streakDays: 128,
+      busiestHour: 15,
+      wordsToday: 12_345,
+      wordsWeek: 48_210,
+      wordsAll: 123_456,
+      dictationsAll: 9_876,
+      daily,
+      hourly,
+    };
+  }
   return {
     timeSavedMsAll: 9 * 3600_000 + 42 * MIN,
     timeSavedMsWeek: 2 * 3600_000 + 18 * MIN,
@@ -167,7 +187,7 @@ export function emptyStats(now = new Date()): Stats {
     daily: Array.from({ length: 30 }, (_, i) => {
       const d = new Date(now);
       d.setDate(d.getDate() - (29 - i));
-      return { date: isoDate(d), words: 0 };
+      return { date: isoDate(d), words: 0, speakingMs: 0 };
     }),
     hourly: new Array(24).fill(0),
   };

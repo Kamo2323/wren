@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import type { TranscriptionRow } from "../lib/types";
 import { appName, whenLabel } from "../lib/format";
+import { markMatches } from "../lib/text";
 import { Check, Copy, PenLine, Trash2, X } from "./Icon";
 import { Button, IconButton } from "./Button";
 
@@ -18,16 +19,6 @@ export interface TranscriptCardProps {
   highlight?: string;
 }
 
-/** Split `text` around case-insensitive matches of `query` so matches can be wrapped in <mark>. */
-export function markMatches(text: string, query: string): Array<{ text: string; match: boolean }> {
-  const q = query.trim();
-  if (!q) return [{ text, match: false }];
-  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text
-    .split(new RegExp(`(${escaped})`, "gi"))
-    .filter(Boolean)
-    .map((part) => ({ text: part, match: part.toLowerCase() === q.toLowerCase() }));
-}
 
 type Token = { text: string; word: boolean; core: string; lead: string; trail: string };
 

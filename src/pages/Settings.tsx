@@ -17,6 +17,7 @@ import {
 import { formatNumber, joinNames, retentionLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { useMicLevel } from "../lib/useMicLevel";
+import { LoadError } from "../components/Empty";
 import { engineWords } from "../components/Sidebar";
 import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
@@ -151,7 +152,19 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
             ))}
           </div>
           <span className="mictest__note">
-            {mic.state === "error" ? <span className="is-bad">{mic.message}</span> : testing ? "Say something. The bar should move as you talk." : "Check Wren can hear you."}
+            {mic.state === "error" ? (
+              <span className="is-bad">{mic.message}</span>
+            ) : mic.state === "on" && mic.fellBack ? (
+              <span className="is-bad">
+                Couldn't open “{settings.micDevice}”. Testing “{mic.device ?? "the Windows default"}” instead.
+              </span>
+            ) : mic.state === "on" ? (
+              <>
+                Listening to <strong className="mictest__device">{mic.device ?? "the Windows default"}</strong>. Say something; the bar should move.
+              </>
+            ) : (
+              "Check Wren can hear you."
+            )}
           </span>
         </div>
       </SetRow>
@@ -166,36 +179,54 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
 
 // ---------------------------------------------------------------- dictation basics
 
+const WPM_MIN = 10;
+const WPM_MAX = 200;
+
 function TypingSpeed({ value, fallback, onSave }: { value: number; fallback: number; onSave: (wpm: number) => Promise<void> }) {
   const [text, setText] = useState(String(value));
+  // set on blur, not per keystroke: typing "7" on the way to "75" is not an error
+  const [rejected, setRejected] = useState(false);
   useEffect(() => setText(String(value)), [value]);
-  const n = Number(text);
-  const valid = Number.isInteger(n) && n >= 10 && n <= 200;
 
   function commit() {
-    if (!valid) {
+    const n = Number(text);
+    if (!(text !== "" && Number.isInteger(n) && n >= WPM_MIN && n <= WPM_MAX)) {
+      if (text !== String(value)) setRejected(true);
       setText(String(value));
       return;
     }
+    setRejected(false);
     if (n !== value) void onSave(n);
   }
 
   return (
     <div className="wpm">
-      <div className={`wpm__box ${valid ? "" : "is-invalid"}`}>
+      {rejected && (
+        <span id="typing-wpm-error" className="wpm__error" role="alert">
+          Use {WPM_MIN} to {WPM_MAX}
+        </span>
+      )}
+      <div className={`wpm__box ${rejected ? "is-invalid" : ""}`}>
         <input
           id="typing-wpm"
           className="wpm__input num"
           inputMode="numeric"
           value={text}
           maxLength={3}
-          onChange={(e) => setText(e.target.value.replace(/[^0-9]/g, ""))}
+          onChange={(e) => {
+            setText(e.target.value.replace(/[^0-9]/g, ""));
+            setRejected(false);
+          }}
           onBlur={commit}
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            if (e.key === "Escape") setText(String(value));
+            if (e.key === "Escape") {
+              setText(String(value));
+              setRejected(false);
+            }
           }}
-          aria-describedby="typing-wpm-desc"
+          aria-invalid={rejected}
+          aria-describedby={rejected ? "typing-wpm-desc typing-wpm-error" : "typing-wpm-desc"}
         />
         <span className="wpm__unit">wpm</span>
       </div>
@@ -209,6 +240,13 @@ function TypingSpeed({ value, fallback, onSave }: { value: number; fallback: num
 }
 
 // ---------------------------------------------------------------- watcher + AI
+
+/** The probe's verdict decides the colour (green = the Claude app's box reads quickly), not whether the
+ * watcher happens to be on: it can be on by hand after a slow verdict, or off by hand after a good one. */
+function verdictTone(verdict: string | null): "ok" | "warn" | "info" {
+  if (!verdict) return "info";
+  return /^(readable|ok|pass|passed|fast|good)$/i.test(verdict.trim()) ? "ok" : "warn";
+}
 
 function WatcherSection({ settings, update }: { settings: SettingsData; update: (patch: Partial<SettingsData>) => Promise<void> }) {
   const [status, setStatus] = useState<WatcherStatus | null>(null);
@@ -232,7 +270,7 @@ function WatcherSection({ settings, update }: { settings: SettingsData; update: 
           {status === null ? (
             <Status tone="info">The check of the Claude app hasn't run yet.</Status>
           ) : (
-            <Status tone={status.enabled ? "ok" : "warn"}>
+            <Status tone={verdictTone(status.verdict)}>
               {status.reason ?? (status.enabled ? "The Claude app's text box can be read quickly." : "Off: the Claude app's text box couldn't be read quickly.")}
             </Status>
           )}
@@ -452,17 +490,23 @@ export default function Settings({
   const toast = useToast();
   const latest = useRef<SettingsData | null>(null);
 
-  useEffect(() => {
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(() => {
+    setFailed(false);
     void getSettings()
       .then((s) => {
         latest.current = s;
         setSettings(s);
       })
-      .catch(() => toast.show("Couldn't load settings.", { tone: "danger" }));
+      .catch(() => setFailed(true));
+  }, []);
+
+  useEffect(() => {
+    load();
     void appVersion()
       .then(setVersion)
       .catch(() => {});
-  }, [toast]);
+  }, [load]);
 
   /** Apply a change at once, save it, and put it back if the save fails. */
   const update = useCallback(
@@ -493,6 +537,7 @@ export default function Settings({
         </div>
       </header>
 
+      {!settings && failed && <LoadError what="your settings" onRetry={load} />}
       {settings && (
         <div className="setgroups">
           <MicSection settings={settings} update={update} />

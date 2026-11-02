@@ -2,7 +2,8 @@
 // When the page is not running inside Tauri (Playwright screenshots, `vite` in a browser) every call
 // falls back to mock data from mock.ts, so the UI can be built and checked without the Rust side.
 // Add `?mock=empty` to the URL for the first-run (no data) look. Other mock switches (screenshots only):
-// `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`.
+// `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`,
+// `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states).
 
 import type {
   AiCleanupStatus,
@@ -18,6 +19,9 @@ import type {
   WatcherStatus,
 } from "./types";
 import { emptyStats, mockDictionary, mockStats, mockTranscriptions } from "./mock";
+import { replaceWord, wordCount } from "./text";
+
+export { replaceWord } from "./text";
 
 export const inTauri: boolean =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>);
@@ -61,6 +65,9 @@ const mock = {
 };
 
 const later = <T,>(value: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(value), ms));
+const mockFail = mockParams.get("fail") === "1";
+/** A mock read: like `later`, but rejects under `?fail=1` so the error states can be seen. */
+const read = <T,>(value: T) => (mockFail ? new Promise<T>((_, no) => setTimeout(() => no(new Error("mock failure")), 60)) : later(value));
 
 // ---------- Task 1: app + settings ----------
 
@@ -85,7 +92,7 @@ export const getConstants = (): Promise<UiConstants> =>
   inTauri ? call<UiConstants>("get_constants").then((c) => ({ ...DEFAULT_CONSTANTS, ...c })) : later({ ...DEFAULT_CONSTANTS });
 
 export const appVersion = (): Promise<string> => (inTauri ? call("app_version") : later("0.1.0"));
-export const getSettings = (): Promise<Settings> => (inTauri ? call("get_settings") : later(structuredClone(mock.settings)));
+export const getSettings = (): Promise<Settings> => (inTauri ? call("get_settings") : read(structuredClone(mock.settings)));
 export const saveSettings = (settings: Settings): Promise<void> => {
   if (inTauri) return call("save_settings", { settings });
   mock.settings = structuredClone(settings);
@@ -95,12 +102,12 @@ export const saveSettings = (settings: Settings): Promise<void> => {
 // ---------- Task 4: history, stats, dictionary ----------
 
 export const historyRecent = (limit: number): Promise<TranscriptionRow[]> =>
-  inTauri ? call("history_recent", { limit }) : later(structuredClone(mock.history.slice(0, limit)));
+  inTauri ? call("history_recent", { limit }) : read(structuredClone(mock.history.slice(0, limit)));
 
 export const historySearch = (query: string): Promise<TranscriptionRow[]> => {
   if (inTauri) return call("history_search", { query });
   const q = query.trim().toLowerCase();
-  return later(structuredClone(mock.history.filter((r) => r.finalText.toLowerCase().includes(q))));
+  return read(structuredClone(mock.history.filter((r) => r.finalText.toLowerCase().includes(q))));
 };
 
 export const historyDelete = (id: string): Promise<void> => {
@@ -117,29 +124,39 @@ export const historyDeleteAll = (): Promise<number> => {
   return later(n);
 };
 
-export const statsGet = (): Promise<Stats> => (inTauri ? call("stats_get") : later(mockEmpty ? emptyStats() : mockStats()));
+export const statsGet = (): Promise<Stats> =>
+  inTauri ? call("stats_get") : read(mockEmpty ? emptyStats() : mockStats(new Date(), mockParams.get("big") === "1"));
 
 /** Replace `from` with `to` in a transcription and teach the dictionary (Task 4 `fix_word`). */
 export const historyFixWord = (id: string, from: string, to: string): Promise<FixWordResult> => {
   if (inTauri) return call("history_fix_word", { id, from, to });
   const row = mock.history.find((r) => r.id === id);
-  if (row) row.finalText = replaceWord(row.finalText, from, to);
+  if (row) {
+    // mirrors Rust Store::fix_word: the text is rewritten and its word count follows
+    row.finalText = replaceWord(row.finalText, from, to);
+    row.words = wordCount(row.finalText);
+  }
   const entry: DictionaryEntry = {
     id: mock.nextId++,
     kind: "replacement",
     fromText: from,
     toText: to,
-    source: "manual",
+    source: "learnedHistory",
     status: "active",
     observations: 1,
     hits: 0,
     createdAt: new Date().toISOString(),
   };
   mock.dictionary.push(entry);
-  return later(structuredClone({ replacement: entry, term: null }));
+  let term: DictionaryEntry | null = null;
+  if (!mock.dictionary.some((d) => d.kind === "term" && d.toText.toLowerCase() === to.toLowerCase())) {
+    term = { ...entry, id: mock.nextId++, kind: "term", fromText: null };
+    mock.dictionary.push(term);
+  }
+  return later(structuredClone({ replacement: entry, term }));
 };
 
-export const dictionaryList = (): Promise<DictionaryEntry[]> => (inTauri ? call("dictionary_list") : later(structuredClone(mock.dictionary)));
+export const dictionaryList = (): Promise<DictionaryEntry[]> => (inTauri ? call("dictionary_list") : read(structuredClone(mock.dictionary)));
 
 export const dictionaryAddTerm = (word: string): Promise<DictionaryEntry> => {
   if (inTauri) return call("dictionary_add_term", { word });
@@ -288,12 +305,6 @@ export const onEngineStatus = (h: (s: EngineStatus) => void) => on<unknown>("app
 export const onHistoryChanged = (h: () => void) => on<unknown>("app://history-changed", () => h());
 
 // ---------- helpers ----------
-
-/** Replace whole-word occurrences of `from` (case-sensitive) with `to`. */
-export function replaceWord(text: string, from: string, to: string): string {
-  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.replace(new RegExp(`(^|[^\\p{L}\\p{N}'])${escaped}(?=$|[^\\p{L}\\p{N}'])`, "gu"), (_m, pre) => `${pre}${to}`);
-}
 
 /** Copy text from the main window. Falls back to a hidden textarea if the async API is blocked. */
 export async function copyText(text: string): Promise<boolean> {

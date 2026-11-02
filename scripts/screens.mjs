@@ -241,9 +241,16 @@ if (!only || only === "pages") {
   await page.locator(".chart--hourly .chart__col").nth(15).hover();
   await wait(250);
   await shoot(page, "stats-hourly-hover");
+  await page.locator(".chart--speed .chart__plot").hover({ position: { x: 200, y: 60 } });
+  await wait(250);
+  await shoot(page, "stats-speed-hover");
   await small("stats-min-960x640");
+  await open("stats", "?big=1", ".chart", 1500);
+  await small("stats-big-960x640");
   await open("stats", "?mock=empty", ".chart", 1500);
   await full("stats-empty");
+  await open("history", "?fail=1", ".empty--error");
+  await shoot(page, "history-load-error");
 
   // Settings
   await open("settings", "", ".setcard");

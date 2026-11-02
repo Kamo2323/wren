@@ -7,6 +7,9 @@ import { onHistoryChanged, statsGet, subscribe } from "../lib/api";
 import { formatNumber, formatSavedText, hourLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { BarChart } from "../components/BarChart";
+import { LoadError } from "../components/Empty";
+import { LineChart } from "../components/LineChart";
+import { dayWpm } from "../lib/chart";
 import { CalendarDays, Clock, Flame, Gauge, MessageSquareText, Sparkles, Timer, Zap } from "../components/Icon";
 
 function parseDate(date: string): Date {
@@ -37,7 +40,7 @@ function Total({ label, icon, words, children, hero }: { label: string; icon: Re
         {label}
       </div>
       <div className="total__value num">
-        {formatNumber(words)}
+        <span className="total__num">{formatNumber(words)}</span>
         <span className="stat__unit">{words === 1 ? "word" : "words"}</span>
       </div>
       <div className="total__minis">{children}</div>
@@ -145,7 +148,7 @@ function HourlyCard({ s }: { s: StatsData }) {
           <div>
             <div className="headline__value num">{hourSpan(busiest)}</div>
             <div className="headline__caption">
-              Your busiest hour · {plural(values[busiest] ?? 0, "word", "words")}, {share}% of the month
+              Your busiest hour · {plural(values[busiest] ?? 0, "word", "words")}, {share}% of the last 30 days
             </div>
           </div>
         ) : (
@@ -172,26 +175,43 @@ function HourlyCard({ s }: { s: StatsData }) {
 function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
   const all = s.wpmAll != null ? Math.round(s.wpmAll) : null;
   const today = s.wpmToday != null ? Math.round(s.wpmToday) : null;
-  const top = Math.max(typingWpm, all ?? 0, today ?? 0) * 1.08 || 1;
   const factor = all != null && typingWpm > 0 ? all / typingWpm : null;
+  const days = s.daily;
+  const series = days.map((d) => dayWpm(d.words, d.speakingMs));
+  const last = days.length - 1;
+  const spoken = series.filter((v): v is number => v != null);
+  const ticks = [0, 7, 14, 21]
+    .filter((i) => i < last - 3)
+    .map((i) => ({ i, label: shortDay(days[i].date) }))
+    .concat(last >= 0 ? [{ i: last, label: "Today" }] : []);
+
+  // trend: the average of the last 7 days with speech against the 7 before them
   let trend: string | null = null;
-  if (all != null && today != null && all > 0) {
-    const delta = (today - all) / all;
-    trend = Math.abs(delta) < 0.03 ? "About your usual speed today" : `${Math.round(Math.abs(delta) * 100)}% ${delta > 0 ? "faster" : "slower"} than usual today`;
+  if (spoken.length >= 6) {
+    const recent = series.slice(-7).filter((v): v is number => v != null);
+    const before = series.slice(-14, -7).filter((v): v is number => v != null);
+    if (recent.length >= 2 && before.length >= 2) {
+      const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+      const delta = (avg(recent) - avg(before)) / avg(before);
+      trend = Math.abs(delta) < 0.02 ? "Steady over the last two weeks" : `${Math.round(Math.abs(delta) * 100)}% ${delta > 0 ? "faster" : "slower"} than the week before`;
+    }
   }
-  const rows: Array<{ label: string; value: number | null; tone: string; note?: string }> = [
-    { label: "Today", value: today, tone: "accent" },
-    { label: "All time", value: all, tone: "soft" },
-    { label: "Typing", value: typingWpm, tone: "grey" },
-  ];
 
   return (
     <section className="card chart-card" aria-labelledby="speed-title">
       <div className="chart-card__head">
         <div>
           <h2 id="speed-title" className="chart-card__title">Speaking speed</h2>
-          <p className="chart-card__sub">Words per minute of speech</p>
+          <p className="chart-card__sub">Words per minute, last 30 days</p>
         </div>
+        {today != null && (
+          <dl className="facts">
+            <div className="fact">
+              <dt>Today</dt>
+              <dd className="num">{today}</dd>
+            </div>
+          </dl>
+        )}
       </div>
       <div className="headline">
         <span className="headline__icon">
@@ -201,10 +221,10 @@ function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
           <div>
             <div className="headline__value num">
               {all}
-              <span className="headline__unit">wpm</span>
+              <span className="headline__unit">wpm on average</span>
             </div>
             <div className="headline__caption">
-              {factor != null && factor > 1.05 ? `${factor.toFixed(1)}× faster than typing` : "All-time average"}
+              {factor != null && factor > 1.05 ? `${factor.toFixed(1)}× faster than typing` : "Words ÷ minutes spoken"}
               {trend ? ` · ${trend}` : ""}
             </div>
           </div>
@@ -215,20 +235,22 @@ function SpeedCard({ s, typingWpm }: { s: StatsData; typingWpm: number }) {
           </div>
         )}
       </div>
-      <div className="speed" role="img" aria-label={`Speaking speed: today ${today ?? "none"}, all time ${all ?? "none"}, typing ${typingWpm} words per minute.`}>
-        {rows.map((r) => (
-          <div className="speed__row" key={r.label}>
-            <span className="speed__label">
-              {r.label}
-              {r.note && <span className="speed__note"> · {r.note}</span>}
-            </span>
-            <span className="speed__track">
-              <span className={`speed__bar speed__bar--${r.tone}`} style={{ width: r.value != null ? `${Math.max(2, (r.value / top) * 100)}%` : 0 }} />
-            </span>
-            <span className="speed__value num">{r.value != null ? r.value : "–"}</span>
-          </div>
-        ))}
-      </div>
+      <LineChart
+        values={series}
+        accent={series[last] != null ? last : null}
+        tipLabel={(i) => (i === last ? `Today, ${shortDay(days[i].date)}` : longDay(days[i].date))}
+        tipValue={(i) => `${Math.round(series[i] ?? 0)} wpm`}
+        xTicks={ticks}
+        reference={{ value: typingWpm, label: `Typing ${typingWpm}` }}
+        height={132}
+        ariaLabel={
+          spoken.length
+            ? `Words per minute per day for the last 30 days, from ${Math.round(Math.min(...spoken))} to ${Math.round(Math.max(...spoken))}; typing speed ${typingWpm}.`
+            : "Words per minute per day: none yet."
+        }
+        emptyText="Nothing spoken yet."
+        className="chart--speed"
+      />
     </section>
   );
 }
@@ -239,10 +261,15 @@ export default function Stats({ typingWpm: typingWpmSetting }: { typingWpm?: num
   const constants = useConstants();
   const typingWpm = typingWpmSetting ?? constants.typingWpmDefault;
   const [s, setS] = useState<StatsData | null>(null);
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
-    const next = await statsGet().catch(() => null);
-    if (next) setS(next);
+    try {
+      setS(await statsGet());
+      setFailed(false);
+    } catch {
+      setFailed(true); // keep any stats already on screen; say so only when there are none
+    }
   }, []);
 
   useEffect(() => {
@@ -265,6 +292,7 @@ export default function Stats({ typingWpm: typingWpmSetting }: { typingWpm?: num
         </div>
       </header>
 
+      {!s && failed && <LoadError what="your stats" onRetry={() => void load()} />}
       {s && (
         <>
           <Totals s={s} />
