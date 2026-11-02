@@ -454,6 +454,9 @@ struct Shared {
     own_sequences: Mutex<Vec<u32>>,
     backup: Mutex<Snapshot>,
     finish: Mutex<Option<Finish>>,
+    /// When the restore is due (`CLIPBOARD_RESTORE_MS` after `restore_later`). `SetTimer` can fire
+    /// a tick early, so the timer re-arms until this has passed.
+    restore_due: Mutex<Option<Instant>>,
 }
 
 /// One paste's hold on the clipboard. Created by `Transaction::start`, ended by
@@ -480,6 +483,7 @@ impl Transaction {
             own_sequences: Mutex::new(Vec::new()),
             backup: Mutex::new(Snapshot::default()),
             finish: Mutex::new(None),
+            restore_due: Mutex::new(None),
         });
         let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<isize>>(1);
         let for_worker = shared.clone();
@@ -679,15 +683,18 @@ unsafe fn render_if_still_owner(hwnd: HWND, shared: &Shared) -> bool {
     }
 }
 
+/// Opens the clipboard first, then checks that nobody changed it since the paste, then writes the
+/// backup — all under the one open, so a copy made while the open was retrying is never overwritten.
 unsafe fn restore(hwnd: HWND, shared: &Shared) -> Finish {
-    let now = unsafe { GetClipboardSequenceNumber() };
-    let lost = shared.ownership_lost.load(Ordering::SeqCst);
-    if !should_restore(lost, now, &shared.own_sequences.lock()) {
-        tracing::info!("clipboard changed by another app since the paste; not restoring");
-        return Finish::SkippedChangedByOthers;
-    }
     let backup = shared.backup.lock().clone();
+    let mut changed_by_others = false;
     let result = OpenGuard::open(hwnd).and_then(|_open| {
+        let now = unsafe { GetClipboardSequenceNumber() };
+        let lost = shared.ownership_lost.load(Ordering::SeqCst);
+        if !should_restore(lost, now, &shared.own_sequences.lock()) {
+            changed_by_others = true;
+            return Ok(());
+        }
         shared.self_emptying.store(true, Ordering::SeqCst);
         let r = unsafe { write_formats_open(&backup.formats) };
         shared.self_emptying.store(false, Ordering::SeqCst);
@@ -697,6 +704,10 @@ unsafe fn restore(hwnd: HWND, shared: &Shared) -> Finish {
         r
     });
     match result {
+        Ok(()) if changed_by_others => {
+            tracing::info!("clipboard changed by another app since the paste; not restoring");
+            Finish::SkippedChangedByOthers
+        }
         Ok(()) => {
             tracing::info!(formats = backup.formats.len(), "clipboard restored");
             Finish::Restored
@@ -735,11 +746,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_APP_RESTORE_LATER => {
+            *shared.restore_due.lock() = Some(Instant::now() + Duration::from_millis(CLIPBOARD_RESTORE_MS));
             unsafe { SetTimer(Some(hwnd), RESTORE_TIMER_ID, CLIPBOARD_RESTORE_MS as u32, None) };
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == RESTORE_TIMER_ID => {
             let _ = unsafe { KillTimer(Some(hwnd), RESTORE_TIMER_ID) };
+            let left = shared.restore_due.lock().map(|due| due.saturating_duration_since(Instant::now()));
+            if let Some(left) = left.filter(|d| !d.is_zero()) {
+                // Fired early (timer granularity): wait out the rest of the delay.
+                let ms = (left.as_micros().div_ceil(1000) as u32).max(1);
+                unsafe { SetTimer(Some(hwnd), RESTORE_TIMER_ID, ms, None) };
+                return LRESULT(0);
+            }
             let finish = unsafe { restore(hwnd, shared) };
             *shared.finish.lock() = Some(finish);
             unsafe { PostQuitMessage(0) };
@@ -961,6 +980,38 @@ mod desktop_tests {
         flush();
         assert_eq!(outcome.finish(), Some(Finish::SkippedChangedByOthers));
         assert_eq!(read_text().as_deref(), Some("Their new copy"));
+    }
+
+    /// The restore race (final review, T5 FIX NOW): another app has the clipboard open when the
+    /// restore starts and changes it before closing. The restore must check the sequence number
+    /// *after* its own open succeeds, or it overwrites that change. (The other app sets data
+    /// without emptying, so it does not need the Wren worker to answer WM_DESTROYCLIPBOARD.)
+    #[test]
+    #[ignore = "uses the real desktop clipboard"]
+    fn a_change_made_while_the_restore_waits_to_open_wins() {
+        let _user = UserClipboard::save();
+        put_image_and_text();
+        let tx = Transaction::start("Mine").unwrap();
+        let outcome = tx.outcome();
+        let reader = std::thread::spawn(read_text_unlocked);
+        assert!(tx.wait_read(Duration::from_millis(1000), Duration::from_millis(10)));
+        reader.join().unwrap();
+        let ended = Instant::now();
+        tx.restore_later();
+        let other = std::thread::spawn(move || {
+            let open_at = Duration::from_millis(CLIPBOARD_RESTORE_MS - 60);
+            std::thread::sleep(open_at.saturating_sub(ended.elapsed()));
+            with_owner_window(|hwnd| {
+                let _open = OpenGuard::open(hwnd)?;
+                let close_at = Duration::from_millis(CLIPBOARD_RESTORE_MS + 40);
+                std::thread::sleep(close_at.saturating_sub(ended.elapsed()));
+                unsafe { set_bytes(CF_UNICODETEXT, &wide_bytes("Their copy mid-restore")) }
+            })
+        });
+        other.join().unwrap().expect("the other app's change");
+        flush();
+        assert_eq!(read_text().as_deref(), Some("Their copy mid-restore"), "the restore overwrote their change");
+        assert_eq!(outcome.finish(), Some(Finish::SkippedChangedByOthers));
     }
 
     #[test]
