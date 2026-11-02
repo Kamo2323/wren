@@ -219,6 +219,19 @@ pub fn popup_open_mic_settings(app: AppHandle) -> Result<(), String> {
 /// Windows Settings → Privacy → Microphone.
 pub const MIC_SETTINGS_URI: &str = "ms-settings:privacy-microphone";
 
+/// The popup reports where the pill is (logical px inside the popup window), so only the pill takes
+/// clicks in the clickable states.
+#[tauri::command]
+pub fn popup_hit_rect(x: f64, y: f64, w: f64, h: f64) {
+    crate::popup::set_hit_rect(crate::popup::HitRect { x, y, w, h });
+}
+
+/// The main window's page has painted its first screen: show the window now (once).
+#[tauri::command]
+pub fn main_ready(app: AppHandle) {
+    crate::tray::first_show(&app);
+}
+
 /// Error popup click: open Wren.
 #[tauri::command]
 pub fn popup_open_main(app: AppHandle) {

@@ -69,6 +69,29 @@ fn sweep_store(store: &Store, paths: &Paths) {
     }
 }
 
+/// Colour the main window's caption bar like the canvas (#f3f3f5) with dark text (#24232b), so it
+/// reads as one surface with the sidebar even when Windows is in dark mode. Windows 11 only; on
+/// Windows 10 the call fails and the window's light theme alone gives a light bar.
+fn light_caption(win: &tauri::WebviewWindow) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR};
+    let Ok(h) = win.hwnd() else { return };
+    let hwnd = HWND(h.0 as *mut core::ffi::c_void);
+    let set = |attr, colour: u32| unsafe {
+        let value = COLORREF(colour);
+        DwmSetWindowAttribute(hwnd, attr, &value as *const COLORREF as *const core::ffi::c_void, std::mem::size_of::<COLORREF>() as u32)
+    };
+    // COLORREF is 0x00BBGGRR.
+    let results = [
+        set(DWMWA_CAPTION_COLOR, 0x00F5_F3F3),
+        set(DWMWA_BORDER_COLOR, 0x00F5_F3F3),
+        set(DWMWA_TEXT_COLOR, 0x002B_2324),
+    ];
+    if let Some(Err(err)) = results.into_iter().find(|r| r.is_err()) {
+        tracing::info!(error = %err, "caption colour not supported (Windows 10?); using the light theme only");
+    }
+}
+
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let start_hidden = args.iter().any(|a| a == "--hidden");
@@ -152,10 +175,19 @@ pub fn run() {
                     sweep_store(&state.store, &state.paths);
                     std::thread::sleep(std::time::Duration::from_millis(constants::SWEEP_INTERVAL_MS));
                 })?;
+            if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {
+                light_caption(&main);
+            }
             if !start_hidden && !popup_check {
-                if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {
-                    main.show()?;
-                }
+                // Shown once the page has painted (it calls `main_ready`), so the first thing seen is
+                // the finished Home page, not an empty canvas filling in. A fallback shows it anyway.
+                tray::arm_first_show();
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(constants::MAIN_SHOW_FALLBACK_MS));
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || tray::first_show(&h));
+                });
             }
             if popup_check {
                 // Exercise the popup from a worker thread (as the session will) and exit.
@@ -207,6 +239,8 @@ pub fn run() {
             commands::popup_undo_learned,
             commands::popup_discard,
             commands::popup_open_main,
+            commands::popup_hit_rect,
+            commands::main_ready,
             commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,

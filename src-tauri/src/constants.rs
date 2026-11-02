@@ -155,7 +155,7 @@ pub const WATCH_RETRY_MS: u64 = 300;
 pub const POPUP_PASTED_MS: u64 = 400;
 pub const POPUP_STILL_WORKING_AFTER_MS: u64 = 1_500;
 pub const POPUP_NOTHING_MS: u64 = 1_500;
-pub const POPUP_NO_SOUND_MS: u64 = 2_500;
+pub const POPUP_NO_SOUND_MS: u64 = 4_000;
 pub const POPUP_NOT_PASTED_MS: u64 = 4_000;
 pub const POPUP_LEARNED_MS: u64 = 6_000;
 pub const POPUP_ERROR_MS: u64 = 5_000;
@@ -163,8 +163,17 @@ pub const POPUP_ERROR_MS: u64 = 5_000;
 /// Popup window size in logical pixels (the window is larger than the visible pill so it can animate).
 pub const POPUP_WINDOW_W: f64 = 360.0;
 pub const POPUP_WINDOW_H: f64 = 120.0;
-/// Gap between the bottom of the popup window and the bottom of the monitor work area (logical px).
-pub const POPUP_BOTTOM_MARGIN: f64 = 12.0;
+/// Gap between the bottom of the popup window and the bottom edge of the monitor (logical px). With
+/// the page's 14 px bottom padding the pill's bottom sits 33 px above the monitor's edge: on the top
+/// edge of a bottom taskbar, where Glaido puts its pill, rather than over the app being typed into.
+pub const POPUP_BOTTOM_MARGIN: f64 = 19.0;
+/// While a clickable popup state shows, how often the cursor is checked against the pill so that only
+/// the pill (not the whole transparent window) catches clicks.
+pub const POPUP_HOVER_POLL_MS: u64 = 33;
+/// Extra room around the pill that still counts as "over the pill" (logical px).
+pub const POPUP_HIT_SLOP: f64 = 4.0;
+/// If the main window's page never says it has painted, show the window anyway after this long.
+pub const MAIN_SHOW_FALLBACK_MS: u64 = 1_500;
 
 /// Constants the front end needs, sent once via `get_constants`.
 #[derive(Debug, Clone, Serialize)]
