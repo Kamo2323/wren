@@ -121,6 +121,22 @@ pub const CLIPBOARD_PUBLISH_TIMEOUT_MS: u64 = 3_000;
 
 /// Hotkey watchdog: reinstall the hook if Windows saw input but the hook saw nothing for this long.
 pub const HOOK_WATCHDOG_MS: u64 = 5_000;
+/// Session (Task 8): longest wait for one transcription result from the engine (a 10 min clip on the
+/// GPU takes well under a minute; this only catches a hung sidecar).
+pub const TRANSCRIBE_TIMEOUT_MS: u64 = 120_000;
+/// The popup plays a ~200 ms exit after its own dismiss duration; the session hides the window this
+/// long after that duration (contract with src/popup/Popup.tsx).
+pub const POPUP_HIDE_AFTER_DISMISS_MS: u64 = 250;
+/// Optional start/stop sounds (`sounds` setting): a soft sine tick this long…
+pub const SOUND_TICK_MS: u64 = 40;
+/// …at this peak amplitude (0..1 full scale)…
+pub const SOUND_TICK_AMPLITUDE: f32 = 0.12;
+/// …and these pitches (Hz) for start and stop.
+pub const SOUND_START_HZ: f32 = 880.0;
+pub const SOUND_STOP_HZ: f32 = 660.0;
+/// `--selftest`: the microphone check records this long.
+pub const SELFTEST_MIC_MS: u64 = 400;
+
 /// Correction watcher: first read this long after the paste; one retry this long later if empty.
 pub const WATCH_FIRST_READ_MS: u64 = 250;
 pub const WATCH_RETRY_MS: u64 = 300;

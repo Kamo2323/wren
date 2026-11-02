@@ -11,17 +11,21 @@ pub mod paste;
 pub mod paths;
 pub mod pipeline;
 pub mod popup;
+pub mod selftest;
+pub mod session;
 pub mod settings;
 pub mod store;
 pub mod tray;
 
 use parking_lot::RwLock;
 use paths::Paths;
+use session::app::Services;
 use settings::Settings;
 use store::Store;
 use tauri::Manager;
 
-/// State shared with commands. Later tasks add fields (session handle…).
+/// State shared with commands. The running services (session, engine, hotkey, recorder) are a
+/// separate managed `session::app::Services`, started in `setup` once this exists.
 pub struct AppState {
     pub paths: Paths,
     pub settings: RwLock<Settings>,
@@ -62,6 +66,7 @@ pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let start_hidden = args.iter().any(|a| a == "--hidden");
     let popup_check = args.iter().any(|a| a == "--popup-check");
+    let selftest = args.iter().any(|a| a == "--selftest");
 
     let paths = Paths::resolve();
     if let Err(err) = paths.ensure_dirs() {
@@ -70,7 +75,13 @@ pub fn run() {
     let _log_guard = logging::init(&paths.logs_dir());
     logging::install_panic_hook();
     let settings = Settings::load(&paths.settings_file());
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, "Wren starting");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, selftest, "Wren starting");
+    if selftest {
+        // Headless: no window, no single-instance hand-off, no keys sent.
+        let code = selftest::run(&paths, &settings);
+        drop(_log_guard);
+        std::process::exit(code);
+    }
 
     tauri::Builder::default()
         // Must be first: a second launch just brings the running Wren forward.
@@ -96,6 +107,9 @@ pub fn run() {
             });
             tray::build(app.handle())?;
             popup::create(app.handle())?;
+            // Recorder, engine, hotkey and the session (needs AppState and both windows).
+            let services = session::app::start_services(app.handle())?;
+            app.manage(services);
             // Retention sweep now (off the main thread) and then every SWEEP_INTERVAL_MS.
             let handle = app.handle().clone();
             std::thread::Builder::new()
@@ -156,7 +170,25 @@ pub fn run() {
             commands::dictionary_add_replacement,
             commands::dictionary_set_status,
             commands::dictionary_delete,
+            commands::popup_copy_text,
+            commands::popup_undo_learned,
+            commands::popup_discard,
+            commands::popup_open_main,
+            commands::engine_status,
+            commands::engine_restart,
+            commands::audio_devices,
+            commands::set_audio_device,
+            commands::other_apps_running,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Wren");
+        .build(tauri::generate_context!())
+        .expect("error while building Wren")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
+                if let Some(services) = app.try_state::<Services>() {
+                    services.shutdown();
+                }
+                tracing::info!("Wren stopped");
+            }
+        });
 }

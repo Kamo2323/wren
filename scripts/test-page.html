@@ -11,7 +11,11 @@
 
   What it received is exposed three ways:
     document.title  = "Wren test page | " + JSON {"ta": textarea value, "ce": composer text, "n": paste count,
-                                                  "f": id of the focused element while the window has focus, else ""}
+                                                  "f": id of the focused element while the window has focus, else "",
+                                                  "log": last few log lines, "rect": {ta, ce: [left, top, width, height]
+                                                  in CSS px of the viewport}, "dpr": devicePixelRatio}
+                      (the rects let the live test click a box to focus the page when Windows refuses
+                      SetForegroundWindow)
                       (read with GetWindowTextW — this is what examples/paste_probe.rs does)
     window.wrenTest = { ta(), ce(), pastes: [...] }
     the visible log below the boxes.
@@ -85,7 +89,9 @@
   function ceText() { return ce.innerText.replace(/\n$/, ""); }
   function updateTitle() {
     const f = document.hasFocus() && document.activeElement ? (document.activeElement.id || document.activeElement.tagName.toLowerCase()) : "";
-    document.title = "Wren test page | " + JSON.stringify({ ta: ta.value, ce: ceText(), n: pastes.length, f, log: recent });
+    const r = (el) => { const b = el.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; };
+    document.title = "Wren test page | " + JSON.stringify({ ta: ta.value, ce: ceText(), n: pastes.length, f, log: recent,
+                                                           rect: { ta: r(ta), ce: r(ce) }, dpr: window.devicePixelRatio });
   }
   window.addEventListener("focus", () => setTimeout(updateTitle, 0));
   window.addEventListener("blur", () => setTimeout(updateTitle, 0));
@@ -120,6 +126,7 @@
   window.wrenTest = { ta: () => ta.value, ce: ceText, pastes };
 
   const focus = new URLSearchParams(location.search).get("focus") || "ta";
+  window.addEventListener("resize", () => setTimeout(updateTitle, 0));
   window.addEventListener("load", () => {
     if (focus === "ce") ce.focus();
     else if (focus === "none") { ta.blur(); log.focus(); }
