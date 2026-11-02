@@ -25,7 +25,8 @@ fn popup_state_serialises_exactly_like_the_typescript_union() {
     assert_eq!(json(&PopupState::Transcribing { since_ms: 5 }), r#"{"kind":"transcribing","sinceMs":5}"#);
     assert_eq!(json(&PopupState::Pasted), r#"{"kind":"pasted"}"#);
     assert_eq!(json(&PopupState::Nothing), r#"{"kind":"nothing"}"#);
-    assert_eq!(json(&PopupState::NoSound), r#"{"kind":"noSound"}"#);
+    assert_eq!(json(&PopupState::NoSound { recording: false }), r#"{"kind":"noSound","recording":false}"#);
+    assert_eq!(json(&PopupState::NoSound { recording: true }), r#"{"kind":"noSound","recording":true}"#);
     assert_eq!(json(&PopupState::NotPasted { text: "Hi".into() }), r#"{"kind":"notPasted","text":"Hi"}"#);
     assert_eq!(
         json(&PopupState::Learned { from: "a".into(), to: "b".into(), entry_id: 7 }),
@@ -57,7 +58,9 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
     use PopupState as P;
     assert_eq!(P::Pasted.dismiss_ms(), Some(POPUP_PASTED_MS));
     assert_eq!(P::Nothing.dismiss_ms(), Some(POPUP_NOTHING_MS));
-    assert_eq!(P::NoSound.dismiss_ms(), Some(POPUP_NO_SOUND_MS));
+    assert_eq!(P::NoSound { recording: false }.dismiss_ms(), Some(POPUP_NO_SOUND_MS));
+    // M-1: shown during a recording it stays until the recording replaces it.
+    assert_eq!(P::NoSound { recording: true }.dismiss_ms(), None);
     assert_eq!(P::NotPasted { text: "x".into() }.dismiss_ms(), Some(POPUP_NOT_PASTED_MS));
     assert_eq!(P::Learned { from: "a".into(), to: "b".into(), entry_id: 1 }.dismiss_ms(), Some(POPUP_LEARNED_MS));
     assert_eq!(P::Error { message: "m".into() }.dismiss_ms(), Some(POPUP_ERROR_MS));
@@ -77,7 +80,8 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
     assert!(P::Error { message: "m".into() }.is_clickable());
     assert!(P::HandsFree { started_at_ms: 0, cpu: false }.is_clickable());
     assert!(P::CapWarning { remaining_ms: 1, mode: CapMode::HandsFree }.is_clickable());
-    assert!(P::NoSound.is_clickable(), "opens the microphone privacy settings");
+    assert!(P::NoSound { recording: false }.is_clickable(), "opens the microphone privacy settings");
+    assert!(P::NoSound { recording: true }.is_clickable());
     for s in [
         P::Hidden,
         P::Listening { cpu: false },
@@ -135,6 +139,8 @@ struct FakeRecorder {
     heard: AtomicBool,
     starts: AtomicUsize,
     cancels: AtomicUsize,
+    /// How long `start` takes (a cold or Bluetooth mic can take over a second to open).
+    start_delay_ms: AtomicU64,
 }
 
 fn edge() -> ForegroundInfo {
@@ -152,12 +158,14 @@ impl FakeRecorder {
             heard: AtomicBool::new(true),
             starts: AtomicUsize::new(0),
             cancels: AtomicUsize::new(0),
+            start_delay_ms: AtomicU64::new(0),
         }
     }
 }
 
 impl Recorder for FakeRecorder {
     fn start(&self, wav_path: PathBuf) -> anyhow::Result<()> {
+        std::thread::sleep(Duration::from_millis(self.start_delay_ms.load(Ordering::SeqCst)));
         let mut a = self.active.lock();
         anyhow::ensure!(a.is_none(), "already recording");
         std::fs::create_dir_all(wav_path.parent().unwrap())?;
@@ -575,7 +583,7 @@ fn no_sound_at_all_skips_the_engine() {
     r.env.recorder.heard.store(false, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
     r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
-    wait_until("noSound popup", 2_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound popup", 2_000, || r.env.popups().contains(&PopupState::NoSound { recording: false }));
     assert!(!r.env.events().iter().any(|e| matches!(e, Ev::Transcribe { .. })));
     assert!(r.env.rows().is_empty());
 }
@@ -587,7 +595,9 @@ fn a_silent_mic_is_flagged_while_still_recording() {
     r.env.recorder.elapsed.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.env.recorder.silence.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
-    wait_until("noSound while recording", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound while recording", NO_SOUND_WARN_MS + 1_000, || {
+        r.env.popups().contains(&PopupState::NoSound { recording: true })
+    });
     assert!(r.env.recorder.active.lock().is_some(), "still recording");
     // Sound arrives (e.g. he unmuted): the popup goes back to listening.
     r.env.recorder.silence.store(0, Ordering::SeqCst);
@@ -600,7 +610,7 @@ fn hands_free_returns_from_no_sound_with_its_own_start_time() {
     r.env.recorder.elapsed.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.env.recorder.silence.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
-    wait_until("noSound", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound { recording: true }));
     r.env.recorder.silence.store(0, Ordering::SeqCst);
     wait_until("hands-free again", 1_000, || matches!(r.env.popups().last(), Some(PopupState::HandsFree { .. })));
     let starts: Vec<i64> = r
@@ -703,6 +713,23 @@ fn a_failed_engine_saves_the_dictation_without_text() {
     assert_eq!(transcribe_calls(&r.env), 0);
 }
 
+/// M-3: a failed engine says so, instead of "Warming up…", while recording and after.
+#[test]
+fn a_failed_engine_never_shows_warming_up() {
+    let r = rig();
+    *r.env.status.lock() = EngineStatus::Failed { reason: "The speech engine could not start.".into() };
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    let stopped = PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() };
+    wait_until("engine-stopped popup while recording", POPUP_DELAY_MS + 1_000, || r.env.popups().contains(&stopped));
+    assert!(r.env.recorder.active.lock().is_some(), "still recording (the audio is kept)");
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("not-transcribed popup", 2_000, || {
+        r.env.popups().contains(&PopupState::Error { message: NOT_TRANSCRIBED_MESSAGE.into() })
+    });
+    assert!(!r.env.popups().contains(&PopupState::Warming), "showed Warming up… for a failed engine");
+    assert_eq!(r.env.rows().len(), 1, "saved with its audio (Ruling 25)");
+}
+
 // ---------- review round 1: back-to-back dictations, notices, quit ----------
 
 #[test]
@@ -733,6 +760,49 @@ fn the_first_dictation_waits_for_a_held_second_one_before_pasting() {
     assert!(r.env.paste_at.lock()[0] >= released, "the first paste came after the second hold ended");
 }
 
+/// I-1: the hold counts from the chord, not from the microphone opening — an earlier dictation
+/// must not paste while the next hold's mic is still opening (its chord keys are down).
+#[test]
+fn the_first_dictation_waits_for_a_hold_whose_mic_is_still_opening() {
+    let r = rig();
+    r.env.reply("First one.", 100);
+    r.env.reply("Second one.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || {
+        r.env.recorder.starts.load(Ordering::SeqCst) == 1 && r.env.recorder.active.lock().is_none()
+    });
+    r.env.recorder.start_delay_ms.store(800, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap(); // chord down; the mic takes 800 ms to open
+    sleep(500); // the first is transcribed by now; the second mic is not open yet
+    assert!(r.env.pastes().is_empty(), "pasted while the next hold's mic was opening (chord keys down)");
+    wait_until("second recording", 2_000, || r.env.recorder.active.lock().is_some());
+    sleep(100);
+    assert!(r.env.pastes().is_empty(), "pasted during the second hold");
+    let released = Instant::now();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("both pasted", 3_000, || r.env.pastes().len() == 2);
+    assert_eq!(r.env.pastes(), vec!["First one.".to_string(), "Second one.".to_string()]);
+    assert!(r.env.paste_at.lock()[0] >= released, "the first paste came after the second hold ended");
+}
+
+/// A failed mic start clears the hold, so a waiting dictation is not held back.
+#[test]
+fn a_failed_mic_start_does_not_hold_back_an_earlier_paste() {
+    let r = rig();
+    r.env.reply("First one.", 300);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || {
+        r.env.recorder.starts.load(Ordering::SeqCst) == 1 && r.env.recorder.active.lock().is_none()
+    });
+    // A second start that fails: the fake refuses a start while one is active.
+    *r.env.recorder.active.lock() = Some(std::env::temp_dir().join("wren-held.wav"));
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    wait_until("first pasted", 2_000, || r.env.pastes().len() == 1);
+    *r.env.recorder.active.lock() = None;
+}
+
 #[test]
 fn a_notice_during_a_hands_free_recording_is_shown_when_it_ends() {
     let r = rig();
@@ -751,6 +821,38 @@ fn a_notice_during_a_hands_free_recording_is_shown_when_it_ends() {
     let p = r.env.popups();
     let hf = p.iter().rposition(|s| matches!(s, PopupState::HandsFree { .. })).unwrap();
     assert!(p.iter().rposition(|s| *s == notice).unwrap() > hf);
+}
+
+/// M-2: one deferred slot — a later "Learned" toast must not replace a waiting "Not pasted · click
+/// to copy" (the one he needs to act on).
+#[test]
+fn a_waiting_not_pasted_notice_is_not_replaced_by_a_learned_toast() {
+    let r = rig();
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.active.lock().is_some());
+    let not_pasted = PopupState::NotPasted { text: "First one.".into() };
+    let learned = PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 };
+    r.session.popup_result(not_pasted.clone());
+    r.session.popup_result(learned.clone());
+    sleep(100);
+    r.hk.send(HotkeyEvent::HandsFreeStop).unwrap();
+    wait_until("notice after the recording", 1_000, || r.env.popups().contains(&not_pasted));
+    assert!(!r.env.popups().contains(&learned));
+}
+
+/// …but a newer notice of the same kind (or a more important one) does replace it.
+#[test]
+fn a_later_not_pasted_notice_replaces_a_waiting_learned_toast() {
+    let r = rig();
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("recording", 1_000, || r.env.recorder.active.lock().is_some());
+    let not_pasted = PopupState::NotPasted { text: "First one.".into() };
+    let learned = PopupState::Learned { from: "zoro".into(), to: "Zorvath".into(), entry_id: 3 };
+    r.session.popup_result(learned.clone());
+    r.session.popup_result(not_pasted.clone());
+    sleep(100);
+    r.hk.send(HotkeyEvent::HandsFreeStop).unwrap();
+    wait_until("notice after the recording", 1_000, || r.env.popups().contains(&not_pasted));
 }
 
 #[test]

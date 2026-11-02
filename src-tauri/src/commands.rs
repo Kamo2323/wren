@@ -191,6 +191,16 @@ pub fn popup_copy_text(text: String) -> Result<(), String> {
     })
 }
 
+/// Copy from the main window (Home/History cards). Same as the popup's copy — plain text marked
+/// out of clipboard history and cloud clipboard — never the WebView's clipboard API (I-2).
+#[tauri::command(async)]
+pub fn copy_text(text: String) -> Result<(), String> {
+    crate::paste::copy_text(&text).map_err(|err| {
+        tracing::warn!(error = %err, "copy failed");
+        "Couldn't copy.".to_string()
+    })
+}
+
 /// "Learned X → Y · Undo": switch off what that learn added — the replacement and a term created
 /// with it (a term that was already there stays). A switched-off rule is never re-learned.
 #[tauri::command(async)]
@@ -238,9 +248,11 @@ pub fn popup_open_main(app: AppHandle) {
     crate::tray::show_main(&app);
 }
 
+/// Through the session's view (M-5): "Starting" while Settings swaps the engine, never the old
+/// engine's "Failed: shut down".
 #[tauri::command]
 pub fn engine_status(services: State<'_, Services>) -> EngineStatus {
-    services.env.engine().status()
+    crate::session::Env::engine_status(services.env.as_ref())
 }
 
 #[tauri::command(async)]

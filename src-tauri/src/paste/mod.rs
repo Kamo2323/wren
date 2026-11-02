@@ -5,14 +5,19 @@
 //! `paste_text` checks, in order: Wren's own window → the chord keys are up (≤ `KEYUP_WAIT_MAX_MS`)
 //! → the same window is still in front. Then it backs up the clipboard, publishes the text with
 //! delayed rendering, sends Ctrl+V and waits for the read receipt; if none comes, Ctrl+Shift+V once.
+//! The keys and the focus are checked again immediately before *each* chord: publishing can wait up
+//! to `CLIPBOARD_RESTORE_MS` for the previous paste's restore, and he may have started the next
+//! dictation meanwhile (Ctrl+V with Ctrl+Win held is Win+Ctrl+V, and the injected Ctrl-up would end
+//! the new hold).
 //! After a read the backup is restored `CLIPBOARD_RESTORE_MS` later (unless someone else copied
 //! meanwhile). With no read the text is left on the clipboard.
 //!
 //! What the caller does with each result (Task 8):
 //! - `Pasted` — done.
 //! - `FocusChanged`, `OwnWindow`, `KeysStillHeld` — nothing was sent to any app; the caller shows
-//!   "Not pasted — click to copy" and calls `copy_text` (spec §7). For `FocusChanged` detected
-//!   *after* Ctrl+V (before the Ctrl+Shift+V retry) the text is also already on the clipboard.
+//!   "Not pasted — click to copy" and calls `copy_text` (spec §7). For `FocusChanged` or
+//!   `KeysStillHeld` detected *after* Ctrl+V (before the Ctrl+Shift+V retry) the text is also
+//!   already on the clipboard.
 //! - `Failed(REASON_NOT_READ)` — Ctrl+V and Ctrl+Shift+V were sent and nothing read the clipboard;
 //!   the text is on the clipboard ("Copied — press Ctrl+V").
 //! - `Failed(other)` — the clipboard could not be used (busy, empty text…); nothing was sent.
@@ -127,7 +132,7 @@ pub fn paste_text(text: &str, target: &ForegroundInfo, is_own: &dyn Fn(isize) ->
         return PasteResult::FocusChanged;
     }
     let still_target = || unsafe { GetForegroundWindow() }.0 as isize == target.hwnd;
-    let outcome = paste_via_clipboard(text, &send_chord, &still_target);
+    let outcome = paste_via_clipboard(text, &send_chord, &still_target, &wait_for_keys_up);
     let chars = text.chars().count();
     match outcome {
         Outcome::Read(receipt) => {
@@ -138,6 +143,10 @@ pub fn paste_text(text: &str, target: &ForegroundInfo, is_own: &dyn Fn(isize) ->
         Outcome::NotRead => {
             tracing::warn!(chars, app = %target.process_name, "no clipboard read after Ctrl+V and Ctrl+Shift+V; text left on the clipboard");
             PasteResult::Failed(REASON_NOT_READ.into())
+        }
+        Outcome::KeysHeld => {
+            tracing::info!(chars, "chord keys held again before a paste chord; text left on the clipboard");
+            PasteResult::KeysStillHeld
         }
         Outcome::FocusLost => {
             tracing::info!(chars, "foreground changed before the retry; text left on the clipboard");
@@ -189,13 +198,22 @@ pub enum Outcome {
     Read(Receipt),
     NotRead,
     FocusLost,
+    /// The chord keys were down right before a chord (and stayed down for `KEYUP_WAIT_MAX_MS`);
+    /// nothing more was sent and the text is left on the clipboard.
+    KeysHeld,
     Error(String),
 }
 
-/// The clipboard part of a paste with the key sending and focus check passed in (so it can be
-/// tested without sending keys): publish, `send(Ctrl+V)`, wait for the receipt, retry with
-/// Ctrl+Shift+V while `still_focused()`, then restore later or leave the text.
-pub fn paste_via_clipboard(text: &str, send: &dyn Fn(Chord), still_focused: &dyn Fn() -> bool) -> Outcome {
+/// The clipboard part of a paste with the key sending, focus check and key check passed in (so it
+/// can be tested without sending keys): publish, then for Ctrl+V and the Ctrl+Shift+V retry —
+/// `keys_up()` (false: leave the text, `KeysHeld`), `still_focused()` (false: `FocusLost`),
+/// `send`, wait for the receipt — then restore later or leave the text.
+pub fn paste_via_clipboard(
+    text: &str,
+    send: &dyn Fn(Chord),
+    still_focused: &dyn Fn() -> bool,
+    keys_up: &dyn Fn() -> bool,
+) -> Outcome {
     let tx = match clipboard::Transaction::start(text) {
         Ok(tx) => tx,
         Err(e) => return Outcome::Error(e.to_string()),
@@ -203,6 +221,10 @@ pub fn paste_via_clipboard(text: &str, send: &dyn Fn(Chord), still_focused: &dyn
     let max = Duration::from_millis(PASTE_READ_WAIT_MS);
     let poll = Duration::from_millis(PASTE_READ_POLL_MS);
     for chord in [Chord::CtrlV, Chord::CtrlShiftV] {
+        if !keys_up() {
+            tx.leave_text();
+            return Outcome::KeysHeld;
+        }
         if !still_focused() {
             tx.leave_text();
             return Outcome::FocusLost;

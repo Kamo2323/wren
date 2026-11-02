@@ -430,7 +430,7 @@ impl Store {
     // ---- transcriptions ----
 
     /// Save a dictation and add it to `hourly_totals` in the same transaction (local time =
-    /// this PC's zone). Dictionary hit counts are separate: call `record_hits`.
+    /// this PC's zone); a row without text is not counted. Dictionary hit counts are separate: call `record_hits`.
     pub fn insert_transcription(&self, t: &NewTranscription) -> StoreResult<()> {
         self.insert_transcription_in(t, &Local)
     }
@@ -473,15 +473,18 @@ impl Store {
                 rule_ids,
             ],
         )?;
-        txn.execute(
-            "INSERT INTO hourly_totals (local_date, hour, dictations, words, speaking_ms)
-             VALUES (?1, ?2, 1, ?3, ?4)
-             ON CONFLICT (local_date, hour) DO UPDATE SET
-               dictations = dictations + 1,
-               words = words + excluded.words,
-               speaking_ms = speaking_ms + excluded.speaking_ms",
-            params![local_date, local_hour, words, t.duration_ms as i64],
-        )?;
+        // A row saved without text (not transcribed) is in History only, not in the stats (M-6).
+        if !t.final_text.trim().is_empty() {
+            txn.execute(
+                "INSERT INTO hourly_totals (local_date, hour, dictations, words, speaking_ms)
+                 VALUES (?1, ?2, 1, ?3, ?4)
+                 ON CONFLICT (local_date, hour) DO UPDATE SET
+                   dictations = dictations + 1,
+                   words = words + excluded.words,
+                   speaking_ms = speaking_ms + excluded.speaking_ms",
+                params![local_date, local_hour, words, t.duration_ms as i64],
+            )?;
+        }
         txn.commit()?;
         Ok(())
     }

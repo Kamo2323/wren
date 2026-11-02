@@ -72,7 +72,9 @@ pub enum PopupState {
     Transcribing { since_ms: i64 },
     Pasted,
     Nothing,
-    NoSound,
+    /// `recording`: shown while still recording (a silent mic), so it stays until the recording
+    /// replaces it; after a recording it dismisses itself like any notice (M-1).
+    NoSound { recording: bool },
     NotPasted { text: String },
     Learned { from: String, to: String, entry_id: i64 },
     Error { message: String },
@@ -94,7 +96,7 @@ impl std::fmt::Debug for PopupState {
             Self::Warming => f.write_str("Warming"),
             Self::Pasted => f.write_str("Pasted"),
             Self::Nothing => f.write_str("Nothing"),
-            Self::NoSound => f.write_str("NoSound"),
+            Self::NoSound { recording } => write!(f, "NoSound {{ recording: {recording} }}"),
         }
     }
 }
@@ -105,11 +107,12 @@ impl PopupState {
         match self {
             Self::Pasted => Some(POPUP_PASTED_MS),
             Self::Nothing => Some(POPUP_NOTHING_MS),
-            Self::NoSound => Some(POPUP_NO_SOUND_MS),
+            Self::NoSound { recording: false } => Some(POPUP_NO_SOUND_MS),
             Self::NotPasted { .. } => Some(POPUP_NOT_PASTED_MS),
             Self::Learned { .. } => Some(POPUP_LEARNED_MS),
             Self::Error { .. } => Some(POPUP_ERROR_MS),
             Self::Hidden
+            | Self::NoSound { recording: true }
             | Self::Listening { .. }
             | Self::HandsFree { .. }
             | Self::Warming
@@ -124,7 +127,7 @@ impl PopupState {
         matches!(
             self,
             Self::NotPasted { .. }
-                | Self::NoSound
+                | Self::NoSound { .. }
                 | Self::Learned { .. }
                 | Self::Error { .. }
                 | Self::HandsFree { .. }
@@ -198,6 +201,10 @@ fn epoch_ms() -> i64 {
 
 fn is_ready(s: &EngineStatus) -> bool {
     matches!(s, EngineStatus::Ready { .. })
+}
+
+fn is_failed(s: &EngineStatus) -> bool {
+    matches!(s, EngineStatus::Failed { .. })
 }
 
 fn is_cpu(s: &EngineStatus) -> bool {
@@ -430,7 +437,7 @@ fn is_recording_look(s: &PopupState) -> bool {
         PopupState::Listening { .. }
             | PopupState::HandsFree { .. }
             | PopupState::Warming
-            | PopupState::NoSound
+            | PopupState::NoSound { .. }
             | PopupState::CapWarning { .. }
     )
 }
@@ -470,10 +477,24 @@ impl PopupCtl {
         self.current = state;
     }
 
+    /// Keep `notice` to show when the recording ends. One slot: a newer notice replaces the waiting
+    /// one unless the waiting one matters more (M-2) — "Not pasted · click to copy" (he must act)
+    /// over an error over a "Learned" toast.
+    fn defer(&mut self, notice: PopupState) {
+        let rank = |s: &PopupState| match s {
+            PopupState::NotPasted { .. } => 3,
+            PopupState::Error { .. } => 2,
+            _ => 1,
+        };
+        if self.deferred.as_ref().is_none_or(|waiting| rank(&notice) >= rank(waiting)) {
+            self.deferred = Some(notice);
+        }
+    }
+
     /// A recording's own look. A notice still on screen is kept to be shown again when it ends.
     fn set_recording(&mut self, state: PopupState) {
         if is_notice(&self.current) && self.hide_at.is_some() {
-            self.deferred = Some(self.current.clone());
+            self.defer(self.current.clone());
         }
         self.set(state, true);
     }
@@ -674,7 +695,7 @@ impl SessionLoop {
                     self.popup.set(state, false);
                 } else if is_notice(&state) {
                     // Not lost: shown when this recording ends.
-                    self.popup.deferred = Some(state);
+                    self.popup.defer(state);
                 }
             }
             Msg::Shutdown => {}
@@ -702,14 +723,17 @@ impl SessionLoop {
         let wav = env.audio_dir().join(format!("{id}.wav"));
         let started = Instant::now();
         let created_at = chrono::Utc::now();
+        // The chord keys are down from now, not from when the mic opens (tens of ms; over a second
+        // on a cold or Bluetooth mic): an earlier dictation must not paste meanwhile (I-1).
+        self.shared.hold_recording.store(mode == Mode::Hold, Ordering::SeqCst);
         // The microphone first: nothing else may delay the first word.
         if let Err(err) = rec.start(wav) {
+            self.shared.hold_recording.store(false, Ordering::SeqCst);
             tracing::error!(error = %err, "cannot start recording");
             self.popup.set(PopupState::Error { message: "Wren couldn't open your microphone.".into() }, false);
             env.hotkey(HotkeyCmd::ForceIdle);
             return;
         }
-        self.shared.hold_recording.store(mode == Mode::Hold, Ordering::SeqCst);
         env.dictation_started();
         let status = env.engine_status();
         let (warming, cpu) = (!is_ready(&status), is_cpu(&status));
@@ -750,7 +774,10 @@ impl SessionLoop {
             && now >= due
         {
             a.popup_due = None;
-            let state = if a.warming && !is_ready(&env.engine_status()) {
+            let status = env.engine_status();
+            let state = if is_failed(&status) {
+                PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() }
+            } else if a.warming && !is_ready(&status) {
                 PopupState::Warming
             } else {
                 PopupState::Listening { cpu: a.cpu }
@@ -769,7 +796,7 @@ impl SessionLoop {
             if rec.silence_ms() >= elapsed {
                 tracing::info!(id = %a.id, "no sound from the microphone");
                 a.no_sound_shown = true;
-                self.popup.set_recording(PopupState::NoSound);
+                self.popup.set_recording(PopupState::NoSound { recording: true });
             }
         } else if a.no_sound_shown {
             let elapsed = rec.elapsed_ms();
@@ -843,14 +870,17 @@ impl SessionLoop {
             if intent == Intent::SaveQuiet {
                 self.popup.recording_ended();
             } else {
-                self.popup.recording_ended_with(PopupState::NoSound);
+                self.popup.recording_ended_with(PopupState::NoSound { recording: false });
             }
             return;
         }
         match intent {
             Intent::Paste | Intent::SaveNotice => {
-                let next = if is_ready(&env.engine_status()) {
+                let status = env.engine_status();
+                let next = if is_ready(&status) {
                     PopupState::Transcribing { since_ms: epoch_ms() }
+                } else if is_failed(&status) {
+                    PopupState::Error { message: ENGINE_STOPPED_MESSAGE.into() }
                 } else {
                     PopupState::Warming
                 };
@@ -888,6 +918,8 @@ type AiStep<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// The popup message when a dictation could not be transcribed (its audio is kept in History).
 pub const NOT_TRANSCRIBED_MESSAGE: &str = "Couldn't transcribe — it's saved in History.";
+/// Shown instead of "Warming up…" when the engine has given up (M-3); clicking opens Wren.
+pub const ENGINE_STOPPED_MESSAGE: &str = "Speech engine stopped — open Wren.";
 
 fn drop_audio(job: &Job) {
     let _ = std::fs::remove_file(&job.recording.wav_path);

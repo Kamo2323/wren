@@ -13,6 +13,7 @@ import { POPUP_SPRING, springEasing, supportsLinearEasing } from "../lib/spring"
 import { Check, CircleAlert, Copy, MicOff, Sparkles, Undo2, WrenMark, X } from "../components/Icon";
 import { LevelBars, levelBus, type BarsMode } from "./LevelBars";
 import { DEMO_SEQUENCE, samplePopupState, startMockLevels } from "./mockPopup";
+import { dismissMsFor } from "./dismiss";
 
 /** How long each self-dismissing state stays, from the shared constants. */
 export function dismissDurations(c: UiConstants): Partial<Record<PopupKind, number>> {
@@ -167,7 +168,7 @@ export default function Popup() {
     }
     setDisplay(state);
     setShown(true);
-    const ms = DISMISS_MS[state.kind];
+    const ms = dismissMsFor(state, DISMISS_MS);
     if (ms != null && !(holdMock && !inTauri)) {
       timers.current.push(window.setTimeout(() => setShown(false), ms));
     }
@@ -299,7 +300,7 @@ export default function Popup() {
   } else if (k === "noSound") {
     tone = "warn";
     clickable = openMicSettings; // spec §4: opens Windows' microphone privacy settings
-    countdownMs = DISMISS_MS.noSound;
+    countdownMs = dismissMsFor(display, DISMISS_MS);
     content = (
       <>
         <MicOff size={16} strokeWidth={2.2} className="pill__icon" />

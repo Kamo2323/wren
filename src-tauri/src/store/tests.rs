@@ -205,6 +205,17 @@ fn a_failed_transcription_insert_leaves_the_hourly_totals_alone() {
     assert_eq!((count(&store, "transcriptions"), words), (1, 2));
 }
 
+/// M-6: a dictation saved without text (engine failure, Ruling 25) is in History but not in the
+/// stats — no dictation, no speaking time, no streak day.
+#[test]
+fn an_untranscribed_row_is_not_counted_in_the_stats() {
+    let (_d, store) = open();
+    let t = tx("failed", utc("2026-11-02T09:30:00Z"), "", 4_000);
+    store.insert_transcription_in(&t, &utc_tz()).unwrap();
+    assert_eq!(count(&store, "transcriptions"), 1);
+    assert_eq!(count(&store, "hourly_totals"), 0);
+}
+
 #[test]
 fn rows_round_trip_with_camel_case_json() {
     let (_d, store) = open();

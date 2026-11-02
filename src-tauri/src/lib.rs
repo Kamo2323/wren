@@ -158,8 +158,17 @@ pub fn run() {
                 settings: RwLock::new(settings),
                 store,
             });
-            tray::build(app.handle())?;
-            popup::create(app.handle())?;
+            // Neither is fatal (M-7): without the tray or the popup Wren still dictates and pastes
+            // (the popup helpers no-op without a window). The popup check needs the popup.
+            if let Err(err) = tray::build(app.handle()) {
+                tracing::error!(error = %err, "cannot create the tray icon; continuing without it");
+            }
+            if let Err(err) = popup::create(app.handle()) {
+                if popup_check {
+                    return Err(err.into());
+                }
+                tracing::error!(error = %err, "cannot create the popup window; continuing without it");
+            }
             // Recorder, engine, hotkey and the session (needs AppState and both windows). The popup
             // check only exercises the window: no sidecar, no hook.
             if !popup_check {
@@ -236,6 +245,7 @@ pub fn run() {
             commands::dictionary_set_status,
             commands::dictionary_delete,
             commands::popup_copy_text,
+            commands::copy_text,
             commands::popup_undo_learned,
             commands::popup_discard,
             commands::popup_open_main,
