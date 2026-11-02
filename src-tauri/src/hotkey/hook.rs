@@ -20,6 +20,7 @@ use windows::Win32::System::RemoteDesktop::{
     NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HC_ACTION,
@@ -34,7 +35,8 @@ use windows::core::w;
 use super::chord::{ChordMachine, ChordOutput, KeyDir, KeyEvent};
 use super::key_is_down;
 use crate::constants::{
-    HOOK_SILENT_REINSTALL_MS, HOOK_WATCHDOG_POLL_MS, INJECT_TAG, KEYSTATE_POLL_MS, VK_CHORD_CTRL, VK_CHORD_WIN,
+    HOOK_SILENT_REINSTALL_MS, HOOK_WATCHDOG_POLL_MS, INJECT_TAG, KEYSTATE_POLL_MS, SESSION_NOTIFY_RETRIES,
+    SESSION_NOTIFY_RETRY_MS, VK_CHORD_CTRL, VK_CHORD_WIN,
 };
 
 /// Control messages posted to the hook window from other threads.
@@ -44,6 +46,52 @@ pub(super) const WM_WREN_QUIT: u32 = WM_APP + 3;
 
 const TIMER_KEYSTATE: usize = 1;
 const TIMER_WATCHDOG: usize = 2;
+const TIMER_SESSION_RETRY: usize = 3;
+
+/// AltGr is delivered as a synthetic Left Ctrl down (this scan code, 0x1D with the 0x200 marker)
+/// followed by Right Alt. That fake Ctrl must never count as the chord's Left Ctrl.
+const ALTGR_FAKE_LCTRL_SCAN: u32 = 0x21D;
+
+/// Why the hook is being reinstalled (decides how loudly it is logged).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reinstall {
+    /// Periodic watchdog: can fire every few seconds under mouse-only use, so logged at debug.
+    Watchdog,
+    /// Unlock, resume or reconnect.
+    Resume,
+    /// `HotkeyService::reinstall` (tray "Reinstall hotkey").
+    Manual,
+}
+
+/// Turns one hook callback into a machine input. `None` for messages that are not key down/up
+/// and for AltGr's synthetic Left Ctrl. Pure, so it is unit-tested.
+fn key_event_from(kb: &KBDLLHOOKSTRUCT, msg: u32, t_ms: u64) -> Option<KeyEvent> {
+    let dir = match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN => KeyDir::Down,
+        WM_KEYUP | WM_SYSKEYUP => KeyDir::Up,
+        _ => return None,
+    };
+    let vk = kb.vkCode as u16;
+    if vk == VK_CHORD_CTRL && kb.scanCode == ALTGR_FAKE_LCTRL_SCAN {
+        return None;
+    }
+    Some(KeyEvent {
+        vk,
+        dir,
+        injected: (kb.flags.0 & LLKHF_INJECTED.0) != 0,
+        tagged: kb.dwExtraInfo == INJECT_TAG,
+        t_ms,
+    })
+}
+
+/// Spec §3 watchdog rule on `GetTickCount` values (which wrap every ~49.7 days): reinstall when
+/// Windows saw input at least `HOOK_SILENT_REINSTALL_MS` after the hook's last event. An input
+/// time that appears to be in the future is ignored.
+fn should_reinstall(last_input_tick: u32, last_hook_tick: u32, now_tick: u32) -> bool {
+    let input_after_hook = last_input_tick.wrapping_sub(last_hook_tick) as i32;
+    let input_age = now_tick.wrapping_sub(last_input_tick) as i32;
+    input_age >= 0 && input_after_hook >= HOOK_SILENT_REINSTALL_MS as i32
+}
 
 /// State shared (read-mostly, lock-free) between the hook thread and `HotkeyService`.
 pub(super) struct Shared {
@@ -85,6 +133,9 @@ struct HookThread {
     hinstance: HINSTANCE,
     hook: Option<HHOOK>,
     polling: bool,
+    /// Lock/unlock notifications registered (retried by `TIMER_SESSION_RETRY` if not).
+    session_registered: bool,
+    session_retries_left: u32,
 }
 
 thread_local! {
@@ -118,12 +169,51 @@ impl HookThread {
         }
         unsafe {
             if want {
-                SetTimer(Some(self.hwnd), TIMER_KEYSTATE, KEYSTATE_POLL_MS as u32, None);
+                // Runs inside the hook callback, so no logging: if the timer cannot be created,
+                // `polling` stays false and the next event or message tries again.
+                if SetTimer(Some(self.hwnd), TIMER_KEYSTATE, KEYSTATE_POLL_MS as u32, None) == 0 {
+                    return;
+                }
             } else {
                 let _ = KillTimer(Some(self.hwnd), TIMER_KEYSTATE);
             }
         }
         self.polling = want;
+    }
+
+    /// First attempt at lock/unlock notifications. At early autostart Terminal Services may not be
+    /// up yet; then a timer retries (`retry_session_notifications`) without delaying the hook.
+    fn register_session_notifications(&mut self) {
+        match unsafe { WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION) } {
+            Ok(()) => self.session_registered = true,
+            Err(err) => {
+                let timer = unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_SESSION_RETRY, SESSION_NOTIFY_RETRY_MS as u32, None)
+                };
+                if timer == 0 {
+                    tracing::warn!(%err, "session notifications unavailable; lock/unlock will not reset the hotkey");
+                } else {
+                    self.session_retries_left = SESSION_NOTIFY_RETRIES;
+                    tracing::info!(%err, "session notifications not ready yet; retrying");
+                }
+            }
+        }
+    }
+
+    fn retry_session_notifications(&mut self) {
+        let ok = unsafe { WTSRegisterSessionNotification(self.hwnd, NOTIFY_FOR_THIS_SESSION) }.is_ok();
+        self.session_retries_left = self.session_retries_left.saturating_sub(1);
+        if ok || self.session_retries_left == 0 {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_SESSION_RETRY);
+            }
+        }
+        if ok {
+            self.session_registered = true;
+            tracing::info!("session notifications registered after retrying");
+        } else if self.session_retries_left == 0 {
+            tracing::warn!("session notifications unavailable; lock/unlock will not reset the hotkey");
+        }
     }
 
     /// Installs a fresh hook *before* removing the old one, so there is no moment without a hook.
@@ -139,13 +229,17 @@ impl HookThread {
         Ok(())
     }
 
-    fn reinstall(&mut self) {
+    fn reinstall(&mut self, why: Reinstall) {
         match self.install() {
             Ok(()) => {
                 self.shared.reinstalls.fetch_add(1, Ordering::Relaxed);
-                tracing::info!("hotkey hook reinstalled");
+                if why == Reinstall::Watchdog {
+                    tracing::debug!(?why, "hotkey hook reinstalled");
+                } else {
+                    tracing::info!(?why, "hotkey hook reinstalled");
+                }
             }
-            Err(err) => tracing::error!(%err, "hotkey hook reinstall failed"),
+            Err(err) => tracing::error!(%err, ?why, "hotkey hook reinstall failed"),
         }
     }
 
@@ -158,7 +252,7 @@ impl HookThread {
         self.sync_keystate_timer();
     }
 
-    /// Lock, sleep or disconnect: cancel a hold / stop hands-free, forget all keys.
+    /// Lock, sleep or disconnect: cancel any recording (never a paste), forget all keys.
     fn interrupt(&mut self) {
         let out = self.machine.on_session_interrupted(self.shared.now_ms());
         self.emit(out);
@@ -169,7 +263,7 @@ impl HookThread {
     fn resume(&mut self) {
         self.machine.force_idle();
         self.sync_keystate_timer();
-        self.reinstall();
+        self.reinstall(Reinstall::Resume);
     }
 
     /// Spec §3 watchdog: Windows saw input well after the hook last saw anything.
@@ -179,29 +273,25 @@ impl HookThread {
             return;
         }
         let last_hook = self.shared.last_event_tick.load(Ordering::Relaxed);
-        let input_after_hook = info.dwTime.wrapping_sub(last_hook) as i32;
-        if input_after_hook >= HOOK_SILENT_REINSTALL_MS as i32 {
-            self.reinstall();
+        if should_reinstall(info.dwTime, last_hook, unsafe { GetTickCount() }) {
+            self.reinstall(Reinstall::Watchdog);
         }
     }
 
     /// The hook callback's work. Kept tiny: a few atomics, a few `GetAsyncKeyState`, channel sends.
     fn on_hook_event(&mut self, kb: &KBDLLHOOKSTRUCT, msg: u32) {
-        let dir = match msg {
-            WM_KEYDOWN | WM_SYSKEYDOWN => KeyDir::Down,
-            WM_KEYUP | WM_SYSKEYUP => KeyDir::Up,
-            _ => return,
-        };
+        // Any callback proves the hook is alive (for the watchdog), even one we then ignore.
         let t = self.shared.now_ms();
         self.shared.last_event_ms.store(t, Ordering::Relaxed);
         self.shared.last_event_tick.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+        let Some(ev) = key_event_from(kb, msg, t) else {
+            return;
+        };
 
-        let tagged = kb.dwExtraInfo == INJECT_TAG;
-        if tagged || self.shared.paused.load(Ordering::Relaxed) {
+        if ev.tagged || self.shared.paused.load(Ordering::Relaxed) {
             return; // the machine ignores tagged events anyway; skip the syscalls
         }
-        let vk = kb.vkCode as u16;
-        let ev = KeyEvent { vk, dir, injected: (kb.flags.0 & LLKHF_INJECTED.0) != 0, tagged, t_ms: t };
+        let (vk, dir) = (ev.vk, ev.dir);
 
         let mut out = Vec::new();
         if dir == KeyDir::Down && (vk == VK_CHORD_CTRL || vk == VK_CHORD_WIN) {
@@ -231,7 +321,7 @@ unsafe extern "system" fn ll_keyboard_proc(code: i32, wparam: WPARAM, lparam: LP
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_WREN_REINSTALL => with_state(|s| {
-            s.reinstall();
+            s.reinstall(Reinstall::Manual);
             s.resync();
         }),
         WM_WREN_FORCE_IDLE => with_state(|s| {
@@ -247,6 +337,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             s.sync_keystate_timer();
         }),
         WM_TIMER if wparam.0 == TIMER_WATCHDOG => with_state(|s| s.watchdog()),
+        WM_TIMER if wparam.0 == TIMER_SESSION_RETRY => with_state(|s| s.retry_session_notifications()),
         WM_WTSSESSION_CHANGE => {
             let reason = wparam.0 as u32;
             if reason == WTS_SESSION_LOCK || reason == WTS_CONSOLE_DISCONNECT || reason == WTS_REMOTE_DISCONNECT {
@@ -272,6 +363,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// Body of the hook thread. Sends the hook window handle (or an error) through `ready`, then
 /// pumps messages until `WM_WREN_QUIT`.
 pub(super) fn run(out: Sender<ChordOutput>, shared: Arc<Shared>, ready: Sender<Result<isize, String>>) {
+    // Windows drops a low-level hook whose callback is slow; a busy machine must not starve it.
+    if let Err(err) = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } {
+        tracing::warn!(%err, "could not raise hotkey thread priority");
+    }
     let hwnd = match create_window() {
         Ok(v) => v,
         Err(err) => {
@@ -288,19 +383,24 @@ pub(super) fn run(out: Sender<ChordOutput>, shared: Arc<Shared>, ready: Sender<R
         hinstance,
         hook: None,
         polling: false,
+        session_registered: false,
+        session_retries_left: 0,
     };
+    // Everything else first; the hook goes in last, immediately before the message loop starts
+    // pumping, so no key ever waits on a thread that is not yet reading messages.
+    if unsafe { SetTimer(Some(hwnd), TIMER_WATCHDOG, HOOK_WATCHDOG_POLL_MS as u32, None) } == 0 {
+        tracing::warn!("hotkey watchdog timer unavailable; a silently dropped hook will not be reinstalled");
+    }
+    state.register_session_notifications();
     if let Err(err) = state.install() {
         unsafe {
+            if state.session_registered {
+                let _ = WTSUnRegisterSessionNotification(hwnd);
+            }
             let _ = DestroyWindow(hwnd);
         }
         let _ = ready.send(Err(format!("SetWindowsHookExW: {err}")));
         return;
-    }
-    unsafe {
-        if let Err(err) = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) {
-            tracing::warn!(%err, "session notifications unavailable; lock/unlock will not reset the hotkey");
-        }
-        SetTimer(Some(hwnd), TIMER_WATCHDOG, HOOK_WATCHDOG_POLL_MS as u32, None);
     }
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     let _ = ready.send(Ok(hwnd.0 as isize));
@@ -324,9 +424,12 @@ pub(super) fn run(out: Sender<ChordOutput>, shared: Arc<Shared>, ready: Sender<R
             if let Some(h) = state.hook {
                 let _ = UnhookWindowsHookEx(h);
             }
-            let _ = WTSUnRegisterSessionNotification(state.hwnd);
+            if state.session_registered {
+                let _ = WTSUnRegisterSessionNotification(state.hwnd);
+            }
             let _ = KillTimer(Some(state.hwnd), TIMER_WATCHDOG);
             let _ = KillTimer(Some(state.hwnd), TIMER_KEYSTATE);
+            let _ = KillTimer(Some(state.hwnd), TIMER_SESSION_RETRY);
             let _ = DestroyWindow(state.hwnd);
         }
         // Dropping `state.out` lets the dispatcher thread finish.
@@ -358,5 +461,89 @@ fn create_window() -> windows::core::Result<(HWND, HINSTANCE)> {
             None,
         )?;
         Ok((hwnd, hinstance))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT_FLAGS;
+
+    const SILENT: u32 = HOOK_SILENT_REINSTALL_MS as u32;
+
+    fn kb(vk: u16, scan: u32, flags: u32, extra: usize) -> KBDLLHOOKSTRUCT {
+        KBDLLHOOKSTRUCT {
+            vkCode: vk as u32,
+            scanCode: scan,
+            flags: KBDLLHOOKSTRUCT_FLAGS(flags),
+            time: 0,
+            dwExtraInfo: extra,
+        }
+    }
+
+    #[test]
+    fn altgr_fake_left_ctrl_is_not_a_chord_key() {
+        for msg in [WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP] {
+            assert_eq!(key_event_from(&kb(VK_CHORD_CTRL, ALTGR_FAKE_LCTRL_SCAN, 0, 0), msg, 5), None, "msg {msg:#x}");
+        }
+    }
+
+    #[test]
+    fn altgr_with_win_held_never_starts_a_hold() {
+        // Win held, then AltGr: Windows sends fake LCtrl (scan 0x21D) + Right Alt.
+        let mut m = ChordMachine::new();
+        let mut out = Vec::new();
+        for (vk, scan, msg, t) in [
+            (VK_CHORD_WIN, 0x5B, WM_KEYDOWN, 0),
+            (VK_CHORD_CTRL, ALTGR_FAKE_LCTRL_SCAN, WM_KEYDOWN, 100),
+            (0xA5, 0x38, WM_SYSKEYDOWN, 100),
+            (VK_CHORD_CTRL, ALTGR_FAKE_LCTRL_SCAN, WM_KEYUP, 300),
+            (0xA5, 0x38, WM_KEYUP, 300),
+            (VK_CHORD_WIN, 0x5B, WM_KEYUP, 400),
+        ] {
+            if let Some(ev) = key_event_from(&kb(vk, scan, 0, 0), msg, t) {
+                out.extend(m.on_key(ev));
+            }
+        }
+        assert_eq!(out, vec![]);
+    }
+
+    #[test]
+    fn real_left_ctrl_and_flags_are_classified() {
+        let ev = key_event_from(&kb(VK_CHORD_CTRL, 0x1D, 0, 0), WM_KEYDOWN, 7).unwrap();
+        assert_eq!(ev, KeyEvent { vk: VK_CHORD_CTRL, dir: KeyDir::Down, injected: false, tagged: false, t_ms: 7 });
+        let ev = key_event_from(&kb(VK_CHORD_WIN, 0x5B, LLKHF_INJECTED.0, INJECT_TAG), WM_KEYUP, 9).unwrap();
+        assert_eq!(ev, KeyEvent { vk: VK_CHORD_WIN, dir: KeyDir::Up, injected: true, tagged: true, t_ms: 9 });
+        let ev = key_event_from(&kb(0x53, 0x1F, LLKHF_INJECTED.0, 0), WM_SYSKEYDOWN, 1).unwrap();
+        assert!(ev.injected && !ev.tagged && ev.dir == KeyDir::Down);
+        // Another app's tag is not ours.
+        assert!(!key_event_from(&kb(0x53, 0x1F, 0, 0x5749_4C4C), WM_KEYDOWN, 1).unwrap().tagged);
+        // Not a key message.
+        assert_eq!(key_event_from(&kb(0x53, 0x1F, 0, 0), WM_TIMER, 1), None);
+    }
+
+    #[test]
+    fn watchdog_reinstalls_only_after_silent_period() {
+        // Hook saw a key at 10 000; input at 10 000 + SILENT - 1 is not enough, + SILENT is.
+        assert!(!should_reinstall(10_000 + SILENT - 1, 10_000, 20_000));
+        assert!(should_reinstall(10_000 + SILENT, 10_000, 20_000));
+        // No input since the hook's last event (or the hook is newer than the input).
+        assert!(!should_reinstall(10_000, 10_000, 30_000));
+        assert!(!should_reinstall(9_000, 10_000, 30_000));
+        // Input stamped in the future (clock oddity) is ignored.
+        assert!(!should_reinstall(40_000, 10_000, 30_000));
+    }
+
+    #[test]
+    fn watchdog_maths_survives_tick_wrap() {
+        // GetTickCount wraps at 2^32 ms (~49.7 days).
+        let hook = u32::MAX - 1_000;
+        assert!(should_reinstall(hook.wrapping_add(SILENT), hook, hook.wrapping_add(SILENT + 50)));
+        assert!(!should_reinstall(hook.wrapping_add(SILENT - 1), hook, hook.wrapping_add(SILENT + 50)));
+        // Hook event just after the wrap, input just before it: hook is newer, no reinstall.
+        assert!(!should_reinstall(u32::MAX - 10, 20, 100));
+        // Input after the wrap, "now" also after the wrap, input not in the future.
+        assert!(should_reinstall(4_500, u32::MAX - 600, 4_600));
+        assert!(!should_reinstall(4_500, u32::MAX - 600, 4_400));
     }
 }

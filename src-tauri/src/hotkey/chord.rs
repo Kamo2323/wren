@@ -160,12 +160,15 @@ impl ChordMachine {
         self.others.retain(|vk| is_down(*vk));
     }
 
-    /// The session is ending under us (lock, sleep, disconnect). A hold is cancelled, hands-free
-    /// is stopped, and every key is forgotten because their key-ups will not arrive.
+    /// The session is ending under us (lock, sleep, disconnect). Any recording — hold or
+    /// hands-free — is cancelled, never stopped: a stop would paste after wake into whatever window
+    /// then has focus, while `Cancel` only saves to History (if long enough). Every key is
+    /// forgotten because their key-ups will not arrive.
     pub fn on_session_interrupted(&mut self, now_ms: u64) -> Vec<ChordOutput> {
         let out = match self.mode {
-            Mode::Held { since } => vec![ChordOutput::Cancel { held_ms: now_ms.saturating_sub(since) }],
-            Mode::HandsFree { .. } => vec![ChordOutput::HandsFreeStop],
+            Mode::Held { since: start } | Mode::HandsFree { started_at: start } => {
+                vec![ChordOutput::Cancel { held_ms: now_ms.saturating_sub(start) }]
+            }
             Mode::Idle | Mode::AwaitDouble { .. } => Vec::new(),
         };
         self.force_idle();
@@ -608,17 +611,21 @@ mod tests {
     }
 
     #[test]
-    fn session_interrupted_stops_or_cancels() {
+    fn session_interrupted_cancels_hold_and_handsfree() {
         let mut m = ChordMachine::new();
         feed(&mut m, &[down(CTRL, 0), down(WIN, 10)]);
         assert_eq!(m.on_session_interrupted(5_010), vec![Cancel { held_ms: 5_000 }]);
         assert!(!m.is_recording());
 
+        // Hands-free started at 310: a lock/sleep is a Cancel (never a paste-producing stop),
+        // timed from the hands-free start.
         let mut m = ChordMachine::new();
         press(&mut m, 0, 100);
         feed(&mut m, &[down(CTRL, 300), down(WIN, 310), up(WIN, 350), up(CTRL, 360)]);
-        assert_eq!(m.on_session_interrupted(9_000), vec![HandsFreeStop]);
+        assert_eq!(m.on_session_interrupted(9_310), vec![Cancel { held_ms: 9_000 }]);
         assert!(!m.is_recording());
+        // Nothing left over: the next press is a fresh hold, not a hands-free stop.
+        assert_eq!(no_mask(press(&mut m, 20_000, 600)), vec![HoldStart, HoldEnd { held_ms: 600 }]);
 
         let mut m = ChordMachine::new();
         assert_eq!(m.on_session_interrupted(100), vec![]);
