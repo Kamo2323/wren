@@ -77,6 +77,9 @@ let go. Your words appear about a third of a second later. Wren is already runni
 
 ## Known limits / not done
 
+- **One small glitch left** (found by the last re-review): only if the speech engine has *failed*, a quick tap of
+  Ctrl+Win can leave an invisible pill-sized area at the bottom-centre of the screen that catches clicks until the
+  next dictation. Fixing it is a one-liner — I've offered it below together with the graphics-memory item.
 - **Graphics memory:** if something else fills your graphics card (e.g. Unity with a big scene, or a large Ollama
   model), Wren's speech engine can run out of memory and that dictation fails ("saved in History, not
   transcribed"). Quick fix: Settings → Restart engine (it falls back to the CPU if the card is still full). I left
@@ -98,6 +101,7 @@ let go. Your words appear about a third of a second later. Wren is already runni
 
 - App: `%LOCALAPPDATA%\Programs\Wren\wren.exe` (Start menu → Wren). Data: `%LOCALAPPDATA%\Wren`, settings:
   `%APPDATA%\Wren`. Uninstalling never touches your data.
-- Code: `C:\Wren` (git). Start with `README.md`; the design is `docs/design/SPEC.md`; the full decision log is
-  `docs/HANDOFF.md`.
+- Code: `C:\Wren` (git). Start with `README.md`; the design is `docs/design/SPEC.md`; the handoff is
+  `docs/HANDOFF.md`; every decision I made overnight (30 of them, each with its cost if wrong) is in
+  `docs/RULINGS.md`; reviews are in `docs/reviews/`.
 - Rebuild + reinstall after a change: `powershell -ExecutionPolicy Bypass -File scripts\release.ps1`.
