@@ -702,14 +702,17 @@ impl SessionLoop {
         let wav = env.audio_dir().join(format!("{id}.wav"));
         let started = Instant::now();
         let created_at = chrono::Utc::now();
+        // The chord keys are down from now, not from when the mic opens (tens of ms; over a second
+        // on a cold or Bluetooth mic): an earlier dictation must not paste meanwhile (I-1).
+        self.shared.hold_recording.store(mode == Mode::Hold, Ordering::SeqCst);
         // The microphone first: nothing else may delay the first word.
         if let Err(err) = rec.start(wav) {
+            self.shared.hold_recording.store(false, Ordering::SeqCst);
             tracing::error!(error = %err, "cannot start recording");
             self.popup.set(PopupState::Error { message: "Wren couldn't open your microphone.".into() }, false);
             env.hotkey(HotkeyCmd::ForceIdle);
             return;
         }
-        self.shared.hold_recording.store(mode == Mode::Hold, Ordering::SeqCst);
         env.dictation_started();
         let status = env.engine_status();
         let (warming, cpu) = (!is_ready(&status), is_cpu(&status));

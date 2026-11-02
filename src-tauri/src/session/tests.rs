@@ -135,6 +135,8 @@ struct FakeRecorder {
     heard: AtomicBool,
     starts: AtomicUsize,
     cancels: AtomicUsize,
+    /// How long `start` takes (a cold or Bluetooth mic can take over a second to open).
+    start_delay_ms: AtomicU64,
 }
 
 fn edge() -> ForegroundInfo {
@@ -152,12 +154,14 @@ impl FakeRecorder {
             heard: AtomicBool::new(true),
             starts: AtomicUsize::new(0),
             cancels: AtomicUsize::new(0),
+            start_delay_ms: AtomicU64::new(0),
         }
     }
 }
 
 impl Recorder for FakeRecorder {
     fn start(&self, wav_path: PathBuf) -> anyhow::Result<()> {
+        std::thread::sleep(Duration::from_millis(self.start_delay_ms.load(Ordering::SeqCst)));
         let mut a = self.active.lock();
         anyhow::ensure!(a.is_none(), "already recording");
         std::fs::create_dir_all(wav_path.parent().unwrap())?;
@@ -731,6 +735,49 @@ fn the_first_dictation_waits_for_a_held_second_one_before_pasting() {
     wait_until("both pasted", 3_000, || r.env.pastes().len() == 2);
     assert_eq!(r.env.pastes(), vec!["First one.".to_string(), "Second one.".to_string()]);
     assert!(r.env.paste_at.lock()[0] >= released, "the first paste came after the second hold ended");
+}
+
+/// I-1: the hold counts from the chord, not from the microphone opening — an earlier dictation
+/// must not paste while the next hold's mic is still opening (its chord keys are down).
+#[test]
+fn the_first_dictation_waits_for_a_hold_whose_mic_is_still_opening() {
+    let r = rig();
+    r.env.reply("First one.", 100);
+    r.env.reply("Second one.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || {
+        r.env.recorder.starts.load(Ordering::SeqCst) == 1 && r.env.recorder.active.lock().is_none()
+    });
+    r.env.recorder.start_delay_ms.store(800, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap(); // chord down; the mic takes 800 ms to open
+    sleep(500); // the first is transcribed by now; the second mic is not open yet
+    assert!(r.env.pastes().is_empty(), "pasted while the next hold's mic was opening (chord keys down)");
+    wait_until("second recording", 2_000, || r.env.recorder.active.lock().is_some());
+    sleep(100);
+    assert!(r.env.pastes().is_empty(), "pasted during the second hold");
+    let released = Instant::now();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("both pasted", 3_000, || r.env.pastes().len() == 2);
+    assert_eq!(r.env.pastes(), vec!["First one.".to_string(), "Second one.".to_string()]);
+    assert!(r.env.paste_at.lock()[0] >= released, "the first paste came after the second hold ended");
+}
+
+/// A failed mic start clears the hold, so a waiting dictation is not held back.
+#[test]
+fn a_failed_mic_start_does_not_hold_back_an_earlier_paste() {
+    let r = rig();
+    r.env.reply("First one.", 300);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 1_000 }).unwrap();
+    wait_until("first stopped", 1_000, || {
+        r.env.recorder.starts.load(Ordering::SeqCst) == 1 && r.env.recorder.active.lock().is_none()
+    });
+    // A second start that fails: the fake refuses a start while one is active.
+    *r.env.recorder.active.lock() = Some(std::env::temp_dir().join("wren-held.wav"));
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    wait_until("first pasted", 2_000, || r.env.pastes().len() == 1);
+    *r.env.recorder.active.lock() = None;
 }
 
 #[test]
