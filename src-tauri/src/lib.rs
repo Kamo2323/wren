@@ -6,6 +6,7 @@ pub mod dictionary;
 pub mod hotkey;
 pub mod logging;
 pub mod paths;
+pub mod pipeline;
 pub mod popup;
 pub mod settings;
 pub mod store;

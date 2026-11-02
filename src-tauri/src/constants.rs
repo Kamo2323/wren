@@ -98,6 +98,27 @@ pub const LEVEL_EVENTS_HZ: u32 = 30;
 pub const AI_CLEANUP_TIMEOUT_MS: u64 = 2_500;
 pub const AI_CLEANUP_MAX_LENGTH_CHANGE: f32 = 0.30;
 
+/// Silence guard (spec §6): a phrase repeated more than this many times in a row is collapsed to one…
+pub const REPETITION_MAX_REPEATS: usize = 4;
+/// …where a "phrase" is at most this many words.
+pub const REPETITION_MAX_PHRASE_WORDS: usize = 8;
+/// On a short clip, text of at least this many words found inside the model prompt is a prompt echo.
+pub const PROMPT_ECHO_MIN_WORDS: usize = 3;
+
+/// Paste (spec §7): while waiting for the chord keys to come up, check this often.
+pub const KEYUP_POLL_MS: u64 = 10;
+/// After Ctrl+V, check for the clipboard read receipt this often…
+pub const PASTE_READ_POLL_MS: u64 = 10;
+/// …for at most this long (then Ctrl+Shift+V once, waited for just as long).
+pub const PASTE_READ_WAIT_MS: u64 = 1_000;
+/// `OpenClipboard` is retried this many times, this far apart, when another app holds it.
+pub const CLIPBOARD_OPEN_RETRIES: u32 = 5;
+pub const CLIPBOARD_OPEN_RETRY_MS: u64 = 20;
+/// A clipboard format bigger than this is not backed up (it is lost on restore instead).
+pub const CLIPBOARD_BACKUP_MAX_FORMAT_BYTES: usize = 256 * 1024 * 1024;
+/// Longest wait for the clipboard worker to publish Wren's text before giving up.
+pub const CLIPBOARD_PUBLISH_TIMEOUT_MS: u64 = 3_000;
+
 /// Hotkey watchdog: reinstall the hook if Windows saw input but the hook saw nothing for this long.
 pub const HOOK_WATCHDOG_MS: u64 = 5_000;
 /// Correction watcher: first read this long after the paste; one retry this long later if empty.
