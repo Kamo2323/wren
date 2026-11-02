@@ -234,6 +234,9 @@ impl Supervisor {
                     continue;
                 }
                 Outcome::Failed { reason, was_ready } => {
+                    // Say so at once: the sidecar is gone, so nothing may look Ready during the back-off.
+                    // (Becomes Failed below instead if this was one failure too many.)
+                    self.set_status(EngineStatus::Starting);
                     pre_ready_crashes = if was_ready { 0 } else { pre_ready_crashes + 1 };
                     reason
                 }
@@ -405,17 +408,22 @@ impl Supervisor {
 
     fn read_stdout(self: Arc<Self>, stdout: ChildStdout, generation: u64, events: Sender<Event>) {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
+        let mut raw = Vec::new();
         loop {
-            line.clear();
-            match reader.read_line(&mut line) {
+            raw.clear();
+            // Bytes, not read_line: one non-UTF-8 byte must cost one line, not the whole engine.
+            match reader.read_until(b'\n', &mut raw) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {}
             }
+            let Ok(line) = std::str::from_utf8(&raw) else {
+                tracing::warn!("non-UTF-8 line from the speech engine skipped");
+                continue;
+            };
             if line.trim().is_empty() {
                 continue;
             }
-            let msg = match protocol::parse(&line) {
+            let msg = match protocol::parse(line) {
                 Ok(m) => m,
                 Err(err) => {
                     // Never log the line: it could be a result.
@@ -666,9 +674,11 @@ def send(m):
 if model == "crash-loading" and not cpu:
     sys.stderr.write("fake: crashing while loading\n"); os._exit(1)
 time.sleep(0.2)
+if model == "badbytes":
+    sys.stdout.flush(); sys.stdout.buffer.write(b"\xff\xfe not utf-8\n"); sys.stdout.buffer.flush()
 send({"type": "log", "level": "info", "msg": "fake loaded"})
 send({"type": "ready", "engine": "faster-whisper", "model": model, "device": "cpu" if cpu else "cuda",
-      "compute": "int8", "vram_mb": 7, "caps": {"hotwords": True, "prompt": True, "vad": True}})
+      "compute": "int8", "vram_mb": 7, "caps": {"hotwords": False, "prompt": True, "vad": True}})
 if model == "die-after-ready":
     time.sleep(0.2); os._exit(1)
 for line in sys.stdin:
@@ -703,10 +713,15 @@ for line in sys.stdin:
         status_rx: Receiver<EngineStatus>,
     }
 
+    /// The fake needs the runtime interpreter. Missing runtime = a loud failure (never a silent green),
+    /// unless WREN_ALLOW_NO_RUNTIME=1 says to skip these tests on purpose.
     fn fake(model: &str) -> Option<Fake> {
         let Some(python) = runtime_python() else {
-            eprintln!("skipped: runtime python not installed (scripts/setup-runtime.ps1)");
-            return None;
+            if std::env::var("WREN_ALLOW_NO_RUNTIME").as_deref() == Ok("1") {
+                eprintln!("SKIPPED (WREN_ALLOW_NO_RUNTIME=1): supervisor test needs the runtime python");
+                return None;
+            }
+            panic!("the speech runtime is not installed: run scripts/setup-runtime.ps1 (or set WREN_ALLOW_NO_RUNTIME=1 to skip on purpose)");
         };
         let dir = std::env::temp_dir().join(format!("wren-fake-sidecar-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("wren_sidecar")).unwrap();
@@ -785,7 +800,12 @@ for line in sys.stdin:
         let t0 = Instant::now();
         let out = std::process::Command::new("taskkill").args(["/F", "/PID", &interpreter.to_string()]).output().unwrap();
         assert!(out.status.success());
+        // Review r1: the crash must show at once, not only after the back-off.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!is_ready(&f.engine.status()), "status still Ready 200 ms after the kill: {:?}", f.engine.status());
+        assert_eq!(f.engine.transcribe(req("dead", "a.wav"), Duration::from_secs(1)), Err(EngineError::NotReady));
         wait_for(&f.status_rx, Duration::from_secs(5), |s| *s == EngineStatus::Starting).expect("noticed the crash");
+        assert!(t0.elapsed() < Duration::from_millis(SIDECAR_RESTART_BACKOFF_MS[0]), "Starting was sent before the back-off, not after");
         wait_for(&f.status_rx, Duration::from_secs(10), is_ready).expect("ready again");
         let took = t0.elapsed();
         assert!(took >= Duration::from_millis(SIDECAR_RESTART_BACKOFF_MS[0]), "waited the first back-off step: {took:?}");
@@ -808,6 +828,18 @@ for line in sys.stdin:
         wait_for(&f.status_rx, Duration::from_secs(5), |s| *s == EngineStatus::Starting).expect("restarting");
         wait_for(&f.status_rx, Duration::from_secs(15), is_ready).expect("ready after restart");
         assert!(before.iter().all(|&p| !process_is_running(p)));
+        drop(f.engine);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[test]
+    fn non_utf8_output_is_skipped_not_fatal() {
+        let Some(f) = fake("badbytes") else { return };
+        wait_for(&f.status_rx, Duration::from_secs(15), is_ready).expect("ready despite a non-UTF-8 line");
+        let pids = f.engine.process_ids();
+        let r = f.engine.transcribe(req("u1", "a.wav"), Duration::from_secs(5)).unwrap();
+        assert!(r.text.starts_with("heard"));
+        assert_eq!(f.engine.process_ids(), pids, "same sidecar, no restart");
         drop(f.engine);
         let _ = std::fs::remove_dir_all(&f.dir);
     }

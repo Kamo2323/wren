@@ -25,8 +25,8 @@ SAMPLE_RATE = 16000
 # Clips shorter than this (10 ms) hold no speech; skip the model entirely.
 MIN_SAMPLES = SAMPLE_RATE // 100
 
-# Whisper keeps only ~220 prompt tokens; ~4 characters a token leaves room for the decoder's own.
-MAX_PROMPT_CHARS = 800
+# faster-whisper keeps the last 223 prompt tokens (max_length // 2 - 1); spec §5 says keep under ~200.
+PROMPT_TOKEN_BUDGET = 200
 
 Log = Callable[[str, str], None]
 
@@ -83,33 +83,56 @@ def read_wav(path: str | Path) -> np.ndarray:
         raise BadAudio(f"audio file could not be decoded ({type(e).__name__})") from e
 
 
-def build_prompt(bias_terms: list[str], prompt: str) -> str | None:
+def estimate_tokens(text: str) -> int:
+    """Used only when no tokenizer is at hand: deliberately pessimistic (~3 characters a token)."""
+    return (len(text) + 2) // 3
+
+
+def build_prompt(
+    bias_terms: list[str], prompt: str, count_tokens: Callable[[str], int] = estimate_tokens
+) -> str | None:
     """The initial_prompt: the optional sentence, then "Glossary: t1, t2, ...".
 
     Benchmark result (docs/research/stt-benchmark.md, spec §5): dictionary terms go ONLY into this
     Glossary prompt (name recall 80% -> 93%, no harm elsewhere), never into `hotwords`, which made
-    the model append dictionary words to trailing silence. Terms that would push the prompt past
-    MAX_PROMPT_CHARS are dropped from the end (the list arrives ranked, best first).
+    the model append dictionary words to trailing silence.
+
+    Budget: faster-whisper keeps only the LAST ~223 prompt tokens, so an over-long prompt silently
+    loses its front (the "Glossary:" label and the best-ranked terms). The prompt is therefore built to
+    at most PROMPT_TOKEN_BUDGET tokens as counted by `count_tokens` (the model's own tokenizer once
+    loaded), adding terms in rank order and stopping at the first that does not fit, so it is always
+    the lowest-ranked terms that are left out.
     """
     sentence = (prompt or "").strip()
     terms = [t.strip() for t in bias_terms if t and t.strip()]
-    budget = MAX_PROMPT_CHARS - len(sentence) - len("Glossary: .") - 1
+    if sentence and count_tokens(sentence) > PROMPT_TOKEN_BUDGET:
+        sentence = ""  # an over-long sentence would crowd out the glossary, which matters more
     kept: list[str] = []
     for t in terms:
-        cost = len(t) + (2 if kept else 0)
-        if cost > budget:
+        if count_tokens(_compose(sentence, kept + [t])) > PROMPT_TOKEN_BUDGET:
             break
         kept.append(t)
-        budget -= cost
+    return _compose(sentence, kept) or None
+
+
+def _compose(sentence: str, terms: list[str]) -> str:
     parts = [sentence] if sentence else []
-    if kept:
-        parts.append("Glossary: " + ", ".join(kept) + ".")
-    return " ".join(parts) or None
+    if terms:
+        parts.append("Glossary: " + ", ".join(terms) + ".")
+    return " ".join(parts)
+
+
+OOM_MARKERS = (
+    "out of memory",  # also "CUDA error: out of memory" / "CUDA failed with error out of memory"
+    "cuda_error_out_of_memory",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+)
 
 
 def is_oom(e: BaseException) -> bool:
     s = str(e).lower()
-    return "out of memory" in s or "cuda_error_out_of_memory" in s
+    return any(m in s for m in OOM_MARKERS)
 
 
 class Transcriber:
@@ -120,6 +143,14 @@ class Transcriber:
         self.device = device
         self.compute = compute
         self.vram_mb = 0
+        tok = getattr(model, "hf_tokenizer", None)
+        if tok is not None:
+            # Counted exactly as faster-whisper encodes the prompt (" " + text, no special tokens).
+            self.count_tokens: Callable[[str], int] = lambda text: len(
+                tok.encode(" " + text.strip(), add_special_tokens=False).ids
+            )
+        else:
+            self.count_tokens = estimate_tokens
 
     def transcribe_array(self, audio: np.ndarray, bias_terms: list[str], prompt: str) -> dict[str, Any]:
         t0 = time.perf_counter()
@@ -131,7 +162,7 @@ class Transcriber:
             vad_filter=self.cfg.vad,
             condition_on_previous_text=self.cfg.condition_on_previous_text,
         )
-        initial_prompt = build_prompt(bias_terms, prompt)
+        initial_prompt = build_prompt(bias_terms, prompt, self.count_tokens)
         if initial_prompt:
             kwargs["initial_prompt"] = initial_prompt  # never `hotwords`: see build_prompt
         segments_iter, info = self.model.transcribe(audio, **kwargs)

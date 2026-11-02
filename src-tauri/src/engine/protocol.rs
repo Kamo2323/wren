@@ -39,6 +39,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Caps {
+    /// false from Wren's sidecar: bias terms go in the Glossary prompt only (benchmark, spec §5).
     pub hotwords: bool,
     pub prompt: bool,
     pub vad: bool,
@@ -182,7 +183,7 @@ mod tests {
 
     #[test]
     fn parses_ready() {
-        let m = parse(r#"{"v":1,"type":"ready","engine":"faster-whisper","model":"large-v3-turbo","device":"cuda","compute":"int8_float16","vram_mb":1400,"caps":{"hotwords":true,"prompt":true,"vad":true}}"#).unwrap();
+        let m = parse(r#"{"v":1,"type":"ready","engine":"faster-whisper","model":"large-v3-turbo","device":"cuda","compute":"int8_float16","vram_mb":1400,"caps":{"hotwords":false,"prompt":true,"vad":true}}"#).unwrap();
         assert_eq!(
             m,
             Incoming::Ready {
@@ -191,7 +192,7 @@ mod tests {
                 device: "cuda".into(),
                 compute: "int8_float16".into(),
                 vram_mb: 1400,
-                caps: Caps { hotwords: true, prompt: true, vad: true },
+                caps: Caps { hotwords: false, prompt: true, vad: true },
             }
         );
     }
