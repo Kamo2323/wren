@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { niceTicks, dayWpm } from "../src/lib/chart.ts";
 import { replaceWord, wordCount, markMatches } from "../src/lib/text.ts";
 import { copyTextWith } from "../src/lib/copy.ts";
+import { dismissMsFor } from "../src/popup/dismiss.ts";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,6 +133,15 @@ test("no page copies with navigator.clipboard / execCommand except copy.ts's bro
   };
   walk(root);
   assert.deepEqual(offenders, []);
+});
+
+// M-1: "No sound" shown during a recording never dismisses itself (the hands-free × must stay).
+test("dismissMsFor: noSound while recording stays; after a recording it dismisses", () => {
+  const d = { pasted: 1500, noSound: 4000, notPasted: 6000 };
+  assert.equal(dismissMsFor({ kind: "noSound", recording: true }, d), undefined);
+  assert.equal(dismissMsFor({ kind: "noSound", recording: false }, d), 4000);
+  assert.equal(dismissMsFor({ kind: "pasted" }, d), 1500);
+  assert.equal(dismissMsFor({ kind: "handsfree", startedAtMs: 1, cpu: false }, d), undefined);
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

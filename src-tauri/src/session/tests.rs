@@ -25,7 +25,8 @@ fn popup_state_serialises_exactly_like_the_typescript_union() {
     assert_eq!(json(&PopupState::Transcribing { since_ms: 5 }), r#"{"kind":"transcribing","sinceMs":5}"#);
     assert_eq!(json(&PopupState::Pasted), r#"{"kind":"pasted"}"#);
     assert_eq!(json(&PopupState::Nothing), r#"{"kind":"nothing"}"#);
-    assert_eq!(json(&PopupState::NoSound), r#"{"kind":"noSound"}"#);
+    assert_eq!(json(&PopupState::NoSound { recording: false }), r#"{"kind":"noSound","recording":false}"#);
+    assert_eq!(json(&PopupState::NoSound { recording: true }), r#"{"kind":"noSound","recording":true}"#);
     assert_eq!(json(&PopupState::NotPasted { text: "Hi".into() }), r#"{"kind":"notPasted","text":"Hi"}"#);
     assert_eq!(
         json(&PopupState::Learned { from: "a".into(), to: "b".into(), entry_id: 7 }),
@@ -57,7 +58,9 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
     use PopupState as P;
     assert_eq!(P::Pasted.dismiss_ms(), Some(POPUP_PASTED_MS));
     assert_eq!(P::Nothing.dismiss_ms(), Some(POPUP_NOTHING_MS));
-    assert_eq!(P::NoSound.dismiss_ms(), Some(POPUP_NO_SOUND_MS));
+    assert_eq!(P::NoSound { recording: false }.dismiss_ms(), Some(POPUP_NO_SOUND_MS));
+    // M-1: shown during a recording it stays until the recording replaces it.
+    assert_eq!(P::NoSound { recording: true }.dismiss_ms(), None);
     assert_eq!(P::NotPasted { text: "x".into() }.dismiss_ms(), Some(POPUP_NOT_PASTED_MS));
     assert_eq!(P::Learned { from: "a".into(), to: "b".into(), entry_id: 1 }.dismiss_ms(), Some(POPUP_LEARNED_MS));
     assert_eq!(P::Error { message: "m".into() }.dismiss_ms(), Some(POPUP_ERROR_MS));
@@ -77,7 +80,8 @@ fn popup_dismiss_times_and_clickable_states_follow_the_contract() {
     assert!(P::Error { message: "m".into() }.is_clickable());
     assert!(P::HandsFree { started_at_ms: 0, cpu: false }.is_clickable());
     assert!(P::CapWarning { remaining_ms: 1, mode: CapMode::HandsFree }.is_clickable());
-    assert!(P::NoSound.is_clickable(), "opens the microphone privacy settings");
+    assert!(P::NoSound { recording: false }.is_clickable(), "opens the microphone privacy settings");
+    assert!(P::NoSound { recording: true }.is_clickable());
     for s in [
         P::Hidden,
         P::Listening { cpu: false },
@@ -579,7 +583,7 @@ fn no_sound_at_all_skips_the_engine() {
     r.env.recorder.heard.store(false, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
     r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
-    wait_until("noSound popup", 2_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound popup", 2_000, || r.env.popups().contains(&PopupState::NoSound { recording: false }));
     assert!(!r.env.events().iter().any(|e| matches!(e, Ev::Transcribe { .. })));
     assert!(r.env.rows().is_empty());
 }
@@ -591,7 +595,9 @@ fn a_silent_mic_is_flagged_while_still_recording() {
     r.env.recorder.elapsed.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.env.recorder.silence.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
-    wait_until("noSound while recording", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound while recording", NO_SOUND_WARN_MS + 1_000, || {
+        r.env.popups().contains(&PopupState::NoSound { recording: true })
+    });
     assert!(r.env.recorder.active.lock().is_some(), "still recording");
     // Sound arrives (e.g. he unmuted): the popup goes back to listening.
     r.env.recorder.silence.store(0, Ordering::SeqCst);
@@ -604,7 +610,7 @@ fn hands_free_returns_from_no_sound_with_its_own_start_time() {
     r.env.recorder.elapsed.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.env.recorder.silence.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
     r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
-    wait_until("noSound", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
+    wait_until("noSound", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound { recording: true }));
     r.env.recorder.silence.store(0, Ordering::SeqCst);
     wait_until("hands-free again", 1_000, || matches!(r.env.popups().last(), Some(PopupState::HandsFree { .. })));
     let starts: Vec<i64> = r

@@ -72,7 +72,9 @@ pub enum PopupState {
     Transcribing { since_ms: i64 },
     Pasted,
     Nothing,
-    NoSound,
+    /// `recording`: shown while still recording (a silent mic), so it stays until the recording
+    /// replaces it; after a recording it dismisses itself like any notice (M-1).
+    NoSound { recording: bool },
     NotPasted { text: String },
     Learned { from: String, to: String, entry_id: i64 },
     Error { message: String },
@@ -94,7 +96,7 @@ impl std::fmt::Debug for PopupState {
             Self::Warming => f.write_str("Warming"),
             Self::Pasted => f.write_str("Pasted"),
             Self::Nothing => f.write_str("Nothing"),
-            Self::NoSound => f.write_str("NoSound"),
+            Self::NoSound { recording } => write!(f, "NoSound {{ recording: {recording} }}"),
         }
     }
 }
@@ -105,11 +107,12 @@ impl PopupState {
         match self {
             Self::Pasted => Some(POPUP_PASTED_MS),
             Self::Nothing => Some(POPUP_NOTHING_MS),
-            Self::NoSound => Some(POPUP_NO_SOUND_MS),
+            Self::NoSound { recording: false } => Some(POPUP_NO_SOUND_MS),
             Self::NotPasted { .. } => Some(POPUP_NOT_PASTED_MS),
             Self::Learned { .. } => Some(POPUP_LEARNED_MS),
             Self::Error { .. } => Some(POPUP_ERROR_MS),
             Self::Hidden
+            | Self::NoSound { recording: true }
             | Self::Listening { .. }
             | Self::HandsFree { .. }
             | Self::Warming
@@ -124,7 +127,7 @@ impl PopupState {
         matches!(
             self,
             Self::NotPasted { .. }
-                | Self::NoSound
+                | Self::NoSound { .. }
                 | Self::Learned { .. }
                 | Self::Error { .. }
                 | Self::HandsFree { .. }
@@ -430,7 +433,7 @@ fn is_recording_look(s: &PopupState) -> bool {
         PopupState::Listening { .. }
             | PopupState::HandsFree { .. }
             | PopupState::Warming
-            | PopupState::NoSound
+            | PopupState::NoSound { .. }
             | PopupState::CapWarning { .. }
     )
 }
@@ -772,7 +775,7 @@ impl SessionLoop {
             if rec.silence_ms() >= elapsed {
                 tracing::info!(id = %a.id, "no sound from the microphone");
                 a.no_sound_shown = true;
-                self.popup.set_recording(PopupState::NoSound);
+                self.popup.set_recording(PopupState::NoSound { recording: true });
             }
         } else if a.no_sound_shown {
             let elapsed = rec.elapsed_ms();
@@ -846,7 +849,7 @@ impl SessionLoop {
             if intent == Intent::SaveQuiet {
                 self.popup.recording_ended();
             } else {
-                self.popup.recording_ended_with(PopupState::NoSound);
+                self.popup.recording_ended_with(PopupState::NoSound { recording: false });
             }
             return;
         }

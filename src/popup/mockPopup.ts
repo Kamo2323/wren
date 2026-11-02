@@ -21,6 +21,8 @@ export function samplePopupState(kind: PopupKind, opts: { cpu?: boolean; slow?: 
       return { kind, message: "Microphone unplugged" };
     case "capWarning":
       return { kind, remainingMs: 60_000, mode: opts.handsFree ? "handsFree" : "hold" };
+    case "noSound":
+      return { kind, recording: false };
     default:
       return { kind } as PopupState;
   }

@@ -9,7 +9,8 @@ export type PopupState =
   | { kind: "transcribing"; sinceMs: number }
   | { kind: "pasted" }
   | { kind: "nothing" }
-  | { kind: "noSound" }
+  /** `recording`: shown during a recording (silent mic) — stays until replaced, no countdown. */
+  | { kind: "noSound"; recording: boolean }
   | { kind: "notPasted"; text: string }
   | { kind: "learned"; from: string; to: string; entryId: number }
   | { kind: "error"; message: string }
