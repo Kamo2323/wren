@@ -3,6 +3,7 @@
 
 # Benchmark environment, models and per-clip outputs (contain the owner's dictated text)
 bench/.venv/
+bench/.venv-sherpa/
 bench/models/
 bench/out/
 

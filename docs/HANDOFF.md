@@ -29,6 +29,15 @@ Wren is Maximilian's free, local Windows dictation app (a Willow / Glaido replac
 - Tauri 2 (Rust + WebView2) + Python sidecar for speech. Rust gives a reliable low-level keyboard hook and
   small footprint (Glaido is Tauri); Python faster-whisper on CUDA is already proven on this PC (Overseer).
 
+## Progress
+
+- Research done: `docs/design/goldfish-brainstorm-report.md`, `docs/research/willow-teardown.md`,
+  `docs/research/glaido-teardown.md` (+ screenshots). Benchmark (`docs/research/stt-benchmark.md`) running.
+- `docs/design/SPEC.md` (binding) and `docs/design/PLAN.md` (11 tasks) written.
+- Task 1 (foundation) built by the coordinator, commit 284ec76.
+- Build ledger with every ruling: `.superpowers/sdd/PLAN/progress.md` (git-ignored).
+- Wave 1 running in worktrees: Task 2 hotkey, Task 4 store/stats, Task 6 design + popup UI; Task 1 review.
+
 ## Next step
 
-Wait for the four research reports, then write `docs/design/SPEC.md` and `docs/design/PLAN.md`.
+Merge wave 1 after reviews; dispatch Task 3 (speech) once the benchmark lands; then Tasks 5, 7, 8, 9, 10, 11.
