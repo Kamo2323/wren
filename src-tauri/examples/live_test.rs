@@ -37,7 +37,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::BOOL;
 use wren_lib::constants::{CLIPBOARD_RESTORE_MS, DOUBLE_TAP_GAP_MS, HANDSFREE_STOP_DEBOUNCE_MS, VK_CHORD_CTRL, VK_CHORD_WIN};
 use wren_lib::hotkey::{send_keys_with_extra_info, send_tagged_keys};
-use wren_lib::paste::clipboard::{CF_DIB, SavedFormat, Snapshot, flush};
+use wren_lib::engine::process_is_running;
+use wren_lib::paste::clipboard::{CF_DIB, SavedFormat, Snapshot};
 use wren_lib::paste::{foreground, process_name};
 
 const TITLE_PREFIX: &str = "Wren test page | ";
@@ -574,6 +575,10 @@ struct Results {
     start_opened: Option<(usize, usize)>,
     taps_pasted_nothing: Option<bool>,
     passthrough: Option<(bool, String)>,
+    /// Win+Shift+S and Win+V: (label, Windows reacted, Wren stayed out, detail).
+    win_shortcuts: Vec<(&'static str, bool, bool, String)>,
+    /// `wren --quit`: Wren exited by itself, and its speech engine process is gone.
+    graceful_quit: Option<(bool, bool, String)>,
     history: String,
     log_private: Option<bool>,
     release_to_paste: Vec<u64>,
@@ -689,7 +694,7 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
             d.words
         );
         if i == 0 {
-            flush();
+            // Wren restores the clipboard CLIPBOARD_RESTORE_MS after the read; `dictate` waited longer.
             let now = Snapshot::capture().map_err(|e| e.to_string())?;
             let ok = now.get(CF_DIB).is_some_and(|b| hash(b) == hash(&image));
             println!("image on the clipboard survived the dictation: {ok}");
@@ -776,6 +781,53 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     let detail = format!("all three keys showed as down to Windows: {reached}; Wren discarded the chord: {}; nothing pasted: {nothing}; foreground after: {after_right}{moved_back}", discarded >= 1);
     println!("PASSTHROUGH {}: {detail}", if pass { "OK" } else { "FAIL" });
     r.passthrough = Some((pass, detail));
+
+    // 5b. Win+Shift+S and Win+V: Windows opens its UI (it takes the foreground), Wren does nothing.
+    //     Each is closed with Esc right away.
+    for (label, keys) in [("Win+Shift+S", &[VK_CHORD_WIN, VK_SHIFT, 0x53][..]), ("Win+V", &[VK_CHORD_WIN, 0x56][..])] {
+        let starts_before = log_count(&args.home, "recording started");
+        let mut down: Vec<(u16, bool)> = keys.iter().map(|k| (*k, true)).collect();
+        down.extend(keys.iter().rev().map(|k| (*k, false)));
+        guarded(page.hwnd, &down)?;
+        let t = Instant::now();
+        let mut opened = String::new();
+        while t.elapsed() < Duration::from_millis(2_500) {
+            if unsafe { GetForegroundWindow() } != page.hwnd {
+                opened = fg_exe();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(600));
+        let mut closed = opened.is_empty();
+        for _ in 0..5 {
+            if closed || unsafe { GetForegroundWindow() } == page.hwnd {
+                closed = true;
+                break;
+            }
+            if fg_exe() == "claude.exe" {
+                return Err(format!("{label}: claude.exe came to the front; stopped"));
+            }
+            send_tagged_keys(&[(VK_ESCAPE, true), (VK_ESCAPE, false)]);
+            std::thread::sleep(Duration::from_millis(500));
+            let now = fg_exe();
+            closed = now != opened || unsafe { GetForegroundWindow() } == page.hwnd;
+        }
+        let wren_out = log_count(&args.home, "recording started") == starts_before;
+        let reacted = !opened.is_empty();
+        let detail = if reacted {
+            format!("{opened} came to the front; closed with Esc: {closed}")
+        } else {
+            "the foreground did not change within 2.5 s (not verifiable this way)".to_string()
+        };
+        println!("PASSTHROUGH {label}: Windows reacted {reacted}; Wren stayed out {wren_out}; {detail}");
+        r.win_shortcuts.push((label, reacted, wren_out, detail));
+        if !closed {
+            return Err(format!("{label}: could not close {opened} with Esc"));
+        }
+        bring_to_front_attached(page.hwnd);
+        std::thread::sleep(Duration::from_millis(500));
+    }
     page.close();
 
     // 6. Chat-style composer.
@@ -785,6 +837,45 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     println!("composer: landed {} | foreground unchanged {} | popup seen {} | page saw text {:?} ms | Enter/newline {}", d.landed, d.fg_ok, d.popup_seen, d.page_ms, d.newline);
     r.dictations.push(Dictation { mode: "hold (composer)", ..d });
     page.close();
+
+    // 7. Quit gracefully, as the tray does: `wren --quit` reaches the running Wren through the
+    //    single-instance hand-off; RunEvent::Exit must stop the sidecar.
+    let sidecar_pids: Vec<u32> = wren_log(&args.home)
+        .iter()
+        .filter(|(m, _)| m == "speech engine launched")
+        .filter_map(|(_, f)| f.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32))
+        .collect();
+    std::thread::sleep(Duration::from_millis(500));
+    let t = Instant::now();
+    let _ = Command::new(&args.wren)
+        .arg("--quit")
+        .env("WREN_HOME", &args.home)
+        .env("WREN_RUNTIME_ROOT", &runtime_root)
+        .status();
+    let mut exited = false;
+    if let Some(w) = wren.as_mut() {
+        while t.elapsed() < Duration::from_secs(20) {
+            if let Ok(Some(_)) = w.try_wait() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let alive: Vec<u32> = sidecar_pids.iter().copied().filter(|p| process_is_running(*p)).collect();
+    let stopped_logged = log_count(&args.home, "session stopped") > 0;
+    let detail = format!(
+        "exited in {} ms; session drained and stopped: {stopped_logged}; sidecar processes {:?} still running: {:?}",
+        t.elapsed().as_millis(),
+        sidecar_pids,
+        alive
+    );
+    println!("GRACEFUL QUIT: exited {exited}; {detail}");
+    r.graceful_quit = Some((exited && stopped_logged, alive.is_empty() && !sidecar_pids.is_empty(), detail));
+    if exited {
+        *wren = None;
+    }
     Ok(())
 }
 
@@ -832,7 +923,6 @@ fn main() {
         let _ = w.kill();
         let _ = w.wait();
     }
-    flush();
     match user_clipboard.restore() {
         Ok(()) => println!("user clipboard restored"),
         Err(e) => r.failures.push(format!("could not restore the user's clipboard: {e}")),
@@ -884,6 +974,16 @@ fn main() {
     }
     if let Some((false, d)) = &r.passthrough {
         r.failures.push(format!("passthrough: {d}"));
+    }
+    for (label, _reacted, wren_out, d) in &r.win_shortcuts {
+        if !wren_out {
+            r.failures.push(format!("{label}: Wren started a recording ({d})"));
+        }
+    }
+    match &r.graceful_quit {
+        Some((true, true, _)) => {}
+        Some((_, _, d)) => r.failures.push(format!("graceful quit: {d}")),
+        None => {}
     }
     if r.history.contains("HITS") && !r.history.ends_with("HITS 0") {
         r.failures.push(format!("dictated text is in clipboard history ({})", r.history));
@@ -985,6 +1085,20 @@ fn render(args: &Args, r: &Results) -> String {
     s.push_str(&format!("| Taps (< 400 ms) paste nothing | {} |\n", r.taps_pasted_nothing.map(yn).unwrap_or("not run")));
     if let Some((pass, d)) = &r.passthrough {
         s.push_str(&format!("| Ctrl+Win+Right passes through | {} — {d} |\n", if *pass { "pass" } else { "**fail**" }));
+    }
+    for (label, reacted, wren_out, d) in &r.win_shortcuts {
+        s.push_str(&format!(
+            "| {label} passes through (Windows reacts, Wren does not record; closed with Esc) | Windows reacted: {}; Wren stayed out: {} — {d} |\n",
+            if *reacted { "yes" } else { "not seen" },
+            yn(*wren_out)
+        ));
+    }
+    if let Some((exited, sidecar_gone, d)) = &r.graceful_quit {
+        s.push_str(&format!(
+            "| Graceful quit (`wren --quit`, same path as the tray's Quit) | Wren exited cleanly: {}; no Wren python.exe left: {} — {d} |\n",
+            yn(*exited),
+            yn(*sidecar_gone)
+        ));
     }
     s.push_str(&format!("| Windows clipboard history after the run (`NEW` = entries added; `HITS` = dictated text found) | {} |\n", r.history));
     s.push_str(&format!("| Wren's logs contain no dictated words | {} |\n", r.log_private.map(yn).unwrap_or("not run")));
