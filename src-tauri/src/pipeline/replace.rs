@@ -81,13 +81,12 @@ fn ends_word(chars: &[char], pos: usize) -> bool {
     if is_word_char(next) {
         return false;
     }
-    if next == '\'' || next == '\u{2019}' {
-        if let Some(&after) = chars.get(pos + 1) {
-            if after.is_alphabetic() {
-                let possessive = (after == 's' || after == 'S') && chars.get(pos + 2).is_none_or(|c| !is_word_char(*c));
-                return possessive;
-            }
-        }
+    if (next == '\'' || next == '\u{2019}')
+        && let Some(&after) = chars.get(pos + 1)
+        && after.is_alphabetic()
+    {
+        let possessive = (after == 's' || after == 'S') && chars.get(pos + 2).is_none_or(|c| !is_word_char(*c));
+        return possessive;
     }
     true
 }

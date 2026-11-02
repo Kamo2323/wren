@@ -39,6 +39,7 @@ pub struct PipelineOutput {
 
 /// Runs the whole pipeline. `ai` is the optional clean-up step (spec §10): it gets the tidied text
 /// and returns its version, or `None` (off, timed out, failed). The caller enforces the time limit.
+#[allow(clippy::type_complexity)] // the signature is the planned interface
 pub fn run(input: &PipelineInput, ai: Option<&dyn Fn(&str) -> Option<String>>) -> PipelineOutput {
     let guarded = guards::apply(input.raw, input.speech_ms, input.clip_ms, input.prompt);
     let repetition_flagged = guarded.repetition_flagged;
@@ -50,20 +51,19 @@ pub fn run(input: &PipelineInput, ai: Option<&dyn Fn(&str) -> Option<String>>) -
     let tidied = tidy::final_spacing(&after_rules);
 
     let mut final_text = tidied.clone();
-    if !tidied.is_empty() {
-        if let Some(ai) = ai {
-            if let Some(candidate) = ai(&tidied) {
-                let candidate = tidy::final_spacing(&candidate);
-                if ai_result_acceptable(&tidied, &candidate) {
-                    let (again, applied_again) = replace::apply(&candidate, input.replacements);
-                    for id in applied_again {
-                        if !applied.contains(&id) {
-                            applied.push(id);
-                        }
-                    }
-                    final_text = tidy::final_spacing(&again);
+    if !tidied.is_empty()
+        && let Some(ai) = ai
+        && let Some(candidate) = ai(&tidied)
+    {
+        let candidate = tidy::final_spacing(&candidate);
+        if ai_result_acceptable(&tidied, &candidate) {
+            let (again, applied_again) = replace::apply(&candidate, input.replacements);
+            for id in applied_again {
+                if !applied.contains(&id) {
+                    applied.push(id);
                 }
             }
+            final_text = tidy::final_spacing(&again);
         }
     }
 

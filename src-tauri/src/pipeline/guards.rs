@@ -251,7 +251,7 @@ mod tests {
     fn collapse_handles_phrases_up_to_the_limit() {
         let phrase: Vec<String> = (0..REPETITION_MAX_PHRASE_WORDS).map(|i| format!("w{i}")).collect();
         let phrase = phrase.join(" ");
-        let looped = vec![phrase.as_str(); REPETITION_MAX_REPEATS + 1].join(" ");
+        let looped = [phrase.as_str(); REPETITION_MAX_REPEATS + 1].join(" ");
         assert_eq!(collapse_repetitions(&looped), (phrase.clone(), true));
     }
 }

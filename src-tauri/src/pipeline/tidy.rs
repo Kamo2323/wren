@@ -116,13 +116,12 @@ pub fn final_spacing(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (i, &c) in chars.iter().enumerate() {
         // Drop a space before closing punctuation that ends a word (" ," " ." but not " .NET").
-        if c == ' ' {
-            if let Some(&next) = chars.get(i + 1) {
-                let after = chars.get(i + 2).copied();
-                if [',', '.', '!', '?', ';', ':'].contains(&next) && after.is_none_or(|a| a == ' ') {
-                    continue;
-                }
-            }
+        if c == ' '
+            && let Some(&next) = chars.get(i + 1)
+            && [',', '.', '!', '?', ';', ':'].contains(&next)
+            && chars.get(i + 2).is_none_or(|&a| a == ' ')
+        {
+            continue;
         }
         out.push(c);
     }

@@ -5,6 +5,7 @@ pub mod constants;
 pub mod dictionary;
 pub mod hotkey;
 pub mod logging;
+pub mod paste;
 pub mod paths;
 pub mod pipeline;
 pub mod popup;
