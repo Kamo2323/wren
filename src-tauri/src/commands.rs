@@ -34,7 +34,22 @@ pub fn get_settings(state: State<'_, AppState>) -> Settings {
     state.settings.read().clone()
 }
 
-/// Saves, then applies what changed: start with Windows, the microphone, the engine.
+/// One settings write at a time (`save_settings` and `set_audio_device`).
+static SETTINGS_WRITE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn set_autostart(app: &AppHandle, on: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let r = if on { launcher.enable() } else { launcher.disable() };
+    r.map_err(|err| {
+        tracing::warn!(error = %err, "cannot change start with Windows");
+        "Wren couldn't change starting with Windows.".to_string()
+    })
+}
+
+/// Applies what changed (start with Windows, the microphone), then saves. If any step fails the
+/// earlier ones are undone and nothing is saved, so the next save tries again. A changed engine is
+/// restarted after the save.
 #[tauri::command(async)]
 pub fn save_settings(
     app: AppHandle,
@@ -42,31 +57,38 @@ pub fn save_settings(
     services: State<'_, Services>,
     settings: Settings,
 ) -> Result<(), String> {
+    let _one_writer = SETTINGS_WRITE.lock();
     let old = state.settings.read().clone();
-    settings
-        .save(&state.paths.settings_file())
-        .map_err(|e| e.to_string())?;
-    *state.settings.write() = settings.clone();
-    let mut problems = Vec::new();
-    if old.start_with_windows != settings.start_with_windows {
-        use tauri_plugin_autostart::ManagerExt;
-        let launcher = app.autolaunch();
-        let r = if settings.start_with_windows { launcher.enable() } else { launcher.disable() };
-        if let Err(err) = r {
-            tracing::warn!(error = %err, "cannot change start with Windows");
-            problems.push("Wren couldn't change starting with Windows.".to_string());
-        }
+    let autostart_changed = old.start_with_windows != settings.start_with_windows;
+    let mic_changed = old.mic_device != settings.mic_device;
+    let recorder = services.env.audio_recorder();
+    if autostart_changed {
+        set_autostart(&app, settings.start_with_windows)?;
     }
-    if old.mic_device != settings.mic_device
-        && let Some(rec) = services.env.audio_recorder()
+    let undo = |mic: bool| {
+        if autostart_changed {
+            let _ = set_autostart(&app, old.start_with_windows);
+        }
+        if mic && let Some(rec) = recorder {
+            let _ = rec.set_device(old.mic_device.clone());
+        }
+    };
+    if mic_changed
+        && let Some(rec) = recorder
         && let Err(err) = rec.set_device(settings.mic_device.clone())
     {
-        problems.push(err.to_string());
+        undo(false);
+        return Err(err.to_string());
     }
+    if let Err(err) = settings.save(&state.paths.settings_file()) {
+        undo(mic_changed);
+        return Err(err.to_string());
+    }
+    *state.settings.write() = settings.clone();
     if old.engine != settings.engine {
         services.env.replace_engine(settings.engine.clone());
     }
-    if problems.is_empty() { Ok(()) } else { Err(problems.join(" ")) }
+    Ok(())
 }
 
 // ---- history, stats and dictionary (Task 4) ----
@@ -182,6 +204,19 @@ pub fn popup_discard(services: State<'_, Services>) {
     services.session.send(Msg::Discard);
 }
 
+/// "No sound from your mic" click: Windows' microphone privacy page (spec §4).
+#[tauri::command]
+pub fn popup_open_mic_settings(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_url(MIC_SETTINGS_URI, None::<&str>).map_err(|err| {
+        tracing::warn!(error = %err, "cannot open the microphone settings");
+        "Couldn't open the microphone settings.".to_string()
+    })
+}
+
+/// Windows Settings → Privacy → Microphone.
+pub const MIC_SETTINGS_URI: &str = "ms-settings:privacy-microphone";
+
 /// Error popup click: open Wren.
 #[tauri::command]
 pub fn popup_open_main(app: AppHandle) {
@@ -210,12 +245,20 @@ pub fn set_audio_device(
     services: State<'_, Services>,
     name: Option<String>,
 ) -> Result<(), String> {
-    if let Some(rec) = services.env.audio_recorder() {
+    let _one_writer = SETTINGS_WRITE.lock();
+    let mut settings = state.settings.read().clone();
+    let old = settings.mic_device.clone();
+    let recorder = services.env.audio_recorder();
+    if let Some(rec) = recorder {
         rec.set_device(name.clone()).map_err(|e| e.to_string())?;
     }
-    let mut settings = state.settings.read().clone();
     settings.mic_device = name;
-    settings.save(&state.paths.settings_file()).map_err(|e| e.to_string())?;
+    if let Err(err) = settings.save(&state.paths.settings_file()) {
+        if let Some(rec) = recorder {
+            let _ = rec.set_device(old);
+        }
+        return Err(err.to_string());
+    }
     *state.settings.write() = settings;
     Ok(())
 }

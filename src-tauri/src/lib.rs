@@ -67,6 +67,8 @@ pub fn run() {
     let start_hidden = args.iter().any(|a| a == "--hidden");
     let popup_check = args.iter().any(|a| a == "--popup-check");
     let selftest = args.iter().any(|a| a == "--selftest");
+    // `wren --quit`: asks a running Wren to quit as if from the tray (installer, live test).
+    let quit = args.iter().any(|a| a == "--quit");
 
     let paths = Paths::resolve();
     if let Err(err) = paths.ensure_dirs() {
@@ -75,7 +77,13 @@ pub fn run() {
     let _log_guard = logging::init(&paths.logs_dir());
     logging::install_panic_hook();
     let settings = Settings::load(&paths.settings_file());
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, selftest, "Wren starting");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, selftest, quit, "Wren starting");
+    if let Some(root) = paths::runtime_root_override() {
+        tracing::warn!(
+            root = %root.display(),
+            "WREN_RUNTIME_ROOT is set: the speech runtime and models are read from this folder (tests only)"
+        );
+    }
     if selftest {
         // Headless: no window, no single-instance hand-off, no keys sent.
         let code = selftest::run(&paths, &settings);
@@ -86,6 +94,11 @@ pub fn run() {
     tauri::Builder::default()
         // Must be first: a second launch just brings the running Wren forward.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--quit") {
+                tracing::info!("asked to quit by a second launch (--quit)");
+                app.exit(0);
+                return;
+            }
             // An autostart launch (`--hidden`) while Wren already runs must not pop the window up.
             if !args.iter().any(|a| a == "--hidden") {
                 tray::show_main(app);
@@ -97,6 +110,10 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
+            if quit {
+                // `--quit` with no Wren running: nothing to do.
+                std::process::exit(0);
+            }
             // The database is opened here, after the plugins' setup, so a second launch (which
             // the single-instance plugin ends before this point) never opens, migrates or sweeps it.
             let store = open_store(&paths);
@@ -107,9 +124,12 @@ pub fn run() {
             });
             tray::build(app.handle())?;
             popup::create(app.handle())?;
-            // Recorder, engine, hotkey and the session (needs AppState and both windows).
-            let services = session::app::start_services(app.handle())?;
-            app.manage(services);
+            // Recorder, engine, hotkey and the session (needs AppState and both windows). The popup
+            // check only exercises the window: no sidecar, no hook.
+            if !popup_check {
+                let services = session::app::start_services(app.handle())?;
+                app.manage(services);
+            }
             // Retention sweep now (off the main thread) and then every SWEEP_INTERVAL_MS.
             let handle = app.handle().clone();
             std::thread::Builder::new()
@@ -174,6 +194,7 @@ pub fn run() {
             commands::popup_undo_learned,
             commands::popup_discard,
             commands::popup_open_main,
+            commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,
             commands::audio_devices,

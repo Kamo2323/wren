@@ -11,6 +11,14 @@ use std::path::{Path, PathBuf};
 /// Overrides the folder holding `runtime\` and `models\` (live tests with a temp `WREN_HOME`).
 pub const RUNTIME_ROOT_ENV: &str = "WREN_RUNTIME_ROOT";
 
+/// `WREN_RUNTIME_ROOT`, if set (start-up logs it loudly: it is for tests only).
+pub fn runtime_root_override() -> Option<PathBuf> {
+    match std::env::var_os(RUNTIME_ROOT_ENV) {
+        Some(root) if !root.is_empty() => Some(PathBuf::from(root)),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     /// Roaming root (settings).
@@ -58,10 +66,7 @@ impl Paths {
     }
     /// Root of the read-only engine files: `WREN_RUNTIME_ROOT` if set, else the local root.
     fn engine_root(&self) -> PathBuf {
-        match std::env::var_os(RUNTIME_ROOT_ENV) {
-            Some(root) if !root.is_empty() => PathBuf::from(root),
-            _ => self.local.clone(),
-        }
+        runtime_root_override().unwrap_or_else(|| self.local.clone())
     }
     pub fn models_dir(&self) -> PathBuf {
         self.engine_root().join("models")

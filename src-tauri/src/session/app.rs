@@ -2,6 +2,7 @@
 //! the popup window and the clipboard. `start_services` builds and starts all of it from `setup`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -12,7 +13,10 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use super::{Env, HotkeyCmd, Msg, PopupState, Recorder, SessionHandle, Sound};
 use crate::AppState;
 use crate::audio::AudioRecorder;
-use crate::constants::{ENGINE_SAMPLE_RATE, SOUND_START_HZ, SOUND_STOP_HZ, SOUND_TICK_AMPLITUDE, SOUND_TICK_MS};
+use crate::constants::{
+    ENGINE_SAMPLE_RATE, QUIT_DRAIN_MAX_MS, SOUND_START_HZ, SOUND_STOP_HZ, SOUND_TICK_AMPLITUDE, SOUND_TICK_MS,
+    STARTUP_ERROR_POPUP_DELAY_MS,
+};
 use crate::engine::{Engine, EngineError, EngineStatus, TranscribeRequest, TranscribeResult};
 use crate::hotkey::HotkeyService;
 use crate::paste::{self, ForegroundInfo, PasteResult};
@@ -31,6 +35,11 @@ pub struct AppEnv {
     /// Replaced (not restarted) when the engine settings change.
     engine: RwLock<Arc<Engine>>,
     status_tx: Sender<EngineStatus>,
+    /// One engine replacement at a time (shutdown + start + swap under one lock)…
+    engine_swap: Mutex<()>,
+    /// …and while it runs the engine reports `Starting`, so a finishing dictation waits for the new
+    /// engine instead of failing on the old one.
+    swapping: AtomicBool,
     hotkey: Mutex<Option<HotkeyService>>,
     /// Wren's own window handles, read once on the main thread at start-up.
     own_windows: Vec<isize>,
@@ -50,15 +59,20 @@ impl AppEnv {
     }
 
     /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
-    /// background; dictations meanwhile wait for it like a warm-up.
+    /// background; dictations meanwhile wait for it like a warm-up (the status reads `Starting`).
     pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) {
         let me = self.clone();
         let spawned = std::thread::Builder::new().name("wren-engine-replace".into()).spawn(move || {
+            let _one_at_a_time = me.engine_swap.lock();
             tracing::info!("engine settings changed; restarting the speech engine");
+            me.swapping.store(true, Ordering::SeqCst);
             me.engine().shutdown();
+            // After the old engine's last status, so the UI shows the gap as starting.
+            let _ = me.status_tx.send(EngineStatus::Starting);
             let paths = me.state().paths.clone();
             let fresh = Arc::new(Engine::start(&paths, &settings, me.status_tx.clone()));
             *me.engine.write() = fresh;
+            me.swapping.store(false, Ordering::SeqCst);
         });
         if let Err(err) = spawned {
             tracing::error!(error = %err, "cannot restart the speech engine");
@@ -87,7 +101,7 @@ impl Env for AppEnv {
         self.recorder.as_deref().map(|r| r as &dyn Recorder)
     }
     fn engine_status(&self) -> EngineStatus {
-        self.engine().status()
+        if self.swapping.load(Ordering::SeqCst) { EngineStatus::Starting } else { self.engine().status() }
     }
     fn transcribe(&self, req: TranscribeRequest, timeout: Duration) -> Result<TranscribeResult, EngineError> {
         self.engine().transcribe(req, timeout)
@@ -137,8 +151,13 @@ pub struct Services {
 }
 
 impl Services {
+    /// Quit: let the session save a long recording and finish (or save) queued dictations — at most
+    /// `QUIT_DRAIN_MAX_MS` — then unhook, stop the sidecar and put back any clipboard still owed.
     pub fn shutdown(&self) {
-        self.session.send(Msg::Shutdown);
+        let drained = self.session.shutdown(Duration::from_millis(QUIT_DRAIN_MAX_MS));
+        if !drained {
+            tracing::warn!(pending = self.session.pending(), "quit: dictations still unfinished after the wait");
+        }
         self.env.shutdown();
     }
 }
@@ -206,6 +225,8 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         recorder,
         engine: RwLock::new(Arc::new(engine)),
         status_tx,
+        engine_swap: Mutex::new(()),
+        swapping: AtomicBool::new(false),
         hotkey: Mutex::new(hotkey),
         own_windows,
     });
@@ -233,7 +254,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
             "Wren can't use your microphone."
         };
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(3));
+            std::thread::sleep(Duration::from_millis(STARTUP_ERROR_POPUP_DELAY_MS));
             session.popup_result(PopupState::Error { message: message.into() });
         });
     }

@@ -191,6 +191,8 @@ export const popupCopyText = (text: string): Promise<void> => (inTauri ? call("p
 export const popupUndoLearned = (entryId: number): Promise<void> => (inTauri ? call("popup_undo_learned", { entryId }) : later(undefined));
 export const popupDiscard = (): Promise<void> => (inTauri ? call("popup_discard") : later(undefined));
 export const popupOpenMain = (): Promise<void> => (inTauri ? call("popup_open_main") : later(undefined));
+/** "No sound from your mic" click: Windows' microphone privacy settings. */
+export const popupOpenMicSettings = (): Promise<void> => (inTauri ? call("popup_open_mic_settings") : later(undefined));
 
 /** Accepts the Rust `EngineStatus` however serde tags it (unit strings, external or internal tags). */
 export function normaliseEngineStatus(raw: unknown): EngineStatus {

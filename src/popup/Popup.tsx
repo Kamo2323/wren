@@ -6,7 +6,7 @@
 // at duration + EXIT_MS, or send { kind: "hidden" } at any time. Timestamps in PopupState are epoch ms.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import type { PopupKind, PopupState, UiConstants } from "../lib/types";
-import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupOpenMain, popupUndoLearned, subscribe } from "../lib/api";
+import { inTauri, onPopupLevel, onPopupState, popupCopyText, popupDiscard, popupOpenMain, popupOpenMicSettings, popupUndoLearned, subscribe } from "../lib/api";
 import { useConstants } from "../lib/useConstants";
 import { formatTimer } from "../lib/format";
 import { POPUP_SPRING, springEasing, supportsLinearEasing } from "../lib/spring";
@@ -213,6 +213,7 @@ export default function Popup() {
   };
   const discard = () => void popupDiscard().catch(() => {});
   const openMain = () => void popupOpenMain().catch(() => {});
+  const openMicSettings = () => void popupOpenMicSettings().catch(() => {});
 
   // ---- content ----
   const k = display.kind;
@@ -291,6 +292,7 @@ export default function Popup() {
     );
   } else if (k === "noSound") {
     tone = "warn";
+    clickable = openMicSettings; // spec §4: opens Windows' microphone privacy settings
     content = (
       <>
         <MicOff size={16} strokeWidth={2.2} className="pill__icon" />
