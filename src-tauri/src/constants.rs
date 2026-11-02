@@ -104,6 +104,7 @@ pub const WATCH_RETRY_MS: u64 = 300;
 pub const POPUP_PASTED_MS: u64 = 400;
 pub const POPUP_STILL_WORKING_AFTER_MS: u64 = 1_500;
 pub const POPUP_NOTHING_MS: u64 = 1_500;
+pub const POPUP_NO_SOUND_MS: u64 = 2_500;
 pub const POPUP_NOT_PASTED_MS: u64 = 4_000;
 pub const POPUP_LEARNED_MS: u64 = 6_000;
 pub const POPUP_ERROR_MS: u64 = 5_000;
@@ -127,6 +128,7 @@ pub struct UiConstants {
     pub popup_pasted_ms: u64,
     pub popup_still_working_after_ms: u64,
     pub popup_nothing_ms: u64,
+    pub popup_no_sound_ms: u64,
     pub popup_not_pasted_ms: u64,
     pub popup_learned_ms: u64,
     pub popup_error_ms: u64,
@@ -143,6 +145,7 @@ pub fn ui_constants() -> UiConstants {
         popup_pasted_ms: POPUP_PASTED_MS,
         popup_still_working_after_ms: POPUP_STILL_WORKING_AFTER_MS,
         popup_nothing_ms: POPUP_NOTHING_MS,
+        popup_no_sound_ms: POPUP_NO_SOUND_MS,
         popup_not_pasted_ms: POPUP_NOT_PASTED_MS,
         popup_learned_ms: POPUP_LEARNED_MS,
         popup_error_ms: POPUP_ERROR_MS,
