@@ -221,6 +221,8 @@ pub const WATCH_MAX_FAILURES: u32 = 3;
 pub const WATCH_MAX_SLOW_CALLS: u32 = 3;
 /// Watcher: a single UI Automation request is abandoned by Windows after this long.
 pub const WATCH_UIA_TIMEOUT_MS: u64 = 1_500;
+/// Watcher: while waiting between reads, check this often whether the watch was stopped.
+pub const WATCH_STOP_CHECK_MS: u64 = 25;
 /// Watcher: dictations shorter than this (characters) are not watched.
 pub const WATCH_MIN_PASTE_CHARS: usize = 3;
 /// Watcher: a text box longer than this many times the dictation (or `WATCH_MAX_FIELD_CHARS`,
@@ -249,5 +251,13 @@ pub const AI_CLEANUP_WARM_TIMEOUT_MS: u64 = 60_000;
 /// Longest reply, in tokens, as a multiple of the input's word count (plus a floor).
 pub const AI_CLEANUP_MAX_TOKENS_FACTOR: usize = 3;
 pub const AI_CLEANUP_MIN_TOKENS: usize = 32;
+/// While `ollama pull` runs, check on it this often.
+pub const AI_CLEANUP_PULL_POLL_MS: u64 = 500;
+/// AI clean-up guard (on top of the length rule): at least this share of the tidied text's words
+/// must still be in the reply, and of the reply's words in the tidied text (case-insensitive).
+pub const AI_CLEANUP_MIN_WORD_OVERLAP: f32 = 0.8;
+/// A reply that starts with a lead-in ending in ':' or a line break within this many characters,
+/// which the tidied text does not start with, is chatter ("Here is the corrected transcript:").
+pub const AI_CLEANUP_LEAD_IN_MAX_CHARS: usize = 60;
 /// `ollama pull` of the clean-up model gives up after this long.
 pub const AI_CLEANUP_PULL_TIMEOUT_MS: u64 = 1_800_000;

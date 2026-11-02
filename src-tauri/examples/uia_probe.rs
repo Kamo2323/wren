@@ -182,7 +182,7 @@ fn probe_app(uia: &Uia, exe: &str, label: &str, reads: usize) {
             let mut blank_reads = 0;
             for _ in 0..reads {
                 let t = Instant::now();
-                let r = uia.facts_of(el).and_then(|f| uia.read_text(&f));
+                let r = uia.facts_of(el).and_then(|f| uia.read_text(&f, None));
                 times.push(t.elapsed().as_millis() as u64);
                 match r {
                     Ok(Some(text)) => {
@@ -221,7 +221,7 @@ fn probe_app(uia: &Uia, exe: &str, label: &str, reads: usize) {
     for _ in 0..reads {
         let t = Instant::now();
         if let Ok(f) = uia.focused() {
-            let _ = uia.read_text(&f);
+            let _ = uia.read_text(&f, None);
             if wins.iter().any(|w| w.1 == f.facts.pid) {
                 in_app += 1;
             }

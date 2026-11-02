@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::constants::{WATCH_MAX_SLOW_CALLS, WATCH_MIN_PASTE_CHARS, WATCH_SLOW_CALL_MS, WATCH_UIA_TIMEOUT_MS};
+use crate::constants::{
+    WATCH_MAX_SLOW_CALLS, WATCH_MIN_PASTE_CHARS, WATCH_SLOW_CALL_MS, WATCH_STOP_CHECK_MS, WATCH_UIA_TIMEOUT_MS,
+};
 use crate::dictionary::Source;
 use crate::dictionary::learn::{LearnDecision, diff_corrections};
 use crate::session::{PastedDictation, PopupState};
@@ -176,7 +178,8 @@ impl Watcher {
                 }
             };
             let target_pid = d.target.pid;
-            let mut read = || read_focused(&client, target_pid);
+            let max_chars = track::max_field_chars(d.text.chars().count());
+            let mut read = |expected: Option<&FocusKey>| read_focused(&client, target_pid, expected, max_chars);
             let live = || generation.load(Ordering::SeqCst) == my_gen;
             let mut sleep = |ms: u64| sleep_while(ms, &live);
             let now = || started.elapsed().as_millis() as u64;
@@ -212,7 +215,7 @@ impl Watcher {
 
 /// Sleeps `ms` in short steps; false as soon as `live()` turns false.
 fn sleep_while(ms: u64, live: &dyn Fn() -> bool) -> bool {
-    const STEP_MS: u64 = 25;
+    const STEP_MS: u64 = WATCH_STOP_CHECK_MS;
     let end = Instant::now() + Duration::from_millis(ms);
     loop {
         if !live() {
@@ -226,8 +229,15 @@ fn sleep_while(ms: u64, live: &dyn Fn() -> bool) -> bool {
     }
 }
 
-/// One watcher read of the focused element. Text of an element in another process is never read.
-fn read_focused(client: &uia::Uia, target_pid: u32) -> Reading {
+/// Whether the watcher may read the text of the focused element: it must be in the paste target's
+/// process and, once a watch has found its box, be that box (review r1: never read another
+/// element's text, not even to compare).
+pub fn may_read(focus: &FocusKey, target_pid: u32, expected: Option<&FocusKey>) -> bool {
+    focus.pid == target_pid && expected.is_none_or(|e| focus.same_as(e))
+}
+
+/// One watcher read of the focused element (text bounded to `max_chars + 1`).
+fn read_focused(client: &uia::Uia, target_pid: u32, expected: Option<&FocusKey>, max_chars: usize) -> Reading {
     let t = Instant::now();
     let took = || t.elapsed().as_millis() as u64;
     let focused = match client.focused() {
@@ -235,10 +245,10 @@ fn read_focused(client: &uia::Uia, target_pid: u32) -> Reading {
         Err(_) => return Reading::Failed { took_ms: took() },
     };
     let focus = FocusKey { pid: focused.facts.pid, runtime_id: focused.runtime_id.clone() };
-    if focused.facts.pid != target_pid {
+    if !may_read(&focus, target_pid, expected) {
         return Reading::NoText { focus, took_ms: took() };
     }
-    match client.read_text(&focused) {
+    match client.read_text(&focused, Some(max_chars)) {
         Ok(Some(text)) => Reading::Text { focus, text, took_ms: took() },
         Ok(None) => Reading::NoText { focus, took_ms: took() },
         Err(_) => Reading::Failed { took_ms: took() },
@@ -334,6 +344,16 @@ mod tests {
     }
 
     #[test]
+    fn only_the_watched_box_in_the_target_process_is_read() {
+        let k = |pid: u32, id: i32| FocusKey { pid, runtime_id: vec![42, id] };
+        assert!(may_read(&k(7, 1), 7, None), "first read: any element of the target");
+        assert!(!may_read(&k(8, 1), 7, None), "another process");
+        assert!(may_read(&k(7, 1), 7, Some(&k(7, 1))));
+        assert!(!may_read(&k(7, 2), 7, Some(&k(7, 1))), "another element of the same app");
+        assert!(!may_read(&FocusKey { pid: 7, runtime_id: vec![] }, 7, Some(&k(7, 1))), "unknown id");
+    }
+
+    #[test]
     fn sleep_while_stops_early_when_cancelled() {
         let t = Instant::now();
         assert!(sleep_while(30, &|| true));
@@ -341,5 +361,49 @@ mod tests {
         let t = Instant::now();
         assert!(!sleep_while(5_000, &|| false));
         assert!(t.elapsed() < Duration::from_millis(100));
+    }
+
+    fn statuses(store: &Store, word: &str) -> Vec<(EntryKind, Status)> {
+        let mut v: Vec<_> = store
+            .dictionary_list()
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.to_text == word)
+            .map(|e| (e.kind, e.status))
+            .collect();
+        v.sort_by_key(|(k, _)| *k == EntryKind::Term);
+        v
+    }
+
+    #[test]
+    fn undo_switches_off_what_the_learn_added_but_not_older_entries() {
+        // A new replacement and a new term: Undo switches both off.
+        let s = store();
+        let l = learn_from(&s, "t1", &end("I asked klode about it", "I asked Claude about it"));
+        s.undo_learned(l[0].entry_id.unwrap()).unwrap();
+        assert_eq!(statuses(&s, "Claude"), vec![(EntryKind::Replacement, Status::Disabled), (EntryKind::Term, Status::Disabled)]);
+
+        // The term was already in the dictionary: Undo leaves it on.
+        let s = store();
+        s.add_term("Claude", Source::Manual).unwrap();
+        let l = learn_from(&s, "t1", &end("I asked klode about it", "I asked Claude about it"));
+        s.undo_learned(l[0].entry_id.unwrap()).unwrap();
+        assert_eq!(statuses(&s, "Claude"), vec![(EntryKind::Replacement, Status::Disabled), (EntryKind::Term, Status::Active)]);
+
+        // Promoted on the second sighting: the term from the first sighting goes too.
+        let s = store();
+        learn_from(&s, "t1", &end("the sky is grey today", "the sky is gray today"));
+        let l = learn_from(&s, "t2", &end("the sky is grey today", "the sky is gray today"));
+        assert_eq!(l[0].decision, LearnDecision::AddedReplacement);
+        s.undo_learned(l[0].entry_id.unwrap()).unwrap();
+        assert_eq!(statuses(&s, "gray"), vec![(EntryKind::Replacement, Status::Disabled), (EntryKind::Term, Status::Disabled)]);
+
+        // A term-only toast (the replacement was already active): Undo switches off that term.
+        let s = store();
+        s.add_replacement("klode", "Claude", Source::Manual, Status::Active).unwrap();
+        let l = learn_from(&s, "t1", &end("I asked klode about it", "I asked Claude about it"));
+        assert_eq!(l[0].decision, LearnDecision::AddedTerm);
+        s.undo_learned(l[0].entry_id.unwrap()).unwrap();
+        assert_eq!(statuses(&s, "Claude"), vec![(EntryKind::Replacement, Status::Active), (EntryKind::Term, Status::Disabled)]);
     }
 }

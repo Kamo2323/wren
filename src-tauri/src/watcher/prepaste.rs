@@ -24,9 +24,24 @@ pub enum PrePaste {
     NotEditable,
 }
 
-/// The decision from what UI Automation said (`None` = no answer). Pure, so it is table-tested.
-pub fn decide(facts: Option<&FocusFacts>, target_pid: u32) -> PrePaste {
+/// The decision from what UI Automation said (`None` = no answer) about the focused element in
+/// `process` (the paste target's file name). Pure, so it is table-tested.
+///
+/// Paste unless the evidence is definite:
+/// - terminals are never held back (Windows Terminal's text area is a `Text` control with only a
+///   TextPattern — review r1);
+/// - a writable value, a text box, a document, a combo box, or a container that says nothing
+///   (Pane, Window, Custom, unknown — e.g. Chromium before its accessibility tree is on) → paste;
+/// - grids, tables and their cells take Ctrl+V (spreadsheets) → paste;
+/// - outside Chromium, any TextPattern makes it unsure → paste. Chromium reports a TextPattern on
+///   nearly every node (Claude probe), so there only the control type counts;
+/// - held back: controls that never take text (buttons, links, list and tree items, menus, tabs,
+///   static text, plain groups…) with no writable value.
+pub fn decide(facts: Option<&FocusFacts>, target_pid: u32, process: &str) -> PrePaste {
     let Some(f) = facts else { return PrePaste::Paste };
+    if super::TERMINALS.contains(&process.to_lowercase().as_str()) {
+        return PrePaste::Paste;
+    }
     // Focus reported in another process than the window we paste into: not sure what it means.
     if f.pid == 0 || (target_pid != 0 && f.pid != target_pid) {
         return PrePaste::Paste;
@@ -34,22 +49,12 @@ pub fn decide(facts: Option<&FocusFacts>, target_pid: u32) -> PrePaste {
     if f.value_pattern && !f.value_read_only {
         return PrePaste::Paste;
     }
-    let ct = UIA_CONTROLTYPE_ID(f.control_type);
-    // Text boxes and documents (including read-only ones: Chromium can report a page document
-    // before its accessibility tree is complete), and containers that say nothing (an app with no
-    // accessibility, Electron before it switches accessibility on, games, custom controls).
-    let unsure = [
-        UIA_EditControlTypeId,
-        UIA_DocumentControlTypeId,
-        UIA_ComboBoxControlTypeId,
-        UIA_PaneControlTypeId,
-        UIA_WindowControlTypeId,
-        UIA_CustomControlTypeId,
-    ];
-    if f.control_type == 0 || unsure.contains(&ct) {
+    let chromium = f.framework.eq_ignore_ascii_case("Chrome");
+    if f.text_pattern && !chromium {
         return PrePaste::Paste;
     }
-    let not_text = [
+    let ct = UIA_CONTROLTYPE_ID(f.control_type);
+    let never_text = [
         UIA_ButtonControlTypeId,
         UIA_SplitButtonControlTypeId,
         UIA_CheckBoxControlTypeId,
@@ -72,21 +77,14 @@ pub fn decide(facts: Option<&FocusFacts>, target_pid: u32) -> PrePaste {
         UIA_ScrollBarControlTypeId,
         UIA_HeaderControlTypeId,
         UIA_HeaderItemControlTypeId,
-        UIA_TableControlTypeId,
-        UIA_DataGridControlTypeId,
-        UIA_DataItemControlTypeId,
-        UIA_TextControlTypeId,
-        UIA_GroupControlTypeId,
         UIA_TitleBarControlTypeId,
         UIA_ThumbControlTypeId,
         UIA_SeparatorControlTypeId,
         UIA_ToolTipControlTypeId,
-        UIA_CalendarControlTypeId,
-        UIA_SpinnerControlTypeId,
-        UIA_SemanticZoomControlTypeId,
-        UIA_AppBarControlTypeId,
+        UIA_TextControlTypeId,
+        UIA_GroupControlTypeId,
     ];
-    if not_text.contains(&ct) { PrePaste::NotEditable } else { PrePaste::Paste }
+    if never_text.contains(&ct) { PrePaste::NotEditable } else { PrePaste::Paste }
 }
 
 struct Request {
@@ -155,7 +153,7 @@ impl Checker {
                 return PrePaste::Paste;
             }
         };
-        let decision = decide(facts.as_ref(), target_pid);
+        let decision = decide(facts.as_ref(), target_pid, app);
         tracing::info!(
             %app,
             ms = t.elapsed().as_millis() as u64,
@@ -172,15 +170,31 @@ impl Checker {
 mod tests {
     use super::*;
 
-    fn facts(ct: UIA_CONTROLTYPE_ID, value: Option<bool>) -> FocusFacts {
+    /// Facts as Chromium reports them (text and TextEdit patterns on nearly every node).
+    fn chrome(ct: UIA_CONTROLTYPE_ID, value: Option<bool>) -> FocusFacts {
         FocusFacts {
             control_type: ct.0,
             pid: 10,
             value_pattern: value.is_some(),
             value_read_only: value.unwrap_or(true),
             text_pattern: true,
-            text_edit_pattern: true, // Chromium reports it on nearly everything
+            text_edit_pattern: true,
             keyboard_focusable: true,
+            framework: "Chrome".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Facts from a native (Win32 / XAML / WPF) app.
+    fn native(ct: UIA_CONTROLTYPE_ID, framework: &str, value: Option<bool>, text: bool) -> FocusFacts {
+        FocusFacts {
+            control_type: ct.0,
+            pid: 10,
+            value_pattern: value.is_some(),
+            value_read_only: value.unwrap_or(true),
+            text_pattern: text,
+            keyboard_focusable: true,
+            framework: framework.into(),
             ..Default::default()
         }
     }
@@ -188,32 +202,49 @@ mod tests {
     #[test]
     fn only_definite_non_text_targets_are_held_back() {
         use PrePaste::*;
-        let table: &[(FocusFacts, PrePaste, &str)] = &[
-            (facts(UIA_EditControlTypeId, Some(false)), Paste, "text box"),
-            (facts(UIA_EditControlTypeId, None), Paste, "edit without value"),
-            (facts(UIA_EditControlTypeId, Some(true)), Paste, "read-only edit: unsure"),
-            (facts(UIA_DocumentControlTypeId, Some(true)), Paste, "page document: unsure"),
-            (facts(UIA_PaneControlTypeId, None), Paste, "a pane says nothing"),
-            (facts(UIA_WindowControlTypeId, None), Paste, "window"),
-            (facts(UIA_CustomControlTypeId, None), Paste, "custom"),
-            (facts(UIA_GroupControlTypeId, Some(false)), Paste, "editable group (writable value)"),
-            (facts(UIA_GroupControlTypeId, Some(true)), NotEditable, "plain group"),
-            (facts(UIA_TextControlTypeId, None), NotEditable, "static text"),
-            (facts(UIA_ButtonControlTypeId, None), NotEditable, "button"),
-            (facts(UIA_ListItemControlTypeId, None), NotEditable, "list item (desktop icons)"),
-            (facts(UIA_HyperlinkControlTypeId, Some(true)), NotEditable, "link"),
+        let wt = FocusFacts { class_name: "TermControl".into(), ..native(UIA_TextControlTypeId, "XAML", None, true) };
+        let table: &[(FocusFacts, &str, PrePaste, &str)] = &[
+            // Text boxes, documents and anything unsure paste.
+            (chrome(UIA_EditControlTypeId, Some(false)), "msedge.exe", Paste, "text box"),
+            (chrome(UIA_EditControlTypeId, None), "msedge.exe", Paste, "edit without value"),
+            (chrome(UIA_EditControlTypeId, Some(true)), "msedge.exe", Paste, "read-only edit: unsure"),
+            (chrome(UIA_DocumentControlTypeId, Some(true)), "msedge.exe", Paste, "page document: unsure"),
+            (chrome(UIA_PaneControlTypeId, None), "claude.exe", Paste, "Chromium before accessibility is on"),
+            (native(UIA_WindowControlTypeId, "Win32", None, false), "game.exe", Paste, "window"),
+            (native(UIA_CustomControlTypeId, "", None, false), "app.exe", Paste, "custom"),
+            (chrome(UIA_GroupControlTypeId, Some(false)), "msedge.exe", Paste, "editable group (writable value)"),
+            // Terminals (review r1, Critical): Windows Terminal's text area is Text + TextPattern, no value.
+            (wt.clone(), "windowsterminal.exe", Paste, "Windows Terminal"),
+            (wt, "someotherhost.exe", Paste, "TermControl hosted elsewhere: a text pattern outside Chromium"),
+            (native(UIA_DocumentControlTypeId, "Win32", None, true), "conhost.exe", Paste, "conhost"),
+            (native(UIA_ButtonControlTypeId, "Win32", None, false), "powershell.exe", Paste, "a terminal process is never held back"),
+            // Spreadsheet-like cells take Ctrl+V (review r1, Important).
+            (native(UIA_DataItemControlTypeId, "Win32", None, false), "excel.exe", Paste, "Excel cell"),
+            (native(UIA_DataGridControlTypeId, "WPF", None, false), "app.exe", Paste, "data grid"),
+            (native(UIA_TableControlTypeId, "WPF", None, false), "app.exe", Paste, "table"),
+            (chrome(UIA_DataItemControlTypeId, None), "msedge.exe", Paste, "grid cell in a web app"),
+            // A native control with a text pattern is unsure.
+            (native(UIA_TextControlTypeId, "WPF", None, true), "app.exe", Paste, "native text with a text pattern"),
+            // Held back: what the evidence supports.
+            (chrome(UIA_GroupControlTypeId, Some(true)), "msedge.exe", NotEditable, "Chromium plain group (test page ?focus=none)"),
+            (chrome(UIA_ButtonControlTypeId, None), "msedge.exe", NotEditable, "Chromium button"),
+            (chrome(UIA_HyperlinkControlTypeId, Some(true)), "msedge.exe", NotEditable, "Chromium link"),
+            (chrome(UIA_ListItemControlTypeId, None), "claude.exe", NotEditable, "Chromium list item"),
+            (native(UIA_ListItemControlTypeId, "Win32", None, false), "explorer.exe", NotEditable, "desktop icon"),
+            (native(UIA_ButtonControlTypeId, "Win32", None, false), "app.exe", NotEditable, "native button"),
+            (native(UIA_TextControlTypeId, "Win32", None, false), "app.exe", NotEditable, "static label, no text pattern"),
         ];
-        for (f, want, what) in table {
-            assert_eq!(decide(Some(f), 10), *want, "{what}");
+        for (f, process, want, what) in table {
+            assert_eq!(decide(Some(f), 10, process), *want, "{what}");
         }
     }
 
     #[test]
     fn no_answer_or_another_process_pastes() {
-        assert_eq!(decide(None, 10), PrePaste::Paste);
-        let button = facts(UIA_ButtonControlTypeId, None);
-        assert_eq!(decide(Some(&button), 11), PrePaste::Paste, "focus reported elsewhere");
-        assert_eq!(decide(Some(&FocusFacts { pid: 0, ..button.clone() }), 10), PrePaste::Paste);
-        assert_eq!(decide(Some(&FocusFacts { control_type: 0, ..button }), 10), PrePaste::Paste, "unknown type");
+        assert_eq!(decide(None, 10, "app.exe"), PrePaste::Paste);
+        let button = chrome(UIA_ButtonControlTypeId, None);
+        assert_eq!(decide(Some(&button), 11, "msedge.exe"), PrePaste::Paste, "focus reported elsewhere");
+        assert_eq!(decide(Some(&FocusFacts { pid: 0, ..button.clone() }), 10, "msedge.exe"), PrePaste::Paste);
+        assert_eq!(decide(Some(&FocusFacts { control_type: 0, ..button }), 10, "msedge.exe"), PrePaste::Paste, "unknown type");
     }
 }
