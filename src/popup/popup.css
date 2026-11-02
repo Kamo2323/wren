@@ -1,0 +1,441 @@
+/* The recording popup. The page background stays transparent; only the pill (and the hands-free
+ * hint above it) is drawn. Sizes: pill 38 px tall, 116 px listening, ~148 px hands-free (timer + ×). */
+html,
+body,
+#popup-root {
+  margin: 0;
+  height: 100%;
+  background: transparent !important;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+.stage {
+  --pill-bg: #16161c;
+  --pill-bg-hover: #1e1e26;
+  --ink: rgba(255, 255, 255, 0.93);
+  --ink-soft: rgba(255, 255, 255, 0.56);
+  --bar: #ecebff;
+  --mark: #aeadff;
+  --amber: #ffc27d;
+  --mint: #74e6cf;
+  --rose: #ff9196;
+  --lilac: #bdbcff;
+
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 14px;
+  pointer-events: none;
+}
+
+/* ---------- the pill ---------- */
+.pill {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--pill-bg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 5px 14px -3px rgba(0, 0, 0, 0.45);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1;
+  transition:
+    width var(--spring-ms) var(--spring),
+    height var(--spring-ms) var(--spring),
+    opacity 140ms ease-out,
+    background-color 200ms ease-out,
+    box-shadow 240ms ease-out;
+  will-change: width, height;
+}
+
+.pill.is-hidden {
+  opacity: 0;
+  transition:
+    width 200ms cubic-bezier(0.3, 0, 0.8, 0.15),
+    height 200ms cubic-bezier(0.3, 0, 0.8, 0.15),
+    opacity 170ms ease-in 30ms;
+}
+
+.pill--handsfree {
+  --bar: var(--amber);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 194, 125, 0.34),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 5px 14px -3px rgba(0, 0, 0, 0.45);
+}
+.pill--error {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(255, 145, 150, 0.32),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 5px 14px -3px rgba(0, 0, 0, 0.45);
+}
+.pill--learned {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 0 1px rgba(189, 188, 255, 0.3),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 5px 14px -3px rgba(0, 0, 0, 0.45);
+}
+
+.pill.is-clickable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.pill.is-clickable:hover {
+  background: var(--pill-bg-hover);
+}
+
+.pill__content {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  white-space: nowrap;
+  animation: content-in 240ms cubic-bezier(0.16, 1, 0.3, 1) 50ms both;
+}
+.pill.is-shown .pill__content {
+  opacity: 1;
+  transition: opacity 160ms ease-out 60ms;
+}
+.pill.is-hidden .pill__content {
+  opacity: 0;
+  transition: opacity 80ms ease-in;
+}
+
+@keyframes content-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.88);
+    filter: blur(2px);
+  }
+}
+
+.slot {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pill__mark {
+  color: var(--mark);
+  flex: none;
+}
+.pill__mark--muted {
+  color: rgba(255, 255, 255, 0.45);
+}
+.pill__mark--breathe {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+@keyframes breathe {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.pill__time {
+  min-width: 27px;
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--amber);
+  animation: pop 260ms cubic-bezier(0.34, 1.5, 0.64, 1) both;
+}
+
+.pill__text {
+  color: var(--ink);
+}
+.pill__text strong {
+  font-weight: 700;
+  color: #fff;
+}
+.pill__text--clip {
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pill__soft {
+  color: var(--lilac);
+}
+.pill__from {
+  color: var(--ink-soft);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.4);
+}
+.pill__arrow {
+  margin: 0 5px;
+  color: var(--ink-soft);
+}
+.pill__icon {
+  flex: none;
+}
+
+.pill--default .pill__icon,
+.pill--action .pill__icon {
+  color: var(--lilac);
+}
+.pill--learned .pill__icon {
+  color: var(--lilac);
+}
+.pill--warn .pill__icon,
+.pill--warn .pill__time {
+  color: var(--amber);
+}
+.pill--error .pill__icon {
+  color: var(--rose);
+}
+.pill--success .pill__icon,
+.pill--success .tick {
+  color: var(--mint);
+}
+.pill--muted .pill__icon,
+.pill--muted .pill__text {
+  color: var(--ink-soft);
+}
+
+.pill__sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.14);
+  margin: 0 -2px;
+}
+.pill__action {
+  pointer-events: auto;
+  margin-right: -6px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lilac);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 140ms ease-out;
+}
+.pill__action:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.pill__close {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0 -4px 0 -2px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease-out,
+    color 140ms ease-out;
+  animation: pop 260ms cubic-bezier(0.34, 1.5, 0.64, 1) 80ms both;
+}
+.pill__close:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.cpu-badge {
+  padding: 2px 4px 2px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 194, 125, 0.42);
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  margin: 0 -2px 0 -1px;
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+/* ---------- level bars ---------- */
+.bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+}
+.bars__bar {
+  width: 3px;
+  height: 3px;
+  border-radius: 1.5px;
+  background: var(--bar);
+  transition: background-color 260ms ease-out;
+}
+.bars--waiting .bars__bar {
+  background: rgba(255, 255, 255, 0.34);
+}
+.bars--frozen .bars__bar {
+  background: rgba(255, 255, 255, 0.9);
+}
+.bars--frozen {
+  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.3) 35%, #000 50%, rgba(0, 0, 0, 0.3) 65%);
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.3) 35%, #000 50%, rgba(0, 0, 0, 0.3) 65%);
+  -webkit-mask-size: 300% 100%;
+  mask-size: 300% 100%;
+  animation: sweep 1.6s linear infinite;
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.42) 35%, #fff 50%, rgba(255, 255, 255, 0.42) 65%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    sweep-bg 1.6s linear infinite,
+    content-fade 260ms ease-out both;
+}
+
+@keyframes sweep {
+  from {
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+  }
+  to {
+    -webkit-mask-position: 0% 0;
+    mask-position: 0% 0;
+  }
+}
+@keyframes sweep-bg {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+@keyframes content-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---------- pasted tick ---------- */
+.tick {
+  display: block;
+}
+.tick path {
+  stroke-dasharray: 18;
+  stroke-dashoffset: 18;
+  animation: draw 300ms cubic-bezier(0.65, 0, 0.35, 1) 90ms forwards;
+}
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ---------- countdown line for clickable notices ---------- */
+.pill__countdown {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 3px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.2);
+  transform-origin: left center;
+  animation-name: countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@keyframes countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* ---------- hands-free hint above the pill ---------- */
+.hint {
+  position: absolute;
+  left: 50%;
+  bottom: 60px;
+  transform: translate(-50%, 4px);
+  padding: 5px 10px 5px;
+  border-radius: 999px;
+  background: rgba(22, 22, 28, 0.88);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 11.5px;
+  font-weight: 520;
+  white-space: nowrap;
+  opacity: 0;
+  transition:
+    opacity 220ms ease-out,
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.hint.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.hint kbd {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.13);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+/* ---------- reduced motion: no springs, no shimmer, no breathing ---------- */
+.stage.is-reduced .pill,
+.stage.is-reduced .pill.is-hidden {
+  transition:
+    opacity 140ms ease-out,
+    background-color 140ms ease-out;
+}
+.stage.is-reduced .pill__content,
+.stage.is-reduced .pill__time,
+.stage.is-reduced .pill__close,
+.stage.is-reduced .pill__mark--breathe,
+.stage.is-reduced .bars--frozen,
+.stage.is-reduced .shimmer-text {
+  animation: none;
+}
+.stage.is-reduced .shimmer-text {
+  color: var(--ink);
+  background: none;
+}
+.stage.is-reduced .bars--frozen {
+  -webkit-mask-image: none;
+  mask-image: none;
+  opacity: 0.5;
+}
+.stage.is-reduced .tick path {
+  animation: none;
+  stroke-dashoffset: 0;
+}
