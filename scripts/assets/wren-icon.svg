@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b5ad0"/>
+      <stop offset="1" stop-color="#36358f"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="cut">
+      <rect width="64" height="64" fill="#fff"/>
+      <circle cx="45.6" cy="24.8" r="2.2" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#tile)"/>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#sheen)"/>
+  <g transform="translate(112 112) scale(12.5)" fill="#fff">
+    <g mask="url(#cut)">
+      <circle cx="30" cy="38" r="15.5"/>
+      <circle cx="42.5" cy="27" r="9.8"/>
+      <path d="M33 26 L42 17.5 L45 37 Z"/>
+      <path d="M51.2 23.4 Q 56 24.6 60 27.6 Q 55.6 28.2 51.2 29.4 Z"/>
+      <path d="M16.5 36 L7.8 15.2 A 3.9 3.9 0 0 1 14.6 11.8 L 27 29 Z" stroke="#fff" stroke-width="1" stroke-linejoin="round"/>
+    </g>
+    <path d="M18.5 38.5 Q 27 30.5 40.5 34.5 Q 33.5 46 18.5 38.5 Z" fill="#dedcff"/>
+    <path d="M26.5 52 L25 57.5 M34.5 52.5 L34.5 57.5" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>
