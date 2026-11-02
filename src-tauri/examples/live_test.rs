@@ -1126,6 +1126,7 @@ fn render(args: &Args, r: &Results) -> String {
          app window with a throwaway profile. The chord was injected as untagged Left Ctrl + Left Win key events, only while \
          the test page was the foreground window. The user's clipboard was backed up first and restored at the end.\n\n",
     );
+    s.push_str(&format!("Wren tested: `{}`.\n\n", args.wren.display()));
     s.push_str(&format!("Engine ready {} ms after Wren started.\n\n", r.ready_ms));
     s.push_str("## Dictations\n\n| # | Mode | Paste landed | Foreground unchanged | Popup seen | Page had text after (ms) | Words | Newline/Enter |\n|---|---|---|---|---|---|---|---|\n");
     for (i, d) in r.dictations.iter().enumerate() {

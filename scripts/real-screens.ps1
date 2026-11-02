@@ -118,7 +118,7 @@ try {
         "saved $file ($([WrenGrab]::Title($hwnd)))"
     }
 } finally {
-    $q = New-Object System.Diagnostics.ProcessStartInfo $Wren '--quit'
+    $q = New-Object System.Diagnostics.ProcessStartInfo -ArgumentList $Wren, '--quit'
     $q.UseShellExecute = $false
     $q.EnvironmentVariables['WREN_HOME'] = $TestHome
     $q.EnvironmentVariables['WREN_RUNTIME_ROOT'] = $runtimeRoot
