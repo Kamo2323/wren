@@ -1,0 +1,120 @@
+// Shapes shared with the Rust side. Rust structs use serde camelCase; these mirror them.
+
+/** What the session (Task 8) emits on "popup://state". Rust: enum with serde tag = "kind", camelCase. */
+export type PopupState =
+  | { kind: "hidden" }
+  | { kind: "listening"; cpu: boolean }
+  | { kind: "handsfree"; startedAtMs: number; cpu: boolean }
+  | { kind: "warming" }
+  | { kind: "transcribing"; sinceMs: number }
+  | { kind: "pasted" }
+  | { kind: "nothing" }
+  | { kind: "noSound" }
+  | { kind: "notPasted"; text: string }
+  | { kind: "learned"; from: string; to: string; entryId: number }
+  | { kind: "error"; message: string }
+  | { kind: "capWarning"; remainingMs: number };
+
+export type PopupKind = PopupState["kind"];
+
+export interface UiConstants {
+  retentionHours: number;
+  typingWpmDefault: number;
+  popupWindowW: number;
+  popupWindowH: number;
+  recordingWarnMs: number;
+  maxRecordingMs: number;
+}
+
+export interface EngineSettings {
+  model: string;
+  computeType: string;
+  beamSize: number;
+  cpuFallbackModel: string;
+}
+
+export interface AiCleanupSettings {
+  enabled: boolean;
+  model: string;
+}
+
+export interface Settings {
+  version: number;
+  engine: EngineSettings;
+  micDevice: string | null;
+  alwaysOpenMic: boolean;
+  typingWpm: number;
+  startWithWindows: boolean;
+  sounds: boolean;
+  aiCleanup: AiCleanupSettings;
+  watcherEnabled: boolean | null;
+  willowSeedImported: boolean;
+}
+
+/** Task 4 `Mode`. Serialised in camelCase; "handsfree" is accepted too (it is how the DB stores it). */
+export type Mode = "hold" | "handsFree" | "handsfree";
+export type PasteOutcome = "pasted" | "notPasted" | "copied" | "failed" | "not_pasted";
+
+export interface TranscriptionRow {
+  id: string;
+  createdAtUtc: string; // RFC 3339
+  mode: Mode;
+  durationMs: number;
+  finalText: string;
+  rawText: string;
+  words: number;
+  targetProcess: string;
+  pasteOutcome: PasteOutcome;
+}
+
+export interface DayPoint {
+  date: string; // YYYY-MM-DD, local
+  words: number;
+}
+
+export interface Stats {
+  timeSavedMsAll: number;
+  timeSavedMsWeek: number;
+  wpmToday: number | null;
+  wpmAll: number | null;
+  streakDays: number;
+  busiestHour: number | null;
+  wordsToday: number;
+  wordsWeek: number;
+  wordsAll: number;
+  dictationsAll: number;
+  daily: DayPoint[]; // 30 entries, oldest first
+  hourly: number[]; // 24 entries
+}
+
+export type EntryKind = "term" | "replacement";
+export type EntrySource = "willowSeed" | "manual" | "learnedHistory" | "learnedPaste";
+export type EntryStatus = "candidate" | "active" | "disabled";
+
+export interface DictionaryEntry {
+  id: number;
+  kind: EntryKind;
+  fromText: string | null;
+  toText: string;
+  source: EntrySource;
+  status: EntryStatus;
+  observations: number;
+  hits: number;
+  createdAt: string;
+}
+
+/** Result of `history_fix_word`: the replacement it created and, maybe, a new dictionary term. */
+export type FixWordResult = [DictionaryEntry, DictionaryEntry | null];
+
+/** Normalised engine status for the UI (see `normaliseEngineStatus` in api.ts). */
+export type EngineStatus =
+  | { state: "starting" }
+  | { state: "warming" }
+  | { state: "ready"; model: string; device: "cuda" | "cpu" | string; vramMb: number }
+  | { state: "failed"; reason: string }
+  | { state: "unknown" };
+
+export interface OtherApps {
+  willow: boolean;
+  glaido: boolean;
+}

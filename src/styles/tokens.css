@@ -1,4 +1,107 @@
-/* Design tokens. Filled in by the design-system task from the Willow + Glaido teardowns. */
+/* Wren design tokens — light theme.
+ * Sources: Willow teardown §8 (light palette, Inter, radii, purple-tinted low-alpha shadows) and
+ * Glaido teardown §4 (calm layout, big figures, single accent used sparingly). Numbers chosen for
+ * Wren are listed in .superpowers/sdd/PLAN/task-6-report.md. */
 :root {
-  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  /* Type */
+  --font-sans: "Inter Variable", "Inter", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-num: "Inter Variable", "Inter", "Segoe UI Variable", system-ui, sans-serif;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-body: 16px;
+  --text-card: 18px;
+  --text-h3: 20px;
+  --text-h2: 24px;
+  --text-h1: 30px;
+  --text-stat: 44px;
+
+  /* Canvas and surfaces */
+  --canvas: #f3f3f5;          /* window background (Willow shape2) */
+  --panel: #ffffff;           /* main content panel */
+  --surface: #f7f7fa;         /* tiles on the panel */
+  --surface-hover: #f1f1f6;
+  --surface-sunk: #ebebf0;    /* Willow shape3 */
+  --nav-active: #ffffff;
+  --nav-hover: rgba(33, 33, 33, 0.045);
+
+  /* Text */
+  --text-1: #24232b;          /* a touch darker than Willow's #3d3c40 for 18 px reading */
+  --text-2: #6f6d78;
+  --text-3: #a3a1ab;
+  --text-on-primary: #ffffff;
+
+  /* Accent */
+  --primary: #4443aa;         /* Willow primary */
+  --primary-hover: #3a3998;
+  --primary-press: #33328a;
+  --primary-subtle: #eeebfd;
+  --primary-soft: #d9d5fc;    /* bar strip, selections */
+  --primary-border: #c9c4fa;
+  --primary-ring: rgba(68, 67, 170, 0.28);
+
+  /* Lines */
+  --line: #ececf1;
+  --line-strong: #e0dfe7;
+  --panel-border: rgba(20, 18, 60, 0.06);
+
+  /* Status */
+  --success: #0e9f88;
+  --success-subtle: #e2f6f2;
+  --warning: #c77a12;
+  --warning-subtle: #fdf1df;
+  --danger: #d93f45;
+  --danger-hover: #c2353b;
+  --danger-subtle: #fdecec;
+
+  /* Radii */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 12px;     /* nav, inputs, menus */
+  --r-lg: 18px;     /* cards */
+  --r-xl: 22px;     /* stat tiles */
+  --r-panel: 24px;  /* main panel */
+  --r-full: 999px;
+
+  /* Spacing (4 px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* Shadows — purple-tinted, very low alpha (Willow's finish) */
+  --shadow-panel: 0 1px 2px rgba(56, 53, 102, 0.04), 0 8px 28px rgba(56, 53, 102, 0.05);
+  --shadow-raised: 0 1px 2px rgba(56, 53, 102, 0.06), 0 2px 8px rgba(56, 53, 102, 0.06);
+  --shadow-hover: 0 2px 4px rgba(56, 53, 102, 0.05), 0 10px 26px -6px rgba(56, 53, 102, 0.14);
+  --shadow-float: 0 6px 24px -4px rgba(24, 22, 60, 0.22), 0 1px 3px rgba(24, 22, 60, 0.12);
+
+  /* Motion */
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --dur-3: 240ms;
+  --dur-4: 320ms;
+  --ease-out: cubic-bezier(0.165, 0.84, 0.44, 1);
+  --ease-out-far: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-move: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-hover: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --sidebar-w: 216px;
+  --page-pad-x: 40px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 1ms;
+    --dur-2: 1ms;
+    --dur-3: 1ms;
+    --dur-4: 1ms;
+  }
 }
