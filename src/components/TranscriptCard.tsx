@@ -14,6 +14,19 @@ export interface TranscriptCardProps {
   onDelete: (row: TranscriptionRow) => Promise<void>;
   onFix: (row: TranscriptionRow, from: string, to: string) => Promise<void>;
   now?: number;
+  /** Search words to mark in the text (History search). The whole text shows while searching. */
+  highlight?: string;
+}
+
+/** Split `text` around case-insensitive matches of `query` so matches can be wrapped in <mark>. */
+export function markMatches(text: string, query: string): Array<{ text: string; match: boolean }> {
+  const q = query.trim();
+  if (!q) return [{ text, match: false }];
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text
+    .split(new RegExp(`(${escaped})`, "gi"))
+    .filter(Boolean)
+    .map((part) => ({ text: part, match: part.toLowerCase() === q.toLowerCase() }));
 }
 
 type Token = { text: string; word: boolean; core: string; lead: string; trail: string };
@@ -30,7 +43,7 @@ export function tokenise(text: string): Token[] {
 
 const COPIED_MS = 1600;
 
-export function TranscriptCard({ row, onCopy, onDelete, onFix, now }: TranscriptCardProps) {
+export function TranscriptCard({ row, onCopy, onDelete, onFix, now, highlight }: TranscriptCardProps) {
   const [copied, setCopied] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [fixing, setFixing] = useState(false);
@@ -239,7 +252,11 @@ export function TranscriptCard({ row, onCopy, onDelete, onFix, now }: Transcript
           </div>
         </div>
       ) : (
-        <p className="tcard__text">{row.finalText}</p>
+        <p className={`tcard__text ${highlight?.trim() ? "tcard__text--full" : ""}`}>
+          {highlight?.trim()
+            ? markMatches(row.finalText, highlight).map((p, i) => (p.match ? <mark key={i}>{p.text}</mark> : <span key={i}>{p.text}</span>))
+            : row.finalText}
+        </p>
       )}
     </div>
   );

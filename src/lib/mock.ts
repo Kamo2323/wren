@@ -65,6 +65,36 @@ const SAMPLES: Array<{ ago: number; text: string; app: string; mode: "hold" | "h
     secs: 7,
     text: "Best way to centre a div vertically in a flex container with a fixed height",
   },
+  {
+    ago: 60 * 29,
+    app: "slack.exe",
+    mode: "hold",
+    secs: 8,
+    text: "Morning all, I'm working from home today. Ping me if the build breaks and I'll take a look straight away.",
+  },
+  {
+    ago: 60 * 33,
+    app: "claude.exe",
+    mode: "hold",
+    secs: 17,
+    text:
+      "Add a search box to the history page. It should search everything from the last three days and highlight the words that match, and pressing Escape should clear it.",
+  },
+  {
+    ago: 60 * 50,
+    app: "WINWORD.EXE",
+    mode: "handsFree",
+    secs: 44,
+    text:
+      "The second phase covers the warehouse in Leeds. We expect the fit-out to take about six weeks, with the racking going in first and the cold store after that. Siobhan will confirm the dates once the drawings are signed off.",
+  },
+  {
+    ago: 60 * 55,
+    app: "claude.exe",
+    mode: "hold",
+    secs: 6,
+    text: "Why is the cache not being cleared when the settings change?",
+  },
 ];
 
 export function mockTranscriptions(now = Date.now()): TranscriptionRow[] {
@@ -143,12 +173,45 @@ export function emptyStats(now = new Date()): Stats {
   };
 }
 
-export function mockDictionary(): DictionaryEntry[] {
-  const at = new Date().toISOString();
+export function mockDictionary(now = Date.now()): DictionaryEntry[] {
+  const ago = (days: number) => new Date(now - days * 86_400_000).toISOString();
+  let id = 1;
+  const term = (word: string, source: DictionaryEntry["source"], hits: number, days: number, status: DictionaryEntry["status"] = "active"): DictionaryEntry => ({
+    id: id++, kind: "term", fromText: null, toText: word, source, status, observations: 0, hits, createdAt: ago(days),
+  });
+  const rep = (
+    from: string,
+    to: string,
+    source: DictionaryEntry["source"],
+    hits: number,
+    days: number,
+    status: DictionaryEntry["status"] = "active",
+    observations = 1,
+  ): DictionaryEntry => ({ id: id++, kind: "replacement", fromText: from, toText: to, source, status, observations, hits, createdAt: ago(days) });
   return [
-    { id: 1, kind: "term", fromText: null, toText: "Tauri", source: "manual", status: "active", observations: 0, hits: 31, createdAt: at },
-    { id: 2, kind: "term", fromText: null, toText: "Overseer", source: "manual", status: "active", observations: 0, hits: 58, createdAt: at },
-    { id: 3, kind: "replacement", fromText: "Klode", toText: "Claude", source: "learnedPaste", status: "active", observations: 2, hits: 17, createdAt: at },
-    { id: 4, kind: "replacement", fromText: "rusqlight", toText: "rusqlite", source: "learnedHistory", status: "active", observations: 1, hits: 4, createdAt: at },
+    // words added by hand
+    term("Tauri", "manual", 31, 21),
+    term("WebView2", "manual", 12, 20),
+    term("Playwright", "manual", 9, 18),
+    term("Siobhan", "manual", 6, 14),
+    term("Kubernetes", "manual", 4, 12),
+    term("Ollama", "manual", 3, 9),
+    term("Cloudflare", "manual", 14, 7),
+    term("rubato", "manual", 0, 1),
+    // replacements added by hand
+    rep("web view two", "WebView2", "manual", 5, 20, "active", 0),
+    rep("see sharp", "C#", "manual", 2, 16, "active", 0),
+    rep("pie test", "pytest", "manual", 7, 11, "active", 0),
+    // learned from edits in the text box
+    rep("Klode", "Claude", "learnedPaste", 17, 6),
+    term("Claude", "learnedPaste", 23, 6),
+    rep("cash", "cache", "learnedPaste", 0, 1, "candidate", 1),
+    rep("rust sequel", "rusqlite", "learnedPaste", 3, 3),
+    term("rusqlite", "learnedPaste", 3, 3),
+    // learned from "Fix a word" in History
+    rep("Shivon", "Siobhan", "learnedHistory", 4, 2),
+    rep("tory", "Tauri", "learnedHistory", 9, 4),
+    // the user said no to this one
+    rep("affect", "effect", "learnedPaste", 0, 5, "disabled", 2),
   ];
 }

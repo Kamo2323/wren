@@ -1,26 +1,29 @@
 // Typed wrappers over Tauri `invoke()` for every command the UI uses (Tasks 1, 4, 8, 9).
 // When the page is not running inside Tauri (Playwright screenshots, `vite` in a browser) every call
 // falls back to mock data from mock.ts, so the UI can be built and checked without the Rust side.
-// Add `?mock=empty` to the URL for the first-run (no data) look.
+// Add `?mock=empty` to the URL for the first-run (no data) look. Other mock switches (screenshots only):
+// `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`.
 
 import type {
+  AiCleanupStatus,
   DictionaryEntry,
   EngineStatus,
   EntryStatus,
   FixWordResult,
-  OtherApps,
   PopupState,
   Settings,
   Stats,
   TranscriptionRow,
   UiConstants,
+  WatcherStatus,
 } from "./types";
 import { emptyStats, mockDictionary, mockStats, mockTranscriptions } from "./mock";
 
 export const inTauri: boolean =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in (window as unknown as Record<string, unknown>);
 
-const mockEmpty = typeof location !== "undefined" && new URLSearchParams(location.search).get("mock") === "empty";
+const mockParams = typeof location !== "undefined" ? new URLSearchParams(location.search) : new URLSearchParams();
+const mockEmpty = mockParams.get("mock") === "empty";
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -33,6 +36,7 @@ const mock = {
   history: mockEmpty ? [] : mockTranscriptions(),
   dictionary: mockEmpty ? [] : mockDictionary(),
   nextId: 100,
+  aiModelPresent: mockParams.get("ai") !== "nomodel",
   settings: {
     version: 1,
     engine: {
@@ -104,10 +108,12 @@ export const historyDelete = (id: string): Promise<void> => {
   return later(undefined);
 };
 
-export const historyDeleteAll = (): Promise<void> => {
+/** Deletes every transcription (and its audio) now; resolves to how many were deleted. Stats stay. */
+export const historyDeleteAll = (): Promise<number> => {
   if (inTauri) return call("history_delete_all");
+  const n = mock.history.length;
   mock.history = [];
-  return later(undefined);
+  return later(n);
 };
 
 export const statsGet = (): Promise<Stats> => (inTauri ? call("stats_get") : later(mockEmpty ? emptyStats() : mockStats()));
@@ -209,14 +215,42 @@ export const engineStatus = async (): Promise<EngineStatus> =>
 export const engineRestart = (): Promise<void> => (inTauri ? call("engine_restart") : later(undefined));
 export const audioDevices = (): Promise<string[]> =>
   inTauri ? call("audio_devices") : later(["Microphone (Shure MV7)", "Headset Microphone (Jabra Evolve2 65)", "Microphone Array (Realtek)"]);
-export const setAudioDevice = (device: string | null): Promise<void> => (inTauri ? call("set_audio_device", { device }) : later(undefined));
-export const otherAppsRunning = (): Promise<OtherApps> => (inTauri ? call("other_apps_running") : later({ willow: false, glaido: false }));
+/** `null` = follow the Windows default microphone. */
+export const setAudioDevice = (name: string | null): Promise<void> => {
+  if (inTauri) return call("set_audio_device", { name });
+  mock.settings.micDevice = name;
+  return later(undefined);
+};
+/** Names of other dictation apps running now (e.g. ["Glaido"]); empty when none. */
+export const otherAppsRunning = (): Promise<string[]> => {
+  if (inTauri) return call("other_apps_running");
+  const others = mockParams.get("others");
+  return later(others ? others.split(",").filter(Boolean) : []);
+};
 
 // ---------- Task 9: correction watcher, AI clean-up ----------
 
-export const watcherStatus = (): Promise<unknown> => (inTauri ? call("watcher_status") : later({ enabled: true, verdict: "readable" }));
-export const aiCleanupStatus = (): Promise<unknown> => (inTauri ? call("ai_cleanup_status") : later({ reachable: false, modelPresent: false }));
-export const aiCleanupPullModel = (): Promise<void> => (inTauri ? call("ai_cleanup_pull_model") : later(undefined));
+export const watcherStatus = (): Promise<WatcherStatus> => {
+  if (inTauri) return call("watcher_status");
+  const off = mockParams.get("watcher") === "off";
+  return later(
+    off
+      ? { enabled: false, verdict: "slow", reason: "The Claude app's text box took 180 ms to read, so watching it could slow typing." }
+      : { enabled: true, verdict: "readable", reason: "The Claude app's text box can be read in 12 ms." },
+  );
+};
+export const aiCleanupStatus = (): Promise<AiCleanupStatus> => {
+  if (inTauri) return call("ai_cleanup_status");
+  const model = mock.settings.aiCleanup.model;
+  if (mockParams.get("ai") === "offline") return later({ ollamaReachable: false, modelPresent: false, model });
+  return later({ ollamaReachable: true, modelPresent: mock.aiModelPresent, model });
+};
+/** Downloads the clean-up model through Ollama; resolves when the download has finished. */
+export const aiCleanupPullModel = (): Promise<void> => {
+  if (inTauri) return call("ai_cleanup_pull_model");
+  mock.aiModelPresent = true;
+  return later(undefined, 2500);
+};
 
 // ---------- events ----------
 

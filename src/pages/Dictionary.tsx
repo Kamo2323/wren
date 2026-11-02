@@ -1,0 +1,487 @@
+// Dictionary: Words (terms the model listens out for), Replacements (heard → written) and Learned
+// (what Wren picked up from fixes in History and edits after a paste, with Undo and Delete).
+// Spec §8: a disabled entry records that the user said no, so Undo disables rather than deletes.
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { DictionaryEntry, EntrySource } from "../lib/types";
+import { dictionaryAddReplacement, dictionaryAddTerm, dictionaryDelete, dictionaryList, dictionarySetStatus } from "../lib/api";
+import { formatNumber } from "../lib/format";
+import { Tabs } from "../components/Tabs";
+import { Button, IconButton } from "../components/Button";
+import { Toggle } from "../components/Toggle";
+import { EmptyState } from "../components/Empty";
+import { useToast } from "../components/Toast";
+import { ArrowRight, BookA, Check, Plus, RotateCcw, Sparkles, Trash2, Undo2, X } from "../components/Icon";
+
+type TabId = "words" | "replacements" | "learned";
+
+const LEARNED: EntrySource[] = ["learnedHistory", "learnedPaste"];
+const isLearned = (e: DictionaryEntry) => LEARNED.includes(e.source);
+const lower = (s: string) => s.trim().toLocaleLowerCase("en-GB");
+const MAX_LEN = 80;
+
+const TAB_KEY = "wren.dictionary.tab";
+function savedTab(): TabId {
+  try {
+    const t = sessionStorage.getItem(TAB_KEY);
+    if (t === "words" || t === "replacements" || t === "learned") return t;
+  } catch {
+    /* storage blocked */
+  }
+  return "words";
+}
+
+export function usedLabel(hits: number): string {
+  if (hits === 0) return "Not used yet";
+  if (hits === 1) return "Used once";
+  return `Used ${formatNumber(hits)} times`;
+}
+
+/** One learned row: a replacement plus the matching learned word it brought with it, or a word alone. */
+interface LearnedRow {
+  main: DictionaryEntry;
+  term: DictionaryEntry | null;
+}
+
+function learnedRows(entries: DictionaryEntry[]): LearnedRow[] {
+  const learned = entries.filter(isLearned).sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id);
+  const reps = learned.filter((e) => e.kind === "replacement");
+  const terms = learned.filter((e) => e.kind === "term");
+  const used = new Set<number>();
+  const rows: LearnedRow[] = reps.map((r) => {
+    const t = terms.find((t) => !used.has(t.id) && lower(t.toText) === lower(r.toText)) ?? null;
+    if (t) used.add(t.id);
+    return { main: r, term: t };
+  });
+  for (const t of terms) if (!used.has(t.id)) rows.push({ main: t, term: null });
+  return rows.sort((a, b) => b.main.createdAt.localeCompare(a.main.createdAt) || b.main.id - a.main.id);
+}
+
+// ---------------------------------------------------------------- add forms
+
+function AddWord({ existing, onAdd }: { existing: DictionaryEntry[]; onAdd: (word: string) => Promise<void> }) {
+  const [word, setWord] = useState("");
+  const [busy, setBusy] = useState(false);
+  const w = word.trim();
+  const dupe = w !== "" && existing.some((e) => e.kind === "term" && lower(e.toText) === lower(w));
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!w || dupe || busy) return;
+    setBusy(true);
+    try {
+      await onAdd(w);
+      setWord("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="addbar" onSubmit={submit}>
+      <div className="addbar__fields">
+        <label className="field field--grow">
+          <span className="field__label">Word or name</span>
+          <input
+            className="input input--lg"
+            value={word}
+            maxLength={MAX_LEN}
+            placeholder="e.g. Siobhan, Kubernetes, WebView2"
+            spellCheck={false}
+            onChange={(e) => setWord(e.target.value)}
+            aria-invalid={dupe}
+            aria-describedby="add-word-hint"
+          />
+        </label>
+        <Button type="submit" variant="primary" icon={<Plus size={17} strokeWidth={2.2} />} disabled={!w || dupe || busy}>
+          Add word
+        </Button>
+      </div>
+      <p id="add-word-hint" className={`addbar__hint ${dupe ? "is-warn" : ""}`}>
+        {dupe ? "That one is already in your words." : "Wren listens out for these and spells them your way. The number is how often each one has helped."}
+      </p>
+    </form>
+  );
+}
+
+function AddReplacement({ existing, onAdd }: { existing: DictionaryEntry[]; onAdd: (from: string, to: string) => Promise<void> }) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fromRef = useRef<HTMLInputElement>(null);
+  const f = from.trim();
+  const t = to.trim();
+  const same = f !== "" && f === t;
+  const dupe =
+    f !== "" && existing.some((e) => e.kind === "replacement" && e.status !== "disabled" && e.fromText != null && lower(e.fromText) === lower(f));
+  const hint = same
+    ? "Those are the same. Type what Wren should write instead."
+    : dupe
+      ? `There's already a replacement for “${f}”.`
+      : "Whole words only, and it keeps your capitals at the start of a sentence.";
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!f || !t || same || dupe || busy) return;
+    setBusy(true);
+    try {
+      await onAdd(f, t);
+      setFrom("");
+      setTo("");
+      fromRef.current?.focus();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="addbar" onSubmit={submit}>
+      <div className="addbar__fields">
+        <label className="field field--grow">
+          <span className="field__label">When Wren hears</span>
+          <input
+            ref={fromRef}
+            className="input input--lg"
+            value={from}
+            maxLength={MAX_LEN}
+            placeholder="e.g. pie test"
+            spellCheck={false}
+            onChange={(e) => setFrom(e.target.value)}
+            aria-invalid={dupe || same}
+            aria-describedby="add-rep-hint"
+          />
+        </label>
+        <ArrowRight className="addbar__arrow" size={20} strokeWidth={2} aria-hidden="true" />
+        <label className="field field--grow">
+          <span className="field__label">Write</span>
+          <input
+            className="input input--lg"
+            value={to}
+            maxLength={MAX_LEN}
+            placeholder="e.g. pytest"
+            spellCheck={false}
+            onChange={(e) => setTo(e.target.value)}
+            aria-invalid={same}
+            aria-describedby="add-rep-hint"
+          />
+        </label>
+        <Button type="submit" variant="primary" icon={<Plus size={17} strokeWidth={2.2} />} disabled={!f || !t || same || dupe || busy}>
+          Add
+        </Button>
+      </div>
+      <p id="add-rep-hint" className={`addbar__hint ${same || dupe ? "is-warn" : ""}`}>
+        {hint}
+      </p>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------- rows
+
+/** Small inline "Delete?" confirm, same pattern as the transcript cards. */
+function DeleteButton({ onDelete, label }: { onDelete: () => void; label: string }) {
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    if (!confirm) return;
+    const t = window.setTimeout(() => setConfirm(false), 3500);
+    return () => window.clearTimeout(t);
+  }, [confirm]);
+  return confirm ? (
+    <button type="button" className="tcard__confirm" onClick={onDelete}>
+      Delete?
+    </button>
+  ) : (
+    <IconButton label={label} tone="danger" onClick={() => setConfirm(true)}>
+      <Trash2 size={17} strokeWidth={1.9} />
+    </IconButton>
+  );
+}
+
+function Swap({ from, to }: { from: string; to: string }) {
+  return (
+    <span className="swap">
+      <span className="swap__from">{from}</span>
+      <ArrowRight className="swap__arrow" size={17} strokeWidth={2} aria-hidden="true" />
+      <span className="swap__to">{to}</span>
+    </span>
+  );
+}
+
+function Row({ children, muted, className = "" }: { children: ReactNode; muted?: boolean; className?: string }) {
+  return <li className={`drow ${muted ? "is-muted" : ""} ${className}`}>{children}</li>;
+}
+
+// ---------------------------------------------------------------- page
+
+export default function Dictionary() {
+  const [entries, setEntries] = useState<DictionaryEntry[] | null>(null);
+  const [tab, setTabState] = useState<TabId>(savedTab);
+  const toast = useToast();
+
+  const setTab = (t: TabId) => {
+    setTabState(t);
+    try {
+      sessionStorage.setItem(TAB_KEY, t);
+    } catch {
+      /* storage blocked */
+    }
+  };
+
+  const load = useCallback(async () => {
+    const list = await dictionaryList().catch(() => null);
+    if (list) setEntries(list);
+    else setEntries((e) => e ?? []);
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [load]);
+
+  const all = entries ?? [];
+  const words = useMemo(
+    () => all.filter((e) => e.kind === "term" && !isLearned(e)).sort((a, b) => a.toText.localeCompare(b.toText, "en-GB", { sensitivity: "base" })),
+    [all],
+  );
+  const replacements = useMemo(
+    () => all.filter((e) => e.kind === "replacement" && !isLearned(e)).sort((a, b) => (a.fromText ?? "").localeCompare(b.fromText ?? "", "en-GB", { sensitivity: "base" })),
+    [all],
+  );
+  const learned = useMemo(() => learnedRows(all), [all]);
+
+  const patch = (id: number, change: Partial<DictionaryEntry>) =>
+    setEntries((es) => (es ?? []).map((e) => (e.id === id ? { ...e, ...change } : e)));
+  const drop = (ids: number[]) => setEntries((es) => (es ?? []).filter((e) => !ids.includes(e.id)));
+  const fail = (what: string) => toast.show(`Couldn't ${what}. Try again.`, { tone: "danger" });
+
+  // ---- words
+  async function addWord(word: string) {
+    try {
+      const e = await dictionaryAddTerm(word);
+      setEntries((es) => [...(es ?? []).filter((x) => x.id !== e.id), e]);
+      toast.show(`Added “${e.toText}”`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
+    } catch {
+      fail("add that word");
+      throw new Error("add failed");
+    }
+  }
+
+  async function removeWord(e: DictionaryEntry) {
+    try {
+      await dictionaryDelete(e.id);
+      drop([e.id]);
+      toast.show(`Removed “${e.toText}”`, {
+        action: { label: "Undo", onClick: () => void addWord(e.toText).catch(() => {}) },
+      });
+    } catch {
+      fail("remove that word");
+    }
+  }
+
+  // ---- replacements
+  async function addReplacement(from: string, to: string) {
+    try {
+      const e = await dictionaryAddReplacement(from, to);
+      setEntries((es) => [...(es ?? []).filter((x) => x.id !== e.id), e]);
+      toast.show(`Wren will write “${to}” for “${from}”`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
+    } catch {
+      fail("add that replacement");
+      throw new Error("add failed");
+    }
+  }
+
+  async function setOn(e: DictionaryEntry, on: boolean) {
+    const status = on ? "active" : "disabled";
+    patch(e.id, { status });
+    try {
+      await dictionarySetStatus(e.id, status);
+    } catch {
+      patch(e.id, { status: e.status });
+      fail(on ? "turn that on" : "turn that off");
+    }
+  }
+
+  async function removeReplacement(e: DictionaryEntry) {
+    try {
+      await dictionaryDelete(e.id);
+      drop([e.id]);
+      toast.show(`Removed “${e.fromText}” → “${e.toText}”`, {
+        action: { label: "Undo", onClick: () => void addReplacement(e.fromText ?? "", e.toText).catch(() => {}) },
+      });
+    } catch {
+      fail("remove that replacement");
+    }
+  }
+
+  // ---- learned
+  /** The learned word goes with its replacement unless another active learned replacement still writes it. */
+  function termGoesWith(row: LearnedRow): DictionaryEntry | null {
+    if (!row.term) return null;
+    const shared = all.some(
+      (e) => e.id !== row.main.id && isLearned(e) && e.kind === "replacement" && e.status === "active" && lower(e.toText) === lower(row.term!.toText),
+    );
+    return shared ? null : row.term;
+  }
+
+  async function setLearned(row: LearnedRow, status: "active" | "disabled", announce: boolean) {
+    const targets = [row.main, termGoesWith(row)].filter((x): x is DictionaryEntry => x !== null);
+    const before = targets.map((t) => ({ id: t.id, status: t.status }));
+    targets.forEach((t) => patch(t.id, { status }));
+    try {
+      await Promise.all(targets.map((t) => dictionarySetStatus(t.id, status)));
+      if (announce) {
+        const what = row.main.kind === "replacement" ? `“${row.main.fromText}” → “${row.main.toText}”` : `“${row.main.toText}”`;
+        const text =
+          status === "disabled" ? `Undone. Wren won't learn ${what} again.` : row.main.status === "candidate" ? `Kept: ${what}` : `Back on: ${what}`;
+        toast.show(text, {
+          action: status === "disabled" ? { label: "Undo", onClick: () => void setLearned(row, "active", false) } : undefined,
+        });
+      }
+    } catch {
+      before.forEach((b) => patch(b.id, { status: b.status }));
+      fail("change that");
+    }
+  }
+
+  async function removeLearned(row: LearnedRow) {
+    const targets = [row.main, termGoesWith(row)].filter((x): x is DictionaryEntry => x !== null);
+    try {
+      await Promise.all(targets.map((t) => dictionaryDelete(t.id)));
+      drop(targets.map((t) => t.id));
+      toast.show("Deleted. Wren may learn it again if you make the same fix.");
+    } catch {
+      fail("delete that");
+      void load();
+    }
+  }
+
+  const tabs = [
+    { id: "words" as const, label: "Words", count: words.length },
+    { id: "replacements" as const, label: "Replacements", count: replacements.length },
+    { id: "learned" as const, label: "Learned", count: learned.length },
+  ];
+
+  return (
+    <div className="page page--dictionary">
+      <header className="page-head">
+        <div>
+          <h1 className="page__title">Dictionary</h1>
+          <p className="page__lede">Teach Wren the names and words it gets wrong. It learns some on its own, too.</p>
+        </div>
+      </header>
+
+      <Tabs items={tabs} value={tab} onChange={setTab} label="Dictionary lists" idPrefix="dict" />
+
+      <div className="tabpanel" role="tabpanel" id={`dict-panel-${tab}`} aria-labelledby={`dict-tab-${tab}`} key={tab}>
+        {entries === null ? null : tab === "words" ? (
+          <>
+            <AddWord existing={all} onAdd={addWord} />
+            {words.length === 0 ? (
+              <EmptyState compact icon={<BookA size={22} strokeWidth={2} />} title="No words yet">
+                Add names, product names and jargon you say often. Wren will listen out for them and spell them your way.
+              </EmptyState>
+            ) : (
+              <ul className="wordgrid" aria-label="Words">
+                {words.map((w) => (
+                  <li key={w.id} className={`wordchip ${w.status === "disabled" ? "is-muted" : ""}`} title={usedLabel(w.hits)}>
+                    <span className="wordchip__text">{w.toText}</span>
+                    <span className="wordchip__hits num" aria-label={usedLabel(w.hits)}>
+                      {w.hits > 0 ? formatNumber(w.hits) : "new"}
+                    </span>
+                    <button type="button" className="wordchip__remove" aria-label={`Remove ${w.toText}`} title="Remove" onClick={() => void removeWord(w)}>
+                      <X size={14} strokeWidth={2.4} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        ) : tab === "replacements" ? (
+          <>
+            <AddReplacement existing={all} onAdd={addReplacement} />
+            {replacements.length === 0 ? (
+              <EmptyState compact icon={<ArrowRight size={22} strokeWidth={2} />} title="No replacements yet">
+                When Wren hears one thing and you want another, add it here. For example “pie test” → “pytest”.
+              </EmptyState>
+            ) : (
+              <ul className="dlist" aria-label="Replacements">
+                {replacements.map((r) => (
+                  <Row key={r.id} muted={r.status === "disabled"}>
+                    <div className="drow__main">
+                      <Swap from={r.fromText ?? ""} to={r.toText} />
+                    </div>
+                    <span className="drow__meta num">{r.status === "disabled" ? "Off" : usedLabel(r.hits)}</span>
+                    <div className="drow__actions">
+                      <Toggle checked={r.status !== "disabled"} onChange={(on) => void setOn(r, on)} label={`Use ${r.fromText} → ${r.toText}`} />
+                      <DeleteButton label={`Delete ${r.fromText} → ${r.toText}`} onDelete={() => void removeReplacement(r)} />
+                    </div>
+                  </Row>
+                ))}
+              </ul>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="tab-intro">
+              Wren learns when you fix a word in History, and when you correct a word right after it pastes. Undo stops it
+              for good; Delete lets Wren learn it again.
+            </p>
+            {learned.length === 0 ? (
+              <EmptyState compact icon={<Sparkles size={22} strokeWidth={2} />} title="Nothing learned yet">
+                Fix a word in History, or correct one straight after Wren pastes it, and it will show up here.
+              </EmptyState>
+            ) : (
+              <ul className="dlist dlist--learned" aria-label="Learned">
+                {learned.map((row) => {
+                  const e = row.main;
+                  const off = e.status === "disabled";
+                  const waiting = e.status === "candidate";
+                  return (
+                    <Row key={e.id} muted={off}>
+                      <div className="drow__main">
+                        {e.kind === "replacement" ? <Swap from={e.fromText ?? ""} to={e.toText} /> : <span className="swap swap__to">{e.toText}</span>}
+                        <div className="drow__tags">
+                          <span className="chip chip--plain">{e.source === "learnedHistory" ? "Fixed in History" : "From your edit"}</span>
+                          {e.kind === "term" && <span className="chip chip--plain">Word</span>}
+                          {row.term && e.kind === "replacement" && <span className="chip chip--plain">Added to Words too</span>}
+                          {waiting && <span className="chip chip--quiet">Seen once · needs one more</span>}
+                          {off && <span className="chip chip--plain">Undone</span>}
+                        </div>
+                      </div>
+                      <span className="drow__meta num">{waiting || off ? "" : usedLabel(e.hits)}</span>
+                      <div className="drow__actions">
+                        {off ? (
+                          <Button size="sm" variant="ghost" icon={<RotateCcw size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "active", true)}>
+                            Turn back on
+                          </Button>
+                        ) : waiting ? (
+                          <>
+                            <Button size="sm" variant="secondary" icon={<Check size={15} strokeWidth={2.4} />} onClick={() => void setLearned(row, "active", true)}>
+                              Keep
+                            </Button>
+                            <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled", true)}>
+                              Undo
+                            </Button>
+                          </>
+                        ) : (
+                          <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled", true)}>
+                            Undo
+                          </Button>
+                        )}
+                        <DeleteButton
+                          label={e.kind === "replacement" ? `Delete ${e.fromText} → ${e.toText}` : `Delete ${e.toText}`}
+                          onDelete={() => void removeLearned(row)}
+                        />
+                      </div>
+                    </Row>
+                  );
+                })}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

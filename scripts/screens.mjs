@@ -1,10 +1,11 @@
 // Screenshots of the UI in mock mode (no Tauri): builds with Vite, serves dist/, and captures
-// Home (populated, empty, hover, copied, fix-a-word, small window) plus every popup state, into
-// docs/screenshots/. Uses the installed Microsoft Edge (see scripts/lib/browser.mjs).
+// Home (populated, empty, hover, copied, fix-a-word, small window), History, Dictionary, Stats and
+// Settings (populated, empty, key states, 960 × 640), the other-apps banner, plus every popup state,
+// into docs/screenshots/. Uses the installed Microsoft Edge (see scripts/lib/browser.mjs).
 //
 //   node scripts/screens.mjs            build + shoot everything
 //   node scripts/screens.mjs --no-build shoot the existing dist/
-//   node scripts/screens.mjs --only popup|home
+//   node scripts/screens.mjs --only popup|home|pages
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, readFileSync, existsSync, statSync } from "node:fs";
@@ -139,6 +140,154 @@ if (!only || only === "home") {
   await wait(1100);
   await shoot(page, "home-empty-1200x800");
   await ctx.close();
+}
+
+// ---------------- History, Dictionary, Stats, Settings ----------------
+if (!only || only === "pages") {
+  console.log("pages");
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, deviceScaleFactor: 1 });
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => console.error("  page error:", e.message));
+  page.on("response", (r) => r.status() >= 400 && console.error(`  ${r.status()} for ${r.url().replace(base, "")}`));
+
+  const open = async (hash, query = "", selector = ".page__title", settle = 1100) => {
+    await page.goto(`${base}/index.html${query}#${hash}`);
+    await page.waitForSelector(selector);
+    await wait(settle);
+  };
+  const full = async (name) => {
+    const h = await page.evaluate(() => {
+      const p = document.querySelector(".panel");
+      return p ? p.scrollHeight + 16 : 800;
+    });
+    await page.setViewportSize({ width: 1200, height: Math.min(3000, h) });
+    await wait(400);
+    await shoot(page, name);
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await wait(200);
+  };
+  const small = async (name) => {
+    await page.evaluate(() => document.querySelector(".panel")?.scrollTo(0, 0));
+    await page.setViewportSize({ width: 960, height: 640 });
+    await wait(350);
+    await shoot(page, name);
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await wait(200);
+  };
+
+  // History
+  await open("history", "", ".tcard");
+  await shoot(page, "history-populated-1200x800");
+  await full("history-populated-full");
+  await small("history-min-960x640");
+  await page.locator(".search__input").fill("cache");
+  await wait(500);
+  await shoot(page, "history-search");
+  await page.locator(".search__input").fill("spreadsheet");
+  await wait(500);
+  await shoot(page, "history-no-results");
+  await page.keyboard.press("Escape");
+  await wait(400);
+  const restored = await page.locator(".tcard").count();
+  console.log(`  Escape cleared the search: ${restored} cards back`);
+  await page.locator(".tcard").nth(0).click({ position: { x: 300, y: 60 } });
+  await wait(260);
+  await shoot(page, "history-card-copied");
+  const clip = await page.evaluate(() => navigator.clipboard.readText().catch(() => "(unreadable)"));
+  console.log(`  clipboard after click: "${clip.slice(0, 50)}…"`);
+  await open("history", "?mock=empty", ".empty");
+  await shoot(page, "history-empty");
+
+  // Dictionary
+  await open("dictionary", "", ".wordchip");
+  await shoot(page, "dictionary-words");
+  await page.locator(".wordchip").nth(2).hover();
+  await page.locator(".addbar input").fill("tauri");
+  await wait(250);
+  await shoot(page, "dictionary-words-duplicate");
+  await page.locator(".addbar input").fill("Nginx");
+  await page.keyboard.press("Enter");
+  await wait(350);
+  await shoot(page, "dictionary-words-added");
+  await page.getByRole("tab", { name: /Replacements/ }).click();
+  await wait(500);
+  await shoot(page, "dictionary-replacements");
+  await page.getByRole("tab", { name: /Learned/ }).click();
+  await wait(500);
+  await shoot(page, "dictionary-learned");
+  await page.locator(".drow").nth(0).getByRole("button", { name: "Undo" }).click();
+  await wait(400);
+  await shoot(page, "dictionary-learned-undone");
+  await small("dictionary-learned-960x640");
+  await open("dictionary", "?mock=empty", ".tabs");
+  await page.getByRole("tab", { name: /Words/ }).click();
+  await wait(500);
+  await shoot(page, "dictionary-empty-words");
+  await page.getByRole("tab", { name: /Learned/ }).click();
+  await wait(500);
+  await shoot(page, "dictionary-empty-learned");
+  await page.evaluate(() => sessionStorage.clear());
+
+  // Stats
+  await open("stats", "", ".chart", 1500);
+  await shoot(page, "stats-populated-1200x800");
+  await full("stats-populated-full");
+  await page.locator(".chart--daily .chart__col").nth(27).hover();
+  await wait(250);
+  await shoot(page, "stats-daily-hover", { clip: { x: 216, y: 230, width: 984, height: 420 } });
+  await page.mouse.wheel(0, 600);
+  await wait(300);
+  await page.locator(".chart--hourly .chart__col").nth(15).hover();
+  await wait(250);
+  await shoot(page, "stats-hourly-hover");
+  await small("stats-min-960x640");
+  await open("stats", "?mock=empty", ".chart", 1500);
+  await full("stats-empty");
+
+  // Settings
+  await open("settings", "", ".setcard");
+  await shoot(page, "settings-1200x800");
+  await full("settings-full");
+  await small("settings-min-960x640");
+  await page.getByRole("button", { name: "Test microphone" }).click();
+  await wait(700);
+  await shoot(page, "settings-mic-test", { clip: { x: 216, y: 0, width: 984, height: 400 } });
+  await page.getByRole("button", { name: "Stop test" }).click();
+  await page.getByRole("button", { name: /Delete all/ }).click();
+  await wait(400);
+  await page.locator(".confirm").scrollIntoViewIfNeeded();
+  await wait(200);
+  await shoot(page, "settings-delete-confirm");
+  await open("settings", "?ai=nomodel&watcher=off", ".setcard");
+  await page.locator("#set-ai").scrollIntoViewIfNeeded();
+  await wait(300);
+  await shoot(page, "settings-ai-download-watcher-off");
+  await page.getByRole("button", { name: /Download/ }).click();
+  await wait(300);
+  await shoot(page, "settings-ai-downloading");
+  await open("settings", "?ai=offline&mock=empty", ".setcard");
+  await page.locator("#set-ai").scrollIntoViewIfNeeded();
+  await wait(300);
+  await shoot(page, "settings-ai-offline");
+
+  // Willow / Glaido banner
+  await open("home", "?others=Glaido", ".banner");
+  await shoot(page, "banner-home-glaido");
+  await open("settings", "?others=Willow,Glaido", ".banner");
+  await page.locator("#set-others").scrollIntoViewIfNeeded();
+  await wait(300);
+  await shoot(page, "banner-settings-both");
+  await ctx.close();
+
+  // reduced motion: nothing should wait on an animation
+  const rctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, reducedMotion: "reduce" });
+  const rp = await rctx.newPage();
+  await rp.goto(`${base}/index.html#stats`);
+  await rp.waitForSelector(".chart");
+  await wait(150);
+  await shoot(rp, "stats-reduced-motion");
+  await rctx.close();
 }
 
 // ---------------- Popup ----------------

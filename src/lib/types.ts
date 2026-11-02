@@ -127,7 +127,16 @@ export type EngineStatus =
   | { state: "failed"; reason: string }
   | { state: "unknown" };
 
-export interface OtherApps {
-  willow: boolean;
-  glaido: boolean;
+/** Task 9 `watcher_status`: whether the correction watcher runs, and the probe's verdict. */
+export interface WatcherStatus {
+  enabled: boolean;
+  verdict: string | null;
+  reason: string | null;
+}
+
+/** Task 9 `ai_cleanup_status`. */
+export interface AiCleanupStatus {
+  ollamaReachable: boolean;
+  modelPresent: boolean;
+  model: string;
 }
