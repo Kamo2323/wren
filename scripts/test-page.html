@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+  Wren test page — a safe paste target for live tests (Tasks 5, 8, 9). Never test against real apps.
+
+  Open as an app window with its own throwaway profile:
+    msedge.exe --app=file:///C:/path/to/scripts/test-page.html?focus=ta --user-data-dir=<temp dir> --no-first-run
+
+  ?focus=ta    (default) the textarea has focus
+  ?focus=ce    the chat-style contenteditable composer has focus
+  ?focus=none  nothing editable has focus (a paste has nowhere to go)
+
+  What it received is exposed three ways:
+    document.title  = "Wren test page | " + JSON {"ta": textarea value, "ce": composer text, "n": paste count,
+                                                  "f": id of the focused element while the window has focus, else ""}
+                      (read with GetWindowTextW — this is what examples/paste_probe.rs does)
+    window.wrenTest = { ta(), ce(), pastes: [...] }
+    the visible log below the boxes.
+  Enter in the composer is logged as "send" and clears it (like a chat app), so a test can detect an
+  unwanted newline/Enter.
+-->
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wren test page | {"ta":"","ce":"","n":0,"f":""}</title>
+<style>
+  :root { --bg: #f4f4f6; --panel: #ffffff; --text: #2b2a30; --muted: #85838c; --line: #e2e1e6; --accent: #4443aa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1d1d21; --panel: #26262b; --text: #ececf1; --muted: #9a99a3; --line: #3a3a41; --accent: #8e8df0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; display: grid; gap: 16px; }
+  h1 { font-size: 17px; margin: 0; }
+  p.note { margin: 0; color: var(--muted); font-size: 13px; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; padding: 10px 12px; border-radius: 10px;
+             border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
+  .composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px; border-radius: 18px;
+              border: 1px solid var(--line); background: var(--panel); box-shadow: 0 2px 10px rgba(30, 20, 80, .06); }
+  .composer [contenteditable] { flex: 1; min-height: 24px; max-height: 200px; overflow-y: auto; outline: none; white-space: pre-wrap; }
+  .composer [contenteditable]:empty::before { content: attr(data-placeholder); color: var(--muted); }
+  .composer button { border: 0; border-radius: 10px; padding: 6px 12px; background: var(--accent); color: #fff; font: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #log { margin: 0; padding: 10px 12px; min-height: 120px; max-height: 260px; overflow: auto; border-radius: 10px;
+         border: 1px solid var(--line); background: var(--panel); font: 12px/1.5 Consolas, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wren test page</h1>
+  <p class="note">A safe target for Wren's paste tests. What arrives is echoed in the window title and the log.</p>
+  <div>
+    <label for="ta">Text box</label>
+    <textarea id="ta" spellcheck="false"></textarea>
+  </div>
+  <div>
+    <label for="ce">Chat composer</label>
+    <div class="composer">
+      <div id="ce" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="false"
+           data-placeholder="Message…"></div>
+      <button type="button" id="send" tabindex="-1">Send</button>
+    </div>
+  </div>
+  <div>
+    <label for="log">Log</label>
+    <pre id="log" tabindex="-1"></pre>
+  </div>
+</main>
+<script>
+  "use strict";
+  const ta = document.getElementById("ta");
+  const ce = document.getElementById("ce");
+  const log = document.getElementById("log");
+  const pastes = [];
+  const t0 = performance.now();
+
+  const recent = [];
+  function line(msg) {
+    const ms = Math.round(performance.now() - t0);
+    log.textContent += `${String(ms).padStart(7)} ms  ${msg}\n`;
+    recent.push(`${ms} ${msg}`); if (recent.length > 8) recent.shift();
+    log.scrollTop = log.scrollHeight;
+  }
+  function ceText() { return ce.innerText.replace(/\n$/, ""); }
+  function updateTitle() {
+    const f = document.hasFocus() && document.activeElement ? (document.activeElement.id || document.activeElement.tagName.toLowerCase()) : "";
+    document.title = "Wren test page | " + JSON.stringify({ ta: ta.value, ce: ceText(), n: pastes.length, f, log: recent });
+  }
+  window.addEventListener("focus", () => setTimeout(updateTitle, 0));
+  window.addEventListener("blur", () => setTimeout(updateTitle, 0));
+  document.addEventListener("focusin", () => setTimeout(updateTitle, 0));
+  function onPaste(where) {
+    return (e) => {
+      const types = e.clipboardData ? Array.from(e.clipboardData.types) : [];
+      const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+      pastes.push({ where, text, types });
+      line(`paste into ${where}: ${JSON.stringify(text)} (types: ${types.join(", ") || "none"})`);
+      setTimeout(updateTitle, 0);
+    };
+  }
+  ta.addEventListener("paste", onPaste("ta"));
+  ce.addEventListener("paste", onPaste("ce"));
+  ta.addEventListener("input", (e) => { line(`ta ${e.inputType}: length ${ta.value.length}`); updateTitle(); });
+  ce.addEventListener("input", (e) => { line(`ce ${e.inputType}: length ${ceText().length}`); updateTitle(); });
+  ce.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      line(`SEND (Enter) with ${JSON.stringify(ceText())}`);
+      ce.textContent = "";
+      updateTitle();
+    }
+  });
+  document.getElementById("send").addEventListener("click", () => { line(`SEND (button) with ${JSON.stringify(ceText())}`); ce.textContent = ""; updateTitle(); });
+  document.addEventListener("keydown", (e) => {
+    line(`key ${e.ctrlKey && e.key !== "Control" ? "Ctrl+" : ""}${e.shiftKey && e.key !== "Shift" ? "Shift+" : ""}${e.key}`);
+    setTimeout(updateTitle, 0);
+  });
+
+  window.wrenTest = { ta: () => ta.value, ce: ceText, pastes };
+
+  const focus = new URLSearchParams(location.search).get("focus") || "ta";
+  window.addEventListener("load", () => {
+    if (focus === "ce") ce.focus();
+    else if (focus === "none") { ta.blur(); log.focus(); }
+    else ta.focus();
+    line(`ready, focus=${focus}`);
+    updateTitle();
+  });
+</script>
+</body>
+</html>
