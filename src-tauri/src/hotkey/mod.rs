@@ -35,9 +35,11 @@ pub enum HotkeyEvent {
     Tap,
     /// Second press of a double-tap: start a hands-free recording.
     HandsFreeStart,
-    /// Next chord press during hands-free (or lock/sleep): stop and transcribe.
+    /// Next chord press during hands-free: stop, transcribe and paste.
     HandsFreeStop,
-    /// Another key joined the chord (a Windows shortcut), or the session locked mid-hold.
+    /// Discard: another key joined a held chord (a Windows shortcut), or the session locked, slept
+    /// or disconnected during any recording (hold or hands-free). Never pasted; saved to History
+    /// when `held_ms` ≥ `CANCEL_SAVE_AFTER_MS`. For hands-free, `held_ms` counts from its start.
     Cancel { held_ms: u64 },
 }
 
@@ -66,6 +68,10 @@ pub struct HotkeyService {
 
 impl HotkeyService {
     /// Installs the hook and starts sending events to `tx`.
+    ///
+    /// `tx` must be an **unbounded** channel (`crossbeam_channel::unbounded`). Events are sent
+    /// with `try_send`, so with a bounded channel that fills up, events are dropped (and logged)
+    /// rather than stalling the Start-menu mask or `Drop`.
     pub fn start(tx: Sender<HotkeyEvent>) -> anyhow::Result<Self> {
         let shared = Arc::new(hook::Shared::new());
         let (out_tx, out_rx) = crossbeam_channel::unbounded::<ChordOutput>();
@@ -92,13 +98,25 @@ impl HotkeyService {
             .name("wren-hotkey-dispatch".into())
             .spawn(move || {
                 // Ends when the hook thread drops its sender.
-                for o in out_rx {
-                    match HotkeyEvent::from_output(o) {
-                        // Win is still held here: the mask makes Windows treat it as a shortcut.
-                        None => send_tagged_keys(&[(VK_MASK, true), (VK_MASK, false)]),
-                        Some(ev) => {
-                            let _ = tx.send(ev);
+                while let Ok(first) = out_rx.recv() {
+                    // Take everything already queued, forward the session's events first (so
+                    // `HoldStart` starts audio without waiting on SendInput, which runs every other
+                    // app's hooks), then inject the masks. Win is still held: the mask makes
+                    // Windows treat the press as a shortcut, so Start stays shut.
+                    let mut masks = 0usize;
+                    for o in std::iter::once(first).chain(out_rx.try_iter()) {
+                        match HotkeyEvent::from_output(o) {
+                            None => masks += 1,
+                            // Never block: a full (bounded) channel must not stall masks or Drop.
+                            Some(ev) => {
+                                if tx.try_send(ev).is_err() {
+                                    tracing::warn!(?ev, "hotkey event dropped: session channel full or closed");
+                                }
+                            }
                         }
+                    }
+                    for _ in 0..masks {
+                        send_tagged_keys(&[(VK_MASK, true), (VK_MASK, false)]);
                     }
                 }
             })
@@ -244,8 +262,10 @@ mod tests {
     }
 
     /// Starting and dropping the service must install and remove the hook cleanly, twice
-    /// (the window class is registered once and reused).
+    /// (the window class is registered once and reused). Installs a real system-wide hook, so it
+    /// is opt-in: `cargo test -- --ignored service_starts_and_stops_cleanly`.
     #[test]
+    #[ignore = "installs a real system-wide keyboard hook"]
     fn service_starts_and_stops_cleanly() {
         for _ in 0..2 {
             let (tx, _rx) = crossbeam_channel::unbounded();

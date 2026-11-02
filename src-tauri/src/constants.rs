@@ -40,6 +40,10 @@ pub const KEYSTATE_POLL_MS: u64 = 250;
 pub const HOOK_SILENT_REINSTALL_MS: u64 = 5_000;
 /// How often the hotkey watchdog compares `GetLastInputInfo` with the hook's last event.
 pub const HOOK_WATCHDOG_POLL_MS: u64 = 1_000;
+/// Lock/unlock notifications can fail to register at early autostart (Terminal Services not up
+/// yet); the hotkey retries this often, this many times, without delaying hook installation.
+pub const SESSION_NOTIFY_RETRY_MS: u64 = 2_000;
+pub const SESSION_NOTIFY_RETRIES: u32 = 30;
 /// A hold that has run at least this long is saved to History (not pasted) when cancelled.
 pub const CANCEL_SAVE_AFTER_MS: u64 = 3_000;
 /// Transcriptions and their audio are deleted after this many hours.
