@@ -170,6 +170,40 @@ await page.goto(`${base}/index.html#home`);
 await page.waitForSelector(".tcard");
 check("no banner when nothing else runs", (await page.locator(".banner").count()) === 0);
 
+// UX polish (Task 11): plain engine words; when something is wrong the footer opens Settings at the engine
+await page.goto(`${base}/index.html#home`);
+await page.waitForSelector(".tcard");
+check("engine footer says Ready (no GPU jargon)", (await page.locator(".engine__text").textContent()) === "Ready");
+check("a healthy engine footer is not a button", (await page.locator("button.engine").count()) === 0);
+await page.goto(`${base}/index.html?engine=failed#home`);
+await page.waitForSelector("button.engine");
+check("failed engine footer says Speech stopped", (await page.locator(".engine__text").textContent()) === "Speech stopped");
+await page.locator("button.engine").click();
+await page.waitForSelector("#set-engine");
+await wait(900);
+check(
+  "the footer opens Settings at the speech engine",
+  await page.evaluate(() => {
+    // at the top of the panel, or as near as the page can scroll (the group is near the end)
+    const panel = document.querySelector(".panel");
+    const t = document.getElementById("set-engine").getBoundingClientRect().top - panel.getBoundingClientRect().top;
+    const atEnd = panel.scrollTop >= panel.scrollHeight - panel.clientHeight - 1;
+    return t >= 0 && (t < 120 || (atEnd && t < panel.clientHeight / 2));
+  }),
+);
+// Pages switch at once after the first visit: a revisit paints complete, with no entrance replay
+await page.goto(`${base}/index.html#home`);
+await page.waitForSelector(".tcard");
+await wait(1600);
+await page.locator(".nav-item", { hasText: "Stats" }).click();
+await page.waitForSelector(".stats-foot");
+await page.locator(".nav-item", { hasText: "Home" }).click();
+check("Home revisit paints its tiles at once (cached)", (await page.locator(".stats--loading").count()) === 0 && (await page.locator(".stat").count()) === 4);
+check(
+  "no entrance replay on revisit",
+  await page.evaluate(() => [...document.querySelectorAll(".stat, .strip, .tcard")].every((el) => getComputedStyle(el).animationName === "none")),
+);
+
 check("no page errors or console errors", errors.length === 0, errors.join("; "));
 
 // Load failures: a short "Couldn't load · Try again", never a misleading empty page

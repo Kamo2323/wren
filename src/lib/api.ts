@@ -3,7 +3,7 @@
 // falls back to mock data from mock.ts, so the UI can be built and checked without the Rust side.
 // Add `?mock=empty` to the URL for the first-run (no data) look. Other mock switches (screenshots only):
 // `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`,
-// `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states).
+// `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states), `?engine=failed|cpu`.
 
 import type {
   AiCleanupStatus,
@@ -242,7 +242,13 @@ function readyFrom(o: Record<string, unknown>): EngineStatus {
 }
 
 export const engineStatus = async (): Promise<EngineStatus> =>
-  inTauri ? normaliseEngineStatus(await call<unknown>("engine_status")) : later({ state: "ready", model: "large-v3-turbo", device: "cuda", vramMb: 1840 });
+  inTauri ? normaliseEngineStatus(await call<unknown>("engine_status")) : later(mockEngine());
+/** `?engine=failed|cpu` (screenshots and checks only). */
+function mockEngine(): EngineStatus {
+  const e = mockParams.get("engine");
+  if (e === "failed") return { state: "failed", reason: "The speech engine stopped 5 times in 5 minutes." };
+  return { state: "ready", model: "large-v3-turbo", device: e === "cpu" ? "cpu" : "cuda", vramMb: e === "cpu" ? 0 : 1840 };
+}
 export const engineRestart = (): Promise<void> => (inTauri ? call("engine_restart") : later(undefined));
 export const audioDevices = (): Promise<string[]> =>
   inTauri ? call("audio_devices") : later(["Microphone (Shure MV7)", "Headset Microphone (Jabra Evolve2 65)", "Microphone Array (Realtek)"]);

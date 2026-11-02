@@ -187,7 +187,7 @@
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 .engine--bad .engine__text {
-  color: var(--danger);
+  color: #b3343a; /* 5.5:1 on the canvas, 5.0:1 on hover (--danger is 4.0:1 there) */
 }
 
 @keyframes pulse-dot {
@@ -413,8 +413,9 @@
   .stats {
     gap: 10px;
   }
-  .stat,
-  .strip {
+  /* (specific enough to win over the base .stat / .strip padding further down) */
+  .stats .stat,
+  .page .strip {
     padding-left: 18px;
     padding-right: 18px;
   }
