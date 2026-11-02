@@ -1,8 +1,17 @@
 //! Steps 2, 3, 4 and 8 (spec §6): whitespace, fillers, "i", final spacing.
 
 /// Fillers removed as whole words, any case except ALL CAPS (so "ER" the ward survives).
-/// Never on this list: like, you know, I mean, so, well, basically, actually, ah, yeah.
-const FILLERS: &[&str] = &["um", "umm", "uh", "uhh", "er", "err", "erm", "ermm", "hmm", "mm"];
+/// Never on this list: like, you know, I mean, so, well, basically, actually, ah, yeah, mm
+/// ("10 mm" — Ruling 23). "err" is a filler only in filler position (see `remove_fillers`).
+const FILLERS: &[&str] = &["um", "umm", "uh", "uhh", "er", "erm", "ermm", "hmm"];
+
+/// A filler only at a sentence start or next to a comma ("Err, I…", "could, err, try"); elsewhere
+/// it is the verb ("To err is human").
+const POSITIONAL_FILLERS: &[&str] = &["err"];
+
+/// Discourse markers whose own comma survives a following filler: "Yes, um, I agree." →
+/// "Yes, I agree." (not "Yes I agree.").
+const COMMA_MARKERS: &[&str] = &["yes", "no", "so", "well", "okay", "ok", "right", "now"];
 
 /// Lower-case pronoun forms that are capitalised.
 const LOWER_I: &[&str] = &["i", "i'm", "i've", "i'll", "i'd"];
@@ -29,10 +38,23 @@ fn split_token(token: &str) -> (&str, &str, &str) {
     (&token[..start], &token[start..end], &token[end..])
 }
 
-fn is_filler(word: &str) -> bool {
+fn not_all_caps(word: &str) -> bool {
     let has_letter = word.chars().any(char::is_alphabetic);
-    let all_caps = has_letter && word.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase);
-    !all_caps && FILLERS.contains(&word.to_lowercase().as_str())
+    !(has_letter && word.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase))
+}
+
+fn is_filler(word: &str) -> bool {
+    not_all_caps(word) && FILLERS.contains(&word.to_lowercase().as_str())
+}
+
+fn is_positional_filler(word: &str) -> bool {
+    not_all_caps(word) && POSITIONAL_FILLERS.contains(&word.to_lowercase().as_str())
+}
+
+/// True when `token` (as kept, with its punctuation) is a discourse marker such as "Yes,".
+fn is_comma_marker(token: &str) -> bool {
+    let (_, word, _) = split_token(token);
+    COMMA_MARKERS.contains(&word.to_lowercase().as_str())
 }
 
 fn capitalise_first_letter(token: &str) -> String {
@@ -55,7 +77,11 @@ pub fn remove_fillers(text: &str) -> String {
     let mut capitalise_next = false;
     for token in text.split_whitespace() {
         let (_, word, trail) = split_token(token);
-        if !is_filler(word) {
+        let at_sentence_start = kept.last().is_none_or(|prev| prev.ends_with(SENTENCE_END));
+        let comma_adjacent = trail.contains(',') || kept.last().is_some_and(|prev| prev.ends_with(','));
+        let filler =
+            is_filler(word) || (is_positional_filler(word) && (at_sentence_start || comma_adjacent));
+        if !filler {
             if capitalise_next {
                 kept.push(capitalise_first_letter(token));
                 capitalise_next = false;
@@ -65,7 +91,6 @@ pub fn remove_fillers(text: &str) -> String {
             continue;
         }
         removed_any = true;
-        let at_sentence_start = kept.last().is_none_or(|prev| prev.ends_with(SENTENCE_END));
         if at_sentence_start {
             // "Um, so…" / "Okay. Uh, yes." — the next word now starts the sentence.
             capitalise_next = true;
@@ -80,8 +105,9 @@ pub fn remove_fillers(text: &str) -> String {
             if !prev.ends_with(SENTENCE_END) {
                 prev.push_str(&end);
             }
-        } else if trail.contains(',') && prev.ends_with(',') {
-            // "So, um, I think" → "So I think" — the comma pair around the filler goes.
+        } else if trail.contains(',') && prev.ends_with(',') && !is_comma_marker(prev) {
+            // "I, uh, don't know" → "I don't know" — the comma pair around the filler goes; a
+            // discourse marker keeps its own ("So, um, I think" → "So, I think").
             prev.pop();
         }
     }
@@ -154,10 +180,22 @@ mod tests {
             ("Take him to the ER now.", "Take him to the ER now."),
             ("UM is an acronym here.", "UM is an acronym here."),
             // Every filler, any case but all-caps.
-            ("um umm uh uhh er err erm ermm hmm mm okay", "Okay"),
-            ("Um, umm, Uh, Uhh, Er, Err, Erm, Ermm, Hmm, Mm, right.", "Right."),
-            // Orphaned commas.
-            ("So, um, I think we should go.", "So I think we should go."),
+            ("um umm uh uhh er err erm ermm hmm okay", "Okay"),
+            ("Um, umm, Uh, Uhh, Er, Err, Erm, Ermm, Hmm, right.", "Right."),
+            // Ruling 23: "mm" is never a filler (measurements); "err" only at a sentence start or
+            // next to a comma.
+            ("Leave a 10 mm gap and a 5 mm edge.", "Leave a 10 mm gap and a 5 mm edge."),
+            ("Mm, that works.", "Mm, that works."),
+            ("To err is human.", "To err is human."),
+            ("Err, I think so.", "I think so."),
+            ("We could, err, try again.", "We could try again."),
+            ("Okay. Err, fine.", "Okay. Fine."),
+            ("It was fine, err.", "It was fine."),
+            // Orphaned commas — but a discourse marker keeps its own comma.
+            ("So, um, I think we should go.", "So, I think we should go."),
+            ("Yes, um, I agree.", "Yes, I agree."),
+            ("Well, uh, maybe.", "Well, maybe."),
+            ("Okay, er, now.", "Okay, now."),
             ("I, uh, don't know.", "I don't know."),
             ("We could, er, try again, um, tomorrow.", "We could try again tomorrow."),
             ("Right, um.", "Right."),

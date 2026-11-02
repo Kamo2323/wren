@@ -158,9 +158,12 @@ Where this spec and the Goldfish report disagree, **this spec wins**.
    hallucination ("Thank you.", "Thanks for watching!", "you", "Bye.", ".", the prompt text) → empty. Any
    phrase repeated > 4 times in a row → collapsed to one, flagged.
 2. Whitespace normalise.
-3. **Fillers** (whole words, case-insensitive except all-caps survives): um, umm, uh, uhh, er, err, erm,
-   ermm, hmm, mm. Then remove orphaned commas, fix doubled spaces, re-capitalise sentence starts.
-   Never removed: like, you know, I mean, so, well, basically, actually, ah, yeah.
+3. **Fillers** (whole words, case-insensitive except all-caps survives): um, umm, uh, uhh, er, erm,
+   ermm, hmm; **err** only in filler position (sentence start or next to a comma — "To err is human"
+   keeps it). Then remove orphaned commas (a discourse marker — yes, no, so, well, okay, ok, right,
+   now — keeps its own: "Yes, um, I agree." → "Yes, I agree."), fix doubled spaces, re-capitalise
+   sentence starts. Never removed: like, you know, I mean, so, well, basically, actually, ah, yeah,
+   mm ("10 mm gap" — Ruling 23).
 4. `i`, `i'm`, `i've`, `i'll`, `i'd` → capitalised.
 5. **Replacements** (active dictionary replacements, whole-word, case-aware, longest first). Record applied
    rule IDs.
