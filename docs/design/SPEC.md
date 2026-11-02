@@ -130,8 +130,10 @@ Where this spec and the Goldfish report disagree, **this spec wins**.
   missing or inconclusive: faster-whisper `large-v3-turbo`, `int8_float16`, `language="en"`,
   `vad_filter=True`, `condition_on_previous_text=False`, beam 5 if a 10 s clip's release-to-text p50 ≤ 600 ms
   else 1. Model + settings live in `settings.json` (`engine.*`) so they can change without code changes.
-- Bias: `hotwords` = ranked dictionary terms (≤ `BIAS_TERMS_MAX`); `initial_prompt` = a short British-English
-  sentence plus the top terms, kept under ~200 tokens.
+- Bias (benchmark result, `../research/stt-benchmark.md`): `initial_prompt = "Glossary: t1, t2, …"` built from the
+  ranked dictionary terms (≤ `BIAS_TERMS_MAX`, kept under ~200 tokens), plus the optional `prompt` sentence.
+  **Do not use `hotwords`**: it made the model append dictionary words to trailing silence. The Glossary prompt
+  raised name recall 80% → 93% with no harm elsewhere. VAD stays on (it removes the prompt-echo on silence).
 - Launched by Rust with `CREATE_NO_WINDOW` inside a Job Object with `KILL_ON_JOB_CLOSE`. stderr → log file.
 - Warm-up: load the model, transcribe a bundled 10 s WAV, then send `ready`.
 - Supervision: restart with backoff; after 5 failures in 5 min → error state shown in popup and Settings.
