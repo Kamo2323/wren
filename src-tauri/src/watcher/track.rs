@@ -27,9 +27,10 @@ pub struct FocusKey {
 }
 
 impl FocusKey {
-    /// Same element (an unknown runtime id compares by process only).
+    /// Same element. An unknown (empty) runtime id never matches: without it Wren cannot tell the
+    /// box it watches from another one in the same app.
     pub fn same_as(&self, other: &FocusKey) -> bool {
-        self.pid == other.pid && (self.runtime_id.is_empty() || other.runtime_id.is_empty() || self.runtime_id == other.runtime_id)
+        self.pid == other.pid && !self.runtime_id.is_empty() && self.runtime_id == other.runtime_id
     }
 }
 
@@ -201,24 +202,27 @@ pub fn edited_span(base: &str, span: std::ops::Range<usize>, now: &str) -> Optio
 }
 
 /// Longest box worth watching for a dictation of `pasted_chars`.
-fn max_field_chars(pasted_chars: usize) -> usize {
+pub fn max_field_chars(pasted_chars: usize) -> usize {
     (pasted_chars * WATCH_MAX_FIELD_FACTOR).max(WATCH_MAX_FIELD_CHARS)
 }
 
-/// Runs one watch. `read` reads the focused element; `sleep(ms)` waits and returns false when the
-/// watch is cancelled; `now()` is milliseconds since the paste.
+/// Runs one watch. `read(expected)` reads the focused element — after the first read, `expected` is
+/// the element being watched, and the reader must not read the text of any other element;
+/// `sleep(ms)` waits and returns false when the watch is cancelled; `now()` is milliseconds since
+/// the paste.
 pub fn watch(
     pasted: &str,
-    read: &mut dyn FnMut() -> Reading,
+    read: &mut dyn FnMut(Option<&FocusKey>) -> Reading,
     sleep: &mut dyn FnMut(u64) -> bool,
     now: &dyn Fn() -> u64,
 ) -> WatchEnd {
     let mut end = WatchEnd { reason: EndReason::Cancelled, pasted_span: None, edited_span: None, reads: 0, slow_calls: 0 };
     let max_chars = max_field_chars(pasted.chars().count());
     let mut failures = 0u32;
-    // One read, counted; the reading, or the reason to stop.
-    let mut take = |end: &mut WatchEnd, failures: &mut u32| -> Result<Reading, EndReason> {
-        let r = read();
+    // One read, counted; the reading, or the reason to stop. Failures count until a text reading
+    // (a `NoText` from the watched element is counted by the poll loop, after the focus check).
+    let mut take = |end: &mut WatchEnd, failures: &mut u32, expected: Option<&FocusKey>| -> Result<Reading, EndReason> {
+        let r = read(expected);
         end.reads += 1;
         if r.took_ms() > WATCH_SLOW_CALL_MS {
             end.slow_calls += 1;
@@ -226,13 +230,15 @@ pub fn watch(
                 return Err(EndReason::TooSlow);
             }
         }
-        if matches!(r, Reading::Failed { .. }) {
-            *failures += 1;
-            if *failures >= WATCH_MAX_FAILURES {
-                return Err(EndReason::Failures);
+        match r {
+            Reading::Failed { .. } => {
+                *failures += 1;
+                if *failures >= WATCH_MAX_FAILURES {
+                    return Err(EndReason::Failures);
+                }
             }
-        } else {
-            *failures = 0;
+            Reading::Text { .. } => *failures = 0,
+            Reading::NoText { .. } => {}
         }
         Ok(r)
     };
@@ -246,7 +252,7 @@ pub fn watch(
         if attempt == 1 && !sleep(WATCH_RETRY_MS) {
             return end;
         }
-        match take(&mut end, &mut failures) {
+        match take(&mut end, &mut failures, None) {
             Err(reason) => {
                 end.reason = reason;
                 return end;
@@ -287,7 +293,7 @@ pub fn watch(
         if !sleep(delay.min(WATCH_MAX_MS - t)) {
             break EndReason::Cancelled;
         }
-        let r = match take(&mut end, &mut failures) {
+        let r = match take(&mut end, &mut failures, Some(&focus)) {
             Ok(r) => r,
             Err(reason) => break reason,
         };
@@ -391,13 +397,16 @@ mod tests {
     struct Rig {
         t: Cell<u64>,
         read_times: RefCell<Vec<u64>>,
+        /// What each read was told to expect.
+        expected: RefCell<Vec<Option<FocusKey>>>,
     }
 
     fn run(pasted: &str, cancel_at: Option<u64>, script: impl Fn(u64) -> Reading) -> (WatchEnd, Vec<u64>) {
-        let rig = Rig { t: Cell::new(0), read_times: RefCell::new(Vec::new()) };
-        let mut read = || {
+        let rig = Rig { t: Cell::new(0), read_times: RefCell::new(Vec::new()), expected: RefCell::new(Vec::new()) };
+        let mut read = |expected: Option<&FocusKey>| {
             let now = rig.t.get();
             rig.read_times.borrow_mut().push(now);
+            rig.expected.borrow_mut().push(expected.cloned());
             script(now)
         };
         let mut sleep = |ms: u64| {
@@ -534,5 +543,59 @@ mod tests {
         assert_eq!(end.edited_span.as_deref(), Some("hello Claude"));
         let (end, times) = run("hello klode", Some(100), |_| text("hello klode"));
         assert_eq!((end.reason, times.len()), (EndReason::Cancelled, 0));
+    }
+
+    #[test]
+    fn no_text_on_the_same_element_ends_as_failures() {
+        // Review r1: NoText readings used to reset the failure count, so they never ended a watch.
+        let (end, times) = run("hello klode", None, |t| match t {
+            ..300 => text("hello klode"),
+            _ => Reading::NoText { focus: key(1), took_ms: 1 },
+        });
+        assert_eq!(end.reason, EndReason::Failures);
+        assert_eq!(times.len() as u32, 1 + WATCH_MAX_FAILURES);
+        // Mixed NoText and Failed count together; only a text reading resets the count.
+        let (end, times) = run("hello klode", None, |t| match t {
+            ..300 => text("hello klode"),
+            750 => Reading::NoText { focus: key(1), took_ms: 1 },
+            1_250 => Reading::Failed { took_ms: 1 },
+            1_750 => text("hello Claude"),
+            _ => Reading::NoText { focus: key(1), took_ms: 1 },
+        });
+        assert_eq!(end.reason, EndReason::Failures);
+        assert_eq!(end.edited_span.as_deref(), Some("hello Claude"));
+        assert_eq!(times.len() as u32, 4 + WATCH_MAX_FAILURES);
+    }
+
+    #[test]
+    fn an_unknown_runtime_id_is_never_the_same_element() {
+        let known = key(1);
+        let unknown = FocusKey { pid: 7, runtime_id: vec![] };
+        assert!(known.same_as(&key(1)));
+        assert!(!known.same_as(&unknown));
+        assert!(!unknown.same_as(&known));
+        assert!(!unknown.same_as(&unknown.clone()));
+        assert!(!known.same_as(&FocusKey { pid: 8, runtime_id: vec![42, 1] }));
+    }
+
+    #[test]
+    fn reads_after_the_first_name_the_watched_element() {
+        let rig = Rig { t: Cell::new(0), read_times: RefCell::new(Vec::new()), expected: RefCell::new(Vec::new()) };
+        let mut read = |expected: Option<&FocusKey>| {
+            rig.expected.borrow_mut().push(expected.cloned());
+            let t = rig.t.get();
+            if t < 2_000 { text("hello klode") } else { text("
+") }
+        };
+        let mut sleep = |ms: u64| {
+            rig.t.set(rig.t.get() + ms);
+            true
+        };
+        let now = || rig.t.get();
+        let end = watch("hello klode", &mut read, &mut sleep, &now);
+        assert_eq!(end.reason, EndReason::Emptied);
+        let expected = rig.expected.borrow();
+        assert_eq!(expected[0], None, "the first read finds the element");
+        assert!(expected[1..].iter().all(|e| e.as_ref() == Some(&key(1))), "{expected:?}");
     }
 }

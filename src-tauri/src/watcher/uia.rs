@@ -137,15 +137,22 @@ impl Uia {
         Focused { element, facts, runtime_id }
     }
 
-    /// The element's whole text: TextPattern `DocumentRange.GetText(-1)`, else ValuePattern's
-    /// value. `Ok(None)` when it offers neither.
-    pub fn read_text(&self, f: &Focused) -> windows::core::Result<Option<String>> {
+    /// The element's text: TextPattern `DocumentRange.GetText`, else ValuePattern's value.
+    /// `Ok(None)` when it offers neither. With `max_chars`, at most `max_chars + 1` characters come
+    /// back (enough to tell the box is too long; TextPattern stops there itself).
+    pub fn read_text(&self, f: &Focused, max_chars: Option<usize>) -> windows::core::Result<Option<String>> {
+        let limit = max_chars.map(|m| m.saturating_add(1));
+        let cut = |s: String| match limit {
+            Some(n) if s.chars().count() > n => s.chars().take(n).collect(),
+            _ => s,
+        };
         if f.facts.text_pattern {
             match unsafe { f.element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) } {
                 Ok(tp) => {
                     let range = unsafe { tp.DocumentRange()? };
-                    let text = unsafe { range.GetText(-1)? };
-                    return Ok(Some(text.to_string()));
+                    let max = limit.map(|n| n.min(i32::MAX as usize) as i32).unwrap_or(-1);
+                    let text = unsafe { range.GetText(max)? };
+                    return Ok(Some(cut(text.to_string())));
                 }
                 Err(_) if f.facts.value_pattern => {}
                 Err(e) => return Err(e),
@@ -154,7 +161,7 @@ impl Uia {
         if f.facts.value_pattern {
             let vp = unsafe { f.element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)? };
             let v = unsafe { vp.CurrentValue()? };
-            return Ok(Some(v.to_string()));
+            return Ok(Some(cut(v.to_string())));
         }
         Ok(None)
     }

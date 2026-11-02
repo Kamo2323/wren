@@ -9,7 +9,7 @@ pub mod guards;
 pub mod replace;
 pub mod tidy;
 
-use crate::constants::AI_CLEANUP_MAX_LENGTH_CHANGE;
+use crate::constants::{AI_CLEANUP_LEAD_IN_MAX_CHARS, AI_CLEANUP_MAX_LENGTH_CHANGE, AI_CLEANUP_MIN_WORD_OVERLAP};
 use crate::dictionary::Replacement;
 
 pub struct PipelineInput<'a> {
@@ -55,8 +55,10 @@ pub fn run(input: &PipelineInput, ai: Option<&dyn Fn(&str) -> Option<String>>) -
         && let Some(ai) = ai
         && let Some(candidate) = ai(&tidied)
     {
+        // Judged as the model wrote it (before spacing clean-up folds a lead-in's line break away).
+        let acceptable = ai_result_acceptable(&tidied, candidate.trim());
         let candidate = tidy::final_spacing(&candidate);
-        if ai_result_acceptable(&tidied, &candidate) {
+        if acceptable {
             let (again, applied_again) = replace::apply(&candidate, input.replacements);
             for id in applied_again {
                 if !applied.contains(&id) {
@@ -70,15 +72,71 @@ pub fn run(input: &PipelineInput, ai: Option<&dyn Fn(&str) -> Option<String>>) -
     PipelineOutput { tidied, final_text, applied_rule_ids: applied, repetition_flagged }
 }
 
-/// The AI reply is used only if it is non-empty and its length (in characters) is within
+/// The length rule: the reply is non-empty and its length (in characters) is within
 /// `AI_CLEANUP_MAX_LENGTH_CHANGE` of the tidied text.
-pub fn ai_result_acceptable(tidied: &str, candidate: &str) -> bool {
+pub fn ai_length_ok(tidied: &str, candidate: &str) -> bool {
     let before = tidied.chars().count() as f32;
     let after = candidate.chars().count() as f32;
     if after == 0.0 || before == 0.0 {
         return false;
     }
     ((after - before).abs() / before) <= AI_CLEANUP_MAX_LENGTH_CHANGE
+}
+
+fn is_apostrophe(c: char) -> bool {
+    c == '\'' || c == '\u{2019}'
+}
+
+/// Lower-cased words (letters, digits and inner apostrophes).
+fn ai_words(s: &str) -> Vec<String> {
+    s.split(|c: char| !(c.is_alphanumeric() || is_apostrophe(c)))
+        .map(|w| w.trim_matches(is_apostrophe).to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// The word rule: at least `AI_CLEANUP_MIN_WORD_OVERLAP` of the tidied text's words are still in
+/// the reply, and as large a share of the reply's words come from the tidied text (counted with
+/// repeats, ignoring case).
+pub fn ai_words_kept(tidied: &str, candidate: &str) -> bool {
+    let (a, b) = (ai_words(tidied), ai_words(candidate));
+    if a.is_empty() || b.is_empty() {
+        return a.is_empty() && b.is_empty();
+    }
+    let mut pool: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for w in &a {
+        *pool.entry(w.as_str()).or_default() += 1;
+    }
+    let mut common = 0usize;
+    for w in &b {
+        if let Some(n) = pool.get_mut(w.as_str())
+            && *n > 0
+        {
+            *n -= 1;
+            common += 1;
+        }
+    }
+    let kept = common as f32 / a.len() as f32;
+    let own = common as f32 / b.len() as f32;
+    kept >= AI_CLEANUP_MIN_WORD_OVERLAP && own >= AI_CLEANUP_MIN_WORD_OVERLAP
+}
+
+/// The reply opens with chatter ("Here is the corrected transcript:", "Sure!" + line break): words
+/// before a ':' or line break near the start that the tidied text does not start with.
+pub fn ai_lead_in(tidied: &str, candidate: &str) -> bool {
+    let head: String = candidate.trim_start().chars().take(AI_CLEANUP_LEAD_IN_MAX_CHARS).collect();
+    let Some(pos) = head.find([':', '\n']) else { return false };
+    let lead = ai_words(&head[..pos]);
+    if lead.is_empty() {
+        return false;
+    }
+    let start = ai_words(tidied);
+    !(start.len() >= lead.len() && start[..lead.len()] == lead[..])
+}
+
+/// The AI reply is used only if it passes the length rule and the word rule and has no lead-in.
+pub fn ai_result_acceptable(tidied: &str, candidate: &str) -> bool {
+    ai_length_ok(tidied, candidate) && ai_words_kept(tidied, candidate) && !ai_lead_in(tidied, candidate)
 }
 
 #[cfg(test)]
@@ -175,11 +233,30 @@ mod tests {
     #[test]
     fn ai_length_rule_boundaries() {
         let base = "a".repeat(100);
-        assert!(ai_result_acceptable(&base, &"a".repeat(130)));
-        assert!(!ai_result_acceptable(&base, &"a".repeat(131)));
-        assert!(ai_result_acceptable(&base, &"a".repeat(70)));
-        assert!(!ai_result_acceptable(&base, &"a".repeat(69)));
+        assert!(ai_length_ok(&base, &"a".repeat(130)));
+        assert!(!ai_length_ok(&base, &"a".repeat(131)));
+        assert!(ai_length_ok(&base, &"a".repeat(70)));
+        assert!(!ai_length_ok(&base, &"a".repeat(69)));
+        assert!(!ai_length_ok(&base, ""));
         assert!(!ai_result_acceptable(&base, ""));
+    }
+
+    #[test]
+    fn ai_reply_must_keep_the_words_and_add_no_lead_in() {
+        let long = "I think we should ship the new build to the testers on Friday after lunch and then tell the whole team about the plan in the morning meeting";
+        // A chatty lead-in on a long text slips past the 30 % length rule…
+        let chatty = format!("Here is the corrected transcript: {long}.");
+        assert!(ai_length_ok(long, &chatty));
+        // …but not past the word rules.
+        assert!(!ai_result_acceptable(long, &chatty));
+        assert!(!ai_result_acceptable(long, &format!("Sure!\n{long}.")));
+        // A reply instead of the text.
+        assert!(!ai_result_acceptable("can you send it to sam", "Sure, I will send it to Sam."));
+        // Real clean-ups pass: punctuation, capitals, one mis-hearing fixed.
+        assert!(ai_result_acceptable(long, &format!("{}.", long.replace("I think", "I think,"))));
+        assert!(ai_result_acceptable("I asked clawed about it", "I asked Claude about it."));
+        assert!(ai_result_acceptable("dear sam thanks for the notes", "Dear Sam: thanks for the notes."), "a colon the text itself needs");
+        assert!(ai_result_acceptable("what is the capital of france", "What is the capital of France?"));
     }
 
     #[test]

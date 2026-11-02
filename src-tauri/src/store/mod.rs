@@ -813,6 +813,14 @@ impl Store {
                     Rule::AlreadyActive
                 } else if e.observations + 1 >= LEARN_PROMOTE_SIGHTINGS {
                     update_status(&txn, e.id, Status::Active)?;
+                    // The candidate's batch (it and the term learned with it) joins this learn's
+                    // batch, so the toast's Undo takes back all of it.
+                    let old: Option<String> =
+                        txn.query_row("SELECT batch_id FROM dictionary_entries WHERE id = ?1", [e.id], |r| r.get(0))?;
+                    txn.execute(
+                        "UPDATE dictionary_entries SET batch_id = ?1 WHERE id = ?2 OR (?3 IS NOT NULL AND batch_id = ?3)",
+                        params![batch, e.id, old],
+                    )?;
                     drop_superseded(&txn, e.id, from)?;
                     Rule::NowActive
                 } else {
@@ -859,6 +867,26 @@ impl Store {
     pub fn replacement_id(&self, from: &str, to: &str) -> StoreResult<Option<i64>> {
         let conn = self.conn()?;
         Ok(find_pair(&conn, from.trim(), to.trim())?.map(|e| e.id))
+    }
+
+    /// "Learned X → Y · Undo": switch off the entry and everything the same learn added with it
+    /// (its batch: the replacement and a term created alongside). Entries that were already there,
+    /// such as a term the user had added, are not in the batch and stay as they were. A switched-off
+    /// rule is never re-learned.
+    pub fn undo_learned(&self, entry_id: i64) -> StoreResult<()> {
+        let mut conn = self.conn()?;
+        let txn = conn.transaction()?;
+        let batch: Option<String> = txn
+            .query_row("SELECT batch_id FROM dictionary_entries WHERE id = ?1", [entry_id], |r| r.get(0))
+            .optional()?
+            .ok_or(StoreError::NotFound)?;
+        txn.execute(
+            "UPDATE dictionary_entries SET status = ?3, updated_at = ?4
+             WHERE id = ?1 OR (?2 IS NOT NULL AND batch_id = ?2)",
+            params![entry_id, batch, Status::Disabled.as_db(), now_ts()],
+        )?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// The id of the term `word`, if any.

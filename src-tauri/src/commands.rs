@@ -191,11 +191,13 @@ pub fn popup_copy_text(text: String) -> Result<(), String> {
     })
 }
 
-/// "Learned X → Y · Undo": switch the learned replacement off (a switched-off rule is never
-/// re-learned).
+/// "Learned X → Y · Undo": switch off what that learn added — the replacement and a term created
+/// with it (a term that was already there stays). A switched-off rule is never re-learned.
 #[tauri::command(async)]
-pub fn popup_undo_learned(state: State<'_, AppState>, entry_id: i64) -> Result<(), String> {
-    state.store.set_status(entry_id, Status::Disabled).map_err(|e| e.to_string())
+pub fn popup_undo_learned(app: AppHandle, state: State<'_, AppState>, entry_id: i64) -> Result<(), String> {
+    state.store.undo_learned(entry_id).map_err(|e| e.to_string())?;
+    history_changed(&app);
+    Ok(())
 }
 
 /// The × on the hands-free popup.
