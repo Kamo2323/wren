@@ -1,0 +1,4 @@
+/* Design tokens. Filled in by the design-system task from the Willow + Glaido teardowns. */
+:root {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}

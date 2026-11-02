@@ -1,0 +1,3 @@
+[build]
+# One shared build cache for the main checkout and every worktree.
+target-dir = "C:/Wren/.cargo-target"

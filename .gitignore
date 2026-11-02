@@ -1,0 +1,20 @@
+# Research material extracted from other apps stays local, never committed
+.research-cache/
+
+# Benchmark environment, models and per-clip outputs (contain the owner's dictated text)
+bench/.venv/
+bench/models/
+bench/out/
+
+# Build output
+node_modules/
+dist/
+src-tauri/target/
+
+sidecar/.venv/
+*.log
+
+# Shared Rust build cache
+.cargo-target/
+# Agent worktrees
+.claude/
