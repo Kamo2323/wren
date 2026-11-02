@@ -144,6 +144,9 @@ impl Env for AppEnv {
     }
     fn dictation_started(&self) {
         self.watcher.stop();
+        if let Some(c) = &self.prepaste {
+            c.prime();
+        }
         // Load the clean-up model while he speaks, so the AI step fits its time limit.
         let ai = self.settings().ai_cleanup;
         if ai.enabled && !self.ai_warming.swap(true, Ordering::SeqCst) {

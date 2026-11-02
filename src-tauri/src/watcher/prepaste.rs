@@ -121,6 +121,20 @@ impl Checker {
         Ok(Self { tx, busy })
     }
 
+    /// Asks the question once without waiting for the answer, when a recording starts. Chromium
+    /// (Edge, Chrome, Electron apps such as Claude) switches its accessibility tree on only when a
+    /// client first asks, and until then reports the focused element as a bare `Pane`; asking early
+    /// means the real check at paste time sees the actual element.
+    pub fn prime(&self) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (reply, _) = bounded(1);
+        if self.tx.send(Request { target_pid: 0, reply }).is_err() {
+            self.busy.store(false, Ordering::SeqCst);
+        }
+    }
+
     /// Asks, waits at most `PREPASTE_CHECK_MAX_MS`, decides. Logs the decision (no text).
     pub fn check(&self, target_pid: u32, app: &str) -> PrePaste {
         let t = Instant::now();
