@@ -62,10 +62,12 @@ struct Args {
     report: PathBuf,
     holds: usize,
     taps: usize,
+    /// Only observe what Win+Shift+S and Win+V do on this PC (no Wren), then exit.
+    probe_shortcuts: bool,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50 };
+    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50, probe_shortcuts: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| panic!("{arg} needs a value"));
@@ -75,6 +77,7 @@ fn parse_args() -> Args {
             "--report" => a.report = PathBuf::from(val()),
             "--holds" => a.holds = val().parse().expect("--holds N"),
             "--taps" => a.taps = val().parse().expect("--taps N"),
+            "--probe-shortcuts" => a.probe_shortcuts = true,
             other => panic!("unknown argument {other}"),
         }
     }
@@ -782,9 +785,10 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     println!("PASSTHROUGH {}: {detail}", if pass { "OK" } else { "FAIL" });
     r.passthrough = Some((pass, detail));
 
-    // 5b. Win+Shift+S and Win+V: Windows opens its UI (it takes the foreground), Wren does nothing.
-    //     Each is closed with Esc right away.
-    for (label, keys) in [("Win+Shift+S", &[VK_CHORD_WIN, VK_SHIFT, 0x53][..]), ("Win+V", &[VK_CHORD_WIN, 0x56][..])] {
+    // 5b. Win+V: Windows' clipboard pane takes the foreground, Wren does nothing; Esc closes it.
+    //     (Win+Shift+S is not run: on this PC its overlay appears without taking the foreground, so
+    //     Esc could only reach it by sending keys to a window other than the test page.)
+    for (label, keys) in [("Win+V", &[VK_CHORD_WIN, 0x56][..])] {
         let starts_before = log_count(&args.home, "recording started");
         let mut down: Vec<(u16, bool)> = keys.iter().map(|k| (*k, true)).collect();
         down.extend(keys.iter().rev().map(|k| (*k, false)));
@@ -800,18 +804,17 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
         }
         std::thread::sleep(Duration::from_millis(600));
         let mut closed = opened.is_empty();
+        if opened == "claude.exe" {
+            return Err(format!("{label}: claude.exe came to the front; stopped (no keys sent to it)"));
+        }
         for _ in 0..5 {
-            if closed || unsafe { GetForegroundWindow() } == page.hwnd {
+            if closed || fg_exe() != opened {
                 closed = true;
                 break;
             }
-            if fg_exe() == "claude.exe" {
-                return Err(format!("{label}: claude.exe came to the front; stopped"));
-            }
+            // The foreground is Windows' own pane (checked just above): Esc goes to it.
             send_tagged_keys(&[(VK_ESCAPE, true), (VK_ESCAPE, false)]);
             std::thread::sleep(Duration::from_millis(500));
-            let now = fg_exe();
-            closed = now != opened || unsafe { GetForegroundWindow() } == page.hwnd;
         }
         let wren_out = log_count(&args.home, "recording started") == starts_before;
         let reacted = !opened.is_empty();
@@ -879,8 +882,59 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     Ok(())
 }
 
+/// Visible top-level windows as (hwnd, process name).
+fn visible_windows() -> Vec<(isize, String)> {
+    top_windows()
+        .into_iter()
+        .filter(|h| unsafe { IsWindowVisible(*h) }.as_bool())
+        .map(|h| (h.0 as isize, process_name(window_pid(h))))
+        .collect()
+}
+
+/// `--probe-shortcuts`: what do Win+Shift+S and Win+V do here? Prints the foreground and any newly
+/// visible windows for 2.5 s after each, then closes with Esc. No Wren involved.
+fn probe_shortcuts(args: &Args) -> Result<(), String> {
+    let edge = find_edge().ok_or("msedge.exe not found")?;
+    let page = open_page(&edge, &args.home, "ta")?;
+    for (label, keys) in [("Win+Shift+S", &[VK_CHORD_WIN, VK_SHIFT, 0x53][..]), ("Win+V", &[VK_CHORD_WIN, 0x56][..])] {
+        let before = visible_windows();
+        let mut down: Vec<(u16, bool)> = keys.iter().map(|k| (*k, true)).collect();
+        down.extend(keys.iter().rev().map(|k| (*k, false)));
+        guarded(page.hwnd, &down)?;
+        let t = Instant::now();
+        let mut seen: Vec<String> = Vec::new();
+        while t.elapsed() < Duration::from_millis(2_500) {
+            let fg = fg_exe();
+            let fresh: Vec<String> = visible_windows().into_iter().filter(|w| !before.contains(w)).map(|w| w.1).collect();
+            let line = format!("fg={fg} new={fresh:?}");
+            if seen.last() != Some(&line) {
+                println!("  {label} +{} ms: {line}", t.elapsed().as_millis());
+                seen.push(line);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if fg_exe() != "claude.exe" {
+            send_tagged_keys(&[(VK_ESCAPE, true), (VK_ESCAPE, false)]);
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        let fresh: Vec<String> = visible_windows().into_iter().filter(|w| !before.contains(w)).map(|w| w.1).collect();
+        println!("  {label} after Esc: fg={} new={fresh:?}", fg_exe());
+        bring_to_front_attached(page.hwnd);
+        std::thread::sleep(Duration::from_millis(600));
+    }
+    page.close();
+    Ok(())
+}
+
 fn main() {
     let args = parse_args();
+    if args.probe_shortcuts {
+        let _ = std::fs::create_dir_all(&args.home);
+        if let Err(e) = probe_shortcuts(&args) {
+            println!("probe failed: {e}");
+        }
+        return;
+    }
     let rivals = rivals_running();
     if !rivals.is_empty() {
         println!("SKIPPED: {} running (would also react to the chord)", rivals.join(" and "));
@@ -1086,6 +1140,12 @@ fn render(args: &Args, r: &Results) -> String {
     if let Some((pass, d)) = &r.passthrough {
         s.push_str(&format!("| Ctrl+Win+Right passes through | {} — {d} |\n", if *pass { "pass" } else { "**fail**" }));
     }
+    s.push_str(
+        "| Win+Shift+S passes through | not run: on this PC the Snipping Tool overlay appears without taking the \
+         foreground (probe: `snippingtool.exe` windows after ~0.9 s, `msedge.exe` still in front), so Esc could only \
+         close it by sending keys to a window other than the test page; Wren never swallows keys (every event goes \
+         to CallNextHookEx), and Win+Shift+S has no Ctrl so it cannot form the chord |\n",
+    );
     for (label, reacted, wren_out, d) in &r.win_shortcuts {
         s.push_str(&format!(
             "| {label} passes through (Windows reacts, Wren does not record; closed with Esc) | Windows reacted: {}; Wren stayed out: {} — {d} |\n",

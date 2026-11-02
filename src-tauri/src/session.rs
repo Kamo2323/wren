@@ -547,6 +547,8 @@ struct Job {
     recording: Recording,
     released: Instant,
     record_ms: u64,
+    /// How long finishing the recording (WAV) took after the release.
+    stop_ms: u64,
     target: ForegroundInfo,
     intent: Intent,
 }
@@ -795,12 +797,14 @@ impl SessionLoop {
     /// dictation's notice still on screen stays (a tap or Ctrl+Win+→ must not hide it).
     fn discard(&mut self) {
         let Some(a) = self.active.take() else { return };
+        let t = Instant::now();
         if let Some(rec) = self.env.recorder() {
             rec.cancel();
         }
+        let stop_ms = ms(t.elapsed());
         self.shared.hold_recording.store(false, Ordering::SeqCst);
         self.popup.recording_ended();
-        tracing::info!(id = %a.id, "recording discarded");
+        tracing::info!(id = %a.id, stop_ms, "recording discarded");
     }
 
     /// Stop the recording and hand it to the finisher.
@@ -813,6 +817,7 @@ impl SessionLoop {
         let target = env.foreground();
         let released = Instant::now();
         let stopped = rec.stop();
+        let stop_ms = ms(released.elapsed());
         self.shared.hold_recording.store(false, Ordering::SeqCst);
         if intent == Intent::Paste {
             self.sound(Sound::Stop);
@@ -856,6 +861,7 @@ impl SessionLoop {
             recording,
             released,
             record_ms: ms(released.duration_since(a.started)),
+            stop_ms,
             target,
             intent,
         };
@@ -1139,6 +1145,7 @@ fn finish_job(env: &dyn Env, shared: &Shared, post: &Sender<Msg>, job: Job) {
         late,
         attempts,
         record_ms = job.record_ms,
+        stop_ms = job.stop_ms,
         wait_ready_ms,
         transcribe_ms,
         infer_ms = result.infer_ms,
