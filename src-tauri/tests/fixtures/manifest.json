@@ -1,0 +1,60 @@
+[
+    {
+        "file":  "weather.wav",
+        "text":  "The weather in London is grey and drizzly again this morning.",
+        "expect":  [
+                       "weather",
+                       "London",
+                       "morning"
+                   ],
+        "seconds":  4.37
+    },
+    {
+        "file":  "meeting.wav",
+        "text":  "Please move the meeting with the design team to half past three on Thursday.",
+        "expect":  [
+                       "meeting",
+                       "design",
+                       "Thursday"
+                   ],
+        "seconds":  5.61
+    },
+    {
+        "file":  "madeup.wav",
+        "text":  "Send the quarterly report to Zorvath Quillby before the end of the week.",
+        "expect":  [
+                       "quarterly",
+                       "report",
+                       "week"
+                   ],
+        "seconds":  5.14
+    },
+    {
+        "file":  "cafe.wav",
+        "text":  "I would like two coffees and a croissant to take away, please.",
+        "expect":  [
+                       "coffees",
+                       "croissant",
+                       "please"
+                   ],
+        "seconds":  4.81
+    },
+    {
+        "file":  "long.wav",
+        "text":  "Wren is a small dictation app that runs on this computer. Hold the two keys, say what you want, and let go; the words appear in the window you were using.",
+        "expect":  [
+                       "dictation",
+                       "computer",
+                       "window"
+                   ],
+        "seconds":  11.61
+    },
+    {
+        "file":  "silent.wav",
+        "text":  "",
+        "expect":  [
+
+                   ],
+        "seconds":  3
+    }
+]
