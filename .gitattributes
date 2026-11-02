@@ -1,0 +1,2 @@
+# The NSIS template is CRLF and is compared byte for byte by scripts/nsis-template.mjs --check.
+*.nsi text eol=crlf

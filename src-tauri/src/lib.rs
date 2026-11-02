@@ -26,6 +26,11 @@ use settings::Settings;
 use store::Store;
 use tauri::Manager;
 
+/// Marker for this build (`WREN_BUILD_ID`, set by scripts/release.ps1 and scripts/live-test.ps1;
+/// "dev" otherwise). The scripts search the exe for this exact text to prove they are running the
+/// build they just made, not one another build left in the shared target folder.
+pub const BUILD_ID: &str = concat!("wren-build-id:", env!("WREN_BUILD_ID"));
+
 /// State shared with commands. The running services (session, engine, hotkey, recorder) are a
 /// separate managed `session::app::Services`, started in `setup` once this exists.
 pub struct AppState {
@@ -79,7 +84,12 @@ pub fn run() {
     let _log_guard = logging::init(&paths.logs_dir());
     logging::install_panic_hook();
     let settings = Settings::load(&paths.settings_file());
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, selftest, quit, "Wren starting");
+    if quit {
+        // A release build has no console; print into the terminal that ran `wren --quit`, if any.
+        selftest::attach_console();
+        println!("Wren: asking the running Wren to quit");
+    }
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), build = BUILD_ID, start_hidden, selftest, quit, "Wren starting");
     if let Some(root) = paths::runtime_root_override() {
         tracing::warn!(
             root = %root.display(),
@@ -114,6 +124,7 @@ pub fn run() {
         .setup(move |app| {
             if quit {
                 // `--quit` with no Wren running: nothing to do.
+                println!("Wren: no Wren was running");
                 std::process::exit(0);
             }
             // The database is opened here, after the plugins' setup, so a second launch (which

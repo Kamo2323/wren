@@ -24,35 +24,65 @@ pub const WARMUP_EXPECT: [&str; 4] = ["clip", "speech", "engine", "dictation"];
 
 type Check = Result<String, String>;
 
-/// Runs every check; returns the process exit code.
+/// Runs every check; returns the process exit code. Prints to the terminal that started Wren (if
+/// any) and writes the same lines to `logs\selftest.txt`, so a run with no console (a shortcut, an
+/// installer, a launch through WMI) still leaves its result behind.
 pub fn run(paths: &Paths, settings: &Settings) -> i32 {
     attach_console();
-    println!("Wren self-test (version {})", env!("CARGO_PKG_VERSION"));
+    let mut out = Output::default();
+    out.line(format!("Wren self-test (version {}, {})", env!("CARGO_PKG_VERSION"), crate::BUILD_ID));
+    out.line(format!("  exe   {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()));
     let mut failures: Vec<String> = Vec::new();
-    let mut report = |name: &str, r: Check| match r {
-        Ok(detail) => println!("  ok    {name}: {detail}"),
-        Err(why) => {
-            println!("  FAIL  {name}: {why}");
-            failures.push(format!("{name}: {why}"));
+    let checks: [(&str, fn(&Paths, &Settings, &mut Output) -> Check); 4] = [
+        ("hotkey", |_, _, _| check_hotkey()),
+        ("microphone", |_, s, _| check_mic(s)),
+        ("database", |p, _, _| check_db(p)),
+        ("engine", check_engine),
+    ];
+    for (name, check) in checks {
+        match check(paths, settings, &mut out) {
+            Ok(detail) => out.line(format!("  ok    {name}: {detail}")),
+            Err(why) => {
+                out.line(format!("  FAIL  {name}: {why}"));
+                failures.push(format!("{name}: {why}"));
+            }
         }
-    };
-    report("hotkey", check_hotkey());
-    report("microphone", check_mic(settings));
-    report("database", check_db(paths));
-    report("engine", check_engine(paths, settings));
-    if failures.is_empty() {
-        println!("SELFTEST PASS");
+    }
+    let code = if failures.is_empty() {
+        out.line("SELFTEST PASS".into());
         tracing::info!("self-test pass");
         0
     } else {
-        println!("SELFTEST FAIL {}", failures.join("; "));
+        out.line(format!("SELFTEST FAIL {}", failures.join("; ")));
         tracing::error!(?failures, "self-test failed");
         1
+    };
+    let file = paths.logs_dir().join(SELFTEST_FILE);
+    if let Err(e) = std::fs::write(&file, out.text) {
+        println!("(could not write {}: {e})", file.display());
+    }
+    code
+}
+
+/// File in the logs folder that holds the last self-test's output.
+pub const SELFTEST_FILE: &str = "selftest.txt";
+
+/// Lines printed now and kept for `selftest.txt`.
+#[derive(Default)]
+struct Output {
+    text: String,
+}
+
+impl Output {
+    fn line(&mut self, line: String) {
+        println!("{line}");
+        self.text.push_str(&line);
+        self.text.push_str("\r\n");
     }
 }
 
 /// A release build has no console of its own; print into the one that started us, if any.
-fn attach_console() {
+pub fn attach_console() {
     use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
     unsafe {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
@@ -100,7 +130,7 @@ fn check_db(paths: &Paths) -> Check {
     Ok(format!("{} opens, migrates and takes a write lock", file.display()))
 }
 
-fn check_engine(paths: &Paths, settings: &Settings) -> Check {
+fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
     let config = EngineConfig::from_paths(paths, &settings.engine);
     if !config.python.is_file() {
         return Err(format!("the speech runtime is missing ({})", config.python.display()));
@@ -143,7 +173,8 @@ fn check_engine(paths: &Paths, settings: &Settings) -> Check {
         .collect();
     let missing: Vec<&str> = WARMUP_EXPECT.iter().copied().filter(|w| !heard.iter().any(|h| h == w)).collect();
     // The warm-up clip is a bundled synthetic voice, not the user's speech, so showing it is fine.
-    println!("        heard: {:?}", out.final_text);
+    let heard_line = format!("        heard: {:?}", out.final_text);
+    log.line(heard_line);
     if device != "cuda" {
         return Err(format!("ready on {device}, not CUDA (CPU fallback)"));
     }

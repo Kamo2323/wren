@@ -66,10 +66,12 @@ struct Args {
     probe_shortcuts: bool,
     /// Only the Task 9 rounds (watcher in the textarea and the composer, pre-paste check).
     task9: bool,
+    /// Save screen grabs of the popup (listening, transcribing, pasted, hands-free) here.
+    grab_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50, probe_shortcuts: false, task9: false };
+    let mut a = Args { wren: PathBuf::new(), home: PathBuf::new(), report: PathBuf::from("docs/live-test-report.md"), holds: 10, taps: 50, probe_shortcuts: false, task9: false, grab_dir: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| panic!("{arg} needs a value"));
@@ -81,6 +83,7 @@ fn parse_args() -> Args {
             "--taps" => a.taps = val().parse().expect("--taps N"),
             "--probe-shortcuts" => a.probe_shortcuts = true,
             "--task9" => a.task9 = true,
+            "--grab-dir" => a.grab_dir = Some(PathBuf::from(val())),
             other => panic!("unknown argument {other}"),
         }
     }
@@ -599,7 +602,19 @@ struct Results {
 }
 
 /// One dictation into the page. `hands_free` double-taps, waits for the clip, taps to stop.
-fn dictate(page: &Page, popup: Option<HWND>, field: &str, hands_free: bool, expect: &[&str]) -> Result<Dictation, String> {
+/// With `grab` (a folder) and the popup known, saves screen grabs of the popup while it listens,
+/// just after the release (transcribing) and when the text lands (pasted); hands-free runs grab the
+/// hands-free state instead of listening.
+fn dictate(page: &Page, popup: Option<HWND>, field: &str, hands_free: bool, expect: &[&str], grab: Option<&Path>) -> Result<Dictation, String> {
+    let shot = |name: &str| {
+        if let (Some(dir), Some(p)) = (grab, popup) {
+            let path = dir.join(format!("popup-{name}.bmp"));
+            match grab_window(p, &path) {
+                Ok(()) => println!("grabbed the popup ({name}): {}", path.display()),
+                Err(e) => println!("could not grab the popup ({name}): {e}"),
+            }
+        }
+    };
     let before = page.state();
     let get = |s: &PageState| if field == "ce" { s.ce.clone() } else { s.ta.clone() };
     let before_text = get(&before);
@@ -610,16 +625,24 @@ fn dictate(page: &Page, popup: Option<HWND>, field: &str, hands_free: bool, expe
         std::thread::sleep(Duration::from_millis(200));
         chord_tap(page.hwnd, 120, 0)?;
         // weather.wav is 4.4 s; let it play out, well past the stop debounce.
-        std::thread::sleep(Duration::from_millis(6_000.max(HANDSFREE_STOP_DEBOUNCE_MS + 100)));
+        let wait = 6_000.max(HANDSFREE_STOP_DEBOUNCE_MS + 100);
+        std::thread::sleep(Duration::from_millis(2_000));
+        shot("hands-free");
+        std::thread::sleep(Duration::from_millis(wait - 2_000));
         chord_down(page.hwnd)?;
         released = Instant::now();
         std::thread::sleep(Duration::from_millis(120));
         release_chord();
     } else {
         chord_down(page.hwnd)?;
-        std::thread::sleep(Duration::from_millis(HOLD_MS));
+        let t_down = Instant::now();
+        std::thread::sleep(Duration::from_millis(HOLD_MS / 2));
+        shot("listening");
+        std::thread::sleep(Duration::from_millis(HOLD_MS).saturating_sub(t_down.elapsed()));
         release_chord();
         released = Instant::now();
+        std::thread::sleep(Duration::from_millis(30));
+        shot("transcribing");
     }
     let mut after_text = before_text.clone();
     let mut page_ms = None;
@@ -630,6 +653,7 @@ fn dictate(page: &Page, popup: Option<HWND>, field: &str, hands_free: bool, expe
             std::thread::sleep(Duration::from_millis(60));
             after_text = get(&page.state());
             page_ms = Some(released.elapsed().as_millis() as u64 - 60);
+            shot(if hands_free { "pasted-hands-free" } else { "pasted" });
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -697,7 +721,7 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     let image = test_dib();
     Snapshot { formats: vec![SavedFormat { format: CF_DIB, data: image.clone() }] }.restore().map_err(|e| format!("cannot put the test image on the clipboard: {e}"))?;
     for i in 0..args.holds {
-        let d = dictate(&page, popup, "ta", false, &HOLD_EXPECT)?;
+        let d = dictate(&page, popup, "ta", false, &HOLD_EXPECT, if i == 0 { args.grab_dir.as_deref() } else { None })?;
         println!(
             "hold {}: landed {} | foreground unchanged {} ({} samples) | popup seen {} | page saw text {:?} ms after release | {} words",
             i + 1,
@@ -720,7 +744,7 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     }
 
     // 3. Hands-free.
-    let d = dictate(&page, popup, "ta", true, &FULL_EXPECT)?;
+    let d = dictate(&page, popup, "ta", true, &FULL_EXPECT, args.grab_dir.as_deref())?;
     println!("hands-free: landed {} | foreground unchanged {} | popup seen {} | page saw text {:?} ms after the stop press", d.landed, d.fg_ok, d.popup_seen, d.page_ms);
     r.dictations.push(d);
     std::thread::sleep(Duration::from_millis(DOUBLE_TAP_GAP_MS + 200));
@@ -848,7 +872,7 @@ fn run(args: &Args, r: &mut Results, wren: &mut Option<Child>) -> Result<(), Str
     // 6. Chat-style composer.
     std::thread::sleep(Duration::from_millis(500));
     let page = open_page(&edge, &args.home, "ce")?;
-    let d = dictate(&page, popup, "ce", false, &HOLD_EXPECT)?;
+    let d = dictate(&page, popup, "ce", false, &HOLD_EXPECT, None)?;
     println!("composer: landed {} | foreground unchanged {} | popup seen {} | page saw text {:?} ms | Enter/newline {}", d.landed, d.fg_ok, d.popup_seen, d.page_ms, d.newline);
     r.dictations.push(Dictation { mode: "hold (composer)", ..d });
     page.close();
@@ -940,6 +964,8 @@ fn probe_shortcuts(args: &Args) -> Result<(), String> {
 
 fn main() {
     let args = parse_args();
+    // Also the marker scripts/live-test.ps1 looks for in this exe.
+    println!("live test driver ({})", wren_lib::BUILD_ID);
     if args.probe_shortcuts {
         let _ = std::fs::create_dir_all(&args.home);
         if let Err(e) = probe_shortcuts(&args) {
@@ -966,6 +992,9 @@ fn main() {
     }
     let _ = std::fs::remove_dir_all(&args.home);
     std::fs::create_dir_all(&args.home).expect("create the temp home");
+    if let Some(dir) = &args.grab_dir {
+        std::fs::create_dir_all(dir).expect("create the grab folder");
+    }
 
     let since_utc = chrono::Utc::now().to_rfc3339();
     let user_clipboard = Snapshot::capture().expect("back up the clipboard");
@@ -1097,6 +1126,7 @@ fn render(args: &Args, r: &Results) -> String {
          app window with a throwaway profile. The chord was injected as untagged Left Ctrl + Left Win key events, only while \
          the test page was the foreground window. The user's clipboard was backed up first and restored at the end.\n\n",
     );
+    s.push_str(&format!("Wren tested: `{}`.\n\n", args.wren.display()));
     s.push_str(&format!("Engine ready {} ms after Wren started.\n\n", r.ready_ms));
     s.push_str("## Dictations\n\n| # | Mode | Paste landed | Foreground unchanged | Popup seen | Page had text after (ms) | Words | Newline/Enter |\n|---|---|---|---|---|---|---|---|\n");
     for (i, d) in r.dictations.iter().enumerate() {
@@ -1307,7 +1337,7 @@ fn watcher_round(args: &Args, edge: &Path, popup: Option<HWND>, field: &str, end
     let learned_before = log_count(&args.home, "learned from a correction");
     let ended_before = log_count(&args.home, "watch ended");
     let checks_before = log_count(&args.home, "pre-paste check");
-    let d = dictate(&page, popup, field, true, &FULL_EXPECT)?;
+    let d = dictate(&page, popup, field, true, &FULL_EXPECT, None)?;
     println!("[task9 {field}] dictation landed {} ({} words, page saw it {:?} ms after the stop press)", d.landed, d.words, d.page_ms);
     let check = log_since(&args.home, "pre-paste check", checks_before);
     println!("[task9 {field}] pre-paste check: {:?}", check.iter().map(|f| (f.get("decision").cloned(), f.get("control").cloned(), f.get("ms").cloned())).collect::<Vec<_>>());
