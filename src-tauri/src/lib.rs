@@ -2,22 +2,56 @@
 
 pub mod commands;
 pub mod constants;
+pub mod dictionary;
 pub mod hotkey;
 pub mod logging;
 pub mod paths;
 pub mod popup;
 pub mod settings;
+pub mod store;
 pub mod tray;
 
 use parking_lot::RwLock;
 use paths::Paths;
 use settings::Settings;
+use store::Store;
 use tauri::Manager;
 
-/// State shared with commands. Later tasks add fields (store, session handle…).
+/// State shared with commands. Later tasks add fields (session handle…).
 pub struct AppState {
     pub paths: Paths,
     pub settings: RwLock<Settings>,
+    /// History, dictionary and stats. If the database could not be opened this is an
+    /// unavailable store whose calls all return the reason; the app still runs.
+    pub store: Store,
+}
+
+/// Open the database, or log why not and carry on with an unavailable store.
+fn open_store(paths: &Paths) -> Store {
+    match Store::open(&paths.db_file()) {
+        Ok(store) => store,
+        Err(err) => {
+            tracing::error!(error = %err, "cannot open the database; History and the dictionary are unavailable");
+            Store::unavailable(err.to_string())
+        }
+    }
+}
+
+/// One retention sweep (spec §9). Logs counts only, never text.
+fn sweep_store(store: &Store, paths: &Paths) {
+    if store.unavailable_reason().is_some() {
+        return;
+    }
+    match store.sweep(chrono::Utc::now(), &paths.audio_dir()) {
+        Ok(r) => tracing::info!(
+            rows_deleted = r.rows_deleted,
+            audio_deleted = r.audio_deleted,
+            orphan_audio_deleted = r.orphan_audio_deleted,
+            events_deleted = r.events_deleted,
+            "retention sweep"
+        ),
+        Err(err) => tracing::warn!(error = %err, "retention sweep failed"),
+    }
 }
 
 pub fn run() {
@@ -33,6 +67,8 @@ pub fn run() {
     logging::install_panic_hook();
     let settings = Settings::load(&paths.settings_file());
     tracing::info!(version = env!("CARGO_PKG_VERSION"), start_hidden, "Wren starting");
+    let store = open_store(&paths);
+    sweep_store(&store, &paths);
 
     tauri::Builder::default()
         // Must be first: a second launch just brings the running Wren forward.
@@ -50,10 +86,20 @@ pub fn run() {
         .manage(AppState {
             paths,
             settings: RwLock::new(settings),
+            store,
         })
         .setup(move |app| {
             tray::build(app.handle())?;
             popup::create(app.handle())?;
+            // Hourly retention sweep (the startup one already ran).
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("wren-sweep".into())
+                .spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(constants::SWEEP_INTERVAL_MS));
+                    let state = handle.state::<AppState>();
+                    sweep_store(&state.store, &state.paths);
+                })?;
             if !start_hidden && !popup_check {
                 if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {
                     main.show()?;
@@ -94,6 +140,17 @@ pub fn run() {
             commands::app_version,
             commands::get_settings,
             commands::save_settings,
+            commands::history_recent,
+            commands::history_search,
+            commands::history_delete,
+            commands::history_delete_all,
+            commands::history_fix_word,
+            commands::stats_get,
+            commands::dictionary_list,
+            commands::dictionary_add_term,
+            commands::dictionary_add_replacement,
+            commands::dictionary_set_status,
+            commands::dictionary_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Wren");
