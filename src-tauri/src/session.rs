@@ -469,9 +469,13 @@ struct Active {
     /// Check for "No sound from mic" at this time.
     no_sound_due: Option<Instant>,
     warned: bool,
+    /// "No sound from mic" is up; back to the recording look once sound arrives.
+    no_sound_shown: bool,
     /// The engine was not ready when the chord went down.
     warming: bool,
     cpu: bool,
+    /// Epoch ms of the start (the hands-free timer counts from this).
+    started_epoch_ms: i64,
 }
 
 /// A stopped recording handed to the finisher.
@@ -607,10 +611,11 @@ impl SessionLoop {
         }
         let status = self.env.engine_status();
         let (warming, cpu) = (!is_ready(&status), is_cpu(&status));
+        let started_epoch_ms = epoch_ms();
         let popup_due = match mode {
             Mode::Hold => Some(started + Duration::from_millis(POPUP_DELAY_MS)),
             Mode::HandsFree => {
-                self.popup.set(PopupState::HandsFree { started_at_ms: epoch_ms(), cpu });
+                self.popup.set(PopupState::HandsFree { started_at_ms: started_epoch_ms, cpu });
                 self.sound(Sound::Start);
                 None
             }
@@ -624,8 +629,10 @@ impl SessionLoop {
             popup_due,
             no_sound_due: Some(started + Duration::from_millis(NO_SOUND_WARN_MS)),
             warned: false,
+            no_sound_shown: false,
             warming,
             cpu,
+            started_epoch_ms,
         });
     }
 
@@ -657,7 +664,17 @@ impl SessionLoop {
             let elapsed = rec.elapsed_ms();
             if rec.silence_ms() >= elapsed {
                 tracing::info!(id = %a.id, "no sound from the microphone");
+                a.no_sound_shown = true;
                 self.popup.set(PopupState::NoSound);
+            }
+        } else if a.no_sound_shown {
+            let elapsed = rec.elapsed_ms();
+            if rec.silence_ms() < elapsed {
+                a.no_sound_shown = false;
+                self.popup.set(match a.mode {
+                    Mode::Hold => PopupState::Listening { cpu: a.cpu },
+                    Mode::HandsFree => PopupState::HandsFree { started_at_ms: a.started_epoch_ms, cpu: a.cpu },
+                });
             }
         }
         let elapsed = rec.elapsed_ms();

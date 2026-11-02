@@ -551,6 +551,28 @@ fn a_silent_mic_is_flagged_while_still_recording() {
     r.hk.send(HotkeyEvent::HoldStart).unwrap();
     wait_until("noSound while recording", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
     assert!(r.env.recorder.active.lock().is_some(), "still recording");
+    // Sound arrives (e.g. he unmuted): the popup goes back to listening.
+    r.env.recorder.silence.store(0, Ordering::SeqCst);
+    wait_until("listening again", 1_000, || r.env.popups().last() == Some(&PopupState::Listening { cpu: false }));
+}
+
+#[test]
+fn hands_free_returns_from_no_sound_with_its_own_start_time() {
+    let r = rig();
+    r.env.recorder.elapsed.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
+    r.env.recorder.silence.store(NO_SOUND_WARN_MS, Ordering::SeqCst);
+    r.hk.send(HotkeyEvent::HandsFreeStart).unwrap();
+    wait_until("noSound", NO_SOUND_WARN_MS + 1_000, || r.env.popups().contains(&PopupState::NoSound));
+    r.env.recorder.silence.store(0, Ordering::SeqCst);
+    wait_until("hands-free again", 1_000, || matches!(r.env.popups().last(), Some(PopupState::HandsFree { .. })));
+    let starts: Vec<i64> = r
+        .env
+        .popups()
+        .into_iter()
+        .filter_map(|p| if let PopupState::HandsFree { started_at_ms, .. } = p { Some(started_at_ms) } else { None })
+        .collect();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0], starts[1], "the timer keeps counting from the real start");
 }
 
 #[test]
