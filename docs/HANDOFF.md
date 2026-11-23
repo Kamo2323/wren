@@ -104,13 +104,15 @@ elease.ps1` (runs every step via WMI,
 - `cargo test --offline --manifest-path src-tauri\Cargo.toml --lib`: `255 passed; 0 failed; 11 ignored`
   (including 7 new updater tests covering semver, minisign + version binding, HTTPS validation, apply script,
   public download, private API fallback with auth-stripped redirect, and no-releases-yet handling).
+- `scripts\release.ps1`: built `Wren_0.1.0_x64-setup.exe` (4.1 MB, `rel-20261123-035944-795d0c9a`), installed to
+  `%LOCALAPPDATA%\Programs\Wren\wren.exe`, `SELFTEST PASS` (CUDA `large-v3-turbo`, 452 ms), `RELEASE OK`,
+  restarted Wren in tray.
 
-### Not done / next steps
-- Not yet pushed to `origin/main` and not yet rebuilt/installed locally via `scripts/release.ps1` (waiting for
-  Maximilian to review or ask to push + reinstall so his running tray copy picks up the updater).
-- Once pushed to `main`, `.github/workflows/release.yml` will build and publish `v0.1.<run_number>` on GitHub;
-  after reinstalling locally once (so the installed `wren.exe` has the updater code), future pushes to `main`
-  will show the sidebar update button automatically.
+### Status / next steps
+- Pushed to `origin/main` to trigger the first `.github/workflows/release.yml` Windows build & GitHub Release.
+- Once that GitHub Actions run publishes `v0.1.<run_number>`, the installed Wren (v0.1.0) will detect it
+  automatically (or immediately via Settings → Updates → Check for updates) so Maximilian can test the
+  one-click self-update end to end.
 
 ### Decisions & lessons learned
 - Built a custom Rust updater module (`reqwest` + `minisign-verify` + `semver`) instead of `tauri-plugin-updater`
