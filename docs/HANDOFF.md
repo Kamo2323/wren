@@ -2,6 +2,43 @@
 
 Wren is Maximilian's free, local Windows dictation app (a Willow / Glaido replacement). Repo: `C:\Wren`.
 
+## Status (2026-11-23) — In-app updater silent no-op bug fixed & verified live (`v0.1.3`)
+
+### Root cause
+- Clicking **Update** in the sidebar downloaded and verified the signed NSIS installer, logged `update verified; exiting so the installer can finish`, and quit Wren — but `apply-update.ps1` never ran, `%LOCALAPPDATA%\Wren\logs\updater.log` was never created, and the installer + script stayed stranded in `%LOCALAPPDATA%\Wren\updates\`. Reopening Wren launched the unchanged `0.1.0` binary, which kept showing the Update button in an endless loop.
+- **Why:** `spawn_install_helper` in `src-tauri/src/updater.rs` passed `CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (`0x0800_0208`) to `powershell.exe`. Per Win32 `CreateProcessW` semantics, `CREATE_NO_WINDOW` is ignored whenever `DETACHED_PROCESS` is set; Windows PowerShell 5.1 launched consoleless under `DETACHED_PROCESS` with null stdio exits immediately with status `0` without executing `-File`.
+- Reproduced directly on Windows 11: `0x08000208` → `rc=0, log_exists=False, script_exists=True`; `0x08000200` (`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`) → `rc=0, log_exists=True, script_exists=False` (survives parent process exit 150 ms later).
+
+### Completed
+- **Fixed `spawn_install_helper` (`src-tauri/src/updater.rs`, commit `fe80a97`):** Removed `DETACHED_PROCESS` so `powershell.exe` runs with `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` (`0x0800_0200`).
+- **Hardened `apply-update.ps1` & `UpdaterService::install` (`src-tauri/src/updater.rs`):**
+  - Added early guard in `install()` against re-entry while `Downloading` or `Installing`.
+  - Guarded `Wait-Process` with `if ($ParentPid -gt 0)` (so PID `0` never waits on Windows Idle) and added a post-timeout `Stop-Process -Force` fallback if the old `wren.exe` hangs past `UPDATE_WAIT_PARENT_SECS`.
+  - Cached `$null = $proc.Handle` before `$proc.WaitForExit()` so `$proc.ExitCode` is never `$null` in Windows PowerShell 5.1, and launched the installer with `-WindowStyle Hidden`.
+  - Added a post-install relaunch check: if the installer exits `0` but `wren` hasn't reappeared within 3 s via NSIS `/R`, `apply-update.ps1` starts `$FallbackExe` directly.
+- **Added live integration test:** `updater::tests::spawn_install_helper_executes_installer_logs_and_cleans_up` spawns a real dummy parent + `spawn_install_helper` against a temp `.cmd` installer and asserts `updater.log` records exit code `0`, `/S /UPDATE /R` were passed, and both the installer and `apply-update.ps1` are cleaned up.
+- **Released & verified live:** Pushed `fe80a97` to `main`, waited for CI to publish signed **`v0.1.3`**, installed the fixed local build via `scripts\release.ps1 -Launch`, and executed the full live update from `0.1.0` → signed `v0.1.3` using the exact `apply-update.ps1` + `0x08000200` spawn flags.
+
+### Explicitly NOT changed
+- No frontend, NSIS template, or floating popup changes were needed (`installer.nsi` `/S /UPDATE /R` and `RunAsUser` worked cleanly once `apply-update.ps1` actually ran).
+- Local `scripts/release.ps1` still builds `0.1.0` from `tauri.conf.json`, so any future local `release.ps1` install will again offer the latest CI `0.1.<run>` version in-app until you update onto the CI build.
+
+### Verification (raw output)
+- `cargo test --offline --manifest-path src-tauri\Cargo.toml --lib`:
+  `test result: ok. 259 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 17.58s` (including `updater::tests::spawn_install_helper_executes_installer_logs_and_cleans_up ... ok`).
+- GitHub Actions on `fe80a97`:
+  - `Windows frontend build` (`45193333112`): `completed success` (`47s`).
+  - `Build and release Wren` (`45193333192`): `completed success` (`7m41s`), published **`Wren v0.1.3`** (`2026-11-23T14:29:04Z`).
+- `scripts\release.ps1 -Launch`: built `rel-20261123-152148-79b5c0e5`, `SELFTEST PASS` (`large-v3-turbo ready on cuda in 10405 ms (963 MB VRAM); warm-up clip transcribed in 355 ms`), `RELEASE OK`.
+- Live end-to-end self-update test (`0.1.0` → signed `v0.1.3` via `0x08000200` + `apply-update.ps1`):
+  - `%LOCALAPPDATA%\Wren\logs\updater.log`: `Starting silent installer: C:\Users\maxha\AppData\Local\Wren\updates\Wren_0.1.3_x64-setup.exe /S /UPDATE /R` → `Installer finished with exit code 0`.
+  - `%LOCALAPPDATA%\Wren\updates\` remaining files: `0`.
+  - Installed binary `FileVersion`: `0.1.3`; Registry `DisplayVersion`: `0.1.3`.
+  - Relaunched automatically (`wren.exe` pid `37328`): `Wren starting` (`version="0.1.3"`, `build="wren-build-id:ci-0.1.3-fe80a97"`), `speech engine ready` (`large-v3-turbo`, `cuda`, `1585 MB VRAM`), followed 15 s later by `Wren is up to date` (`current="0.1.3"`).
+
+### Next step
+- Maximilian's PC is now running signed **`Wren v0.1.3`** (both the Light/Dark UI redesign and the working self-updater), up to date with no stuck Update pill in the sidebar. Future pushes to `main` will update cleanly in one click.
+
 ## Status (2026-11-23) — Complete Light & Dark UI/UX Redesign Shipped
 
 ### Completed
