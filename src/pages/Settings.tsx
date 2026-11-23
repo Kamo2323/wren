@@ -1,7 +1,8 @@
-// Settings (spec §11): microphone + live level test, dictation basics, correction watcher, AI clean-up,
-// engine, history, other dictation apps, version. Every switch saves at once through `save_settings`.
+// Settings: quick section index, Appearance (Dark / Light / System), Microphone + live VU test,
+// Dictation, Learning watcher, AI clean-up, Speech engine, History, Other dictation apps, Updates.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AiCleanupStatus, EngineStatus, Settings as SettingsData, UpdateStatus, WatcherStatus } from "../lib/types";
+import { toSettingsTheme, type ThemeChoice } from "../lib/theme";
 import {
   aiCleanupPullModel,
   aiCleanupStatus,
@@ -22,15 +23,49 @@ import { engineWords } from "../components/Sidebar";
 import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
 import { useToast } from "../components/Toast";
-import { Check, CircleAlert, Cpu, Download, Eye, History, Info, Keyboard, Mic, RotateCw, ShieldCheck, Trash2, TriangleAlert, WandSparkles, WrenTile } from "../components/Icon";
+import {
+  Check,
+  CircleAlert,
+  Cpu,
+  Download,
+  Eye,
+  History,
+  Info,
+  Keyboard,
+  Mic,
+  Monitor,
+  Moon,
+  RotateCw,
+  ShieldCheck,
+  Sun,
+  Trash2,
+  TriangleAlert,
+  WandSparkles,
+  WrenTile,
+} from "../components/Icon";
+
+type Tone = "violet" | "teal" | "amber";
+
+const SECTIONS: Array<{ id: string; label: string }> = [
+  { id: "appearance", label: "Appearance" },
+  { id: "mic", label: "Microphone" },
+  { id: "dictation", label: "Dictation" },
+  { id: "learning", label: "Learning" },
+  { id: "ai", label: "AI clean-up" },
+  { id: "engine", label: "Speech engine" },
+  { id: "history", label: "History" },
+  { id: "updates", label: "Updates" },
+];
 
 // ---------------------------------------------------------------- layout pieces
 
-function Group({ id, title, icon, children }: { id: string; title: string; icon: ReactNode; children: ReactNode }) {
+function Group({ id, title, icon, tone, children }: { id: string; title: string; icon: ReactNode; tone: Tone; children: ReactNode }) {
   return (
-    <section className="setgroup" aria-labelledby={`set-${id}`}>
-      <h2 className="setgroup__title" id={`set-${id}`}>
-        <span className="setgroup__icon">{icon}</span>
+    <section className="setgroup" data-tone={tone} aria-labelledby={`set-${id}`}>
+      <h2 className="setgroup__title" id={`set-${id}`} tabIndex={-1}>
+        <span className="tinted-icon" aria-hidden="true">
+          {icon}
+        </span>
         {title}
       </h2>
       <div className="setcard">{children}</div>
@@ -78,12 +113,65 @@ function SetRow({
 
 function Status({ tone, children }: { tone: "ok" | "warn" | "bad" | "info"; children: ReactNode }) {
   const icon =
-    tone === "ok" ? <Check size={15} strokeWidth={2.6} /> : tone === "info" ? <Info size={15} strokeWidth={2.2} /> : <CircleAlert size={15} strokeWidth={2.2} />;
+    tone === "ok" ? <Check size={14} strokeWidth={2.5} /> : tone === "info" ? <Info size={14} strokeWidth={2.1} /> : <CircleAlert size={14} strokeWidth={2.1} />;
   return (
     <div className={`status status--${tone}`}>
       <span className="status__icon">{icon}</span>
       <span>{children}</span>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- appearance
+
+function AppearanceSection({
+  choice,
+  onSelect,
+}: {
+  choice: ThemeChoice;
+  onSelect: (next: ThemeChoice) => void;
+}) {
+  return (
+    <Group id="appearance" title="Appearance" icon={<Sun size={15} strokeWidth={2} />} tone="amber">
+      <SetRow
+        title="Colour theme"
+        desc="Choose Dark, Light, or follow your Windows theme automatically."
+        control={
+          <div className="segments theme-switch" role="group" aria-label="Colour theme">
+            <button
+              type="button"
+              className="segments__btn"
+              data-theme-opt="dark"
+              aria-pressed={choice === "dark"}
+              onClick={() => onSelect("dark")}
+            >
+              <Moon size={13} strokeWidth={2} aria-hidden="true" />
+              Dark
+            </button>
+            <button
+              type="button"
+              className="segments__btn"
+              data-theme-opt="light"
+              aria-pressed={choice === "light"}
+              onClick={() => onSelect("light")}
+            >
+              <Sun size={13} strokeWidth={2} aria-hidden="true" />
+              Light
+            </button>
+            <button
+              type="button"
+              className="segments__btn"
+              data-theme-opt="system"
+              aria-pressed={choice === "system"}
+              onClick={() => onSelect("system")}
+            >
+              <Monitor size={13} strokeWidth={2} aria-hidden="true" />
+              System
+            </button>
+          </div>
+        }
+      />
+    </Group>
   );
 }
 
@@ -125,7 +213,7 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
   const lit = mic.state === "on" ? Math.round(mic.level * METER_SEGMENTS) : 0;
 
   return (
-    <Group id="mic" title="Microphone" icon={<Mic size={17} strokeWidth={2} />}>
+    <Group id="mic" title="Microphone" icon={<Mic size={15} strokeWidth={2} />} tone="teal">
       <SetRow
         title="Which microphone"
         htmlFor="mic-select"
@@ -143,7 +231,7 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
         }
       >
         <div className="mictest">
-          <Button size="sm" variant={testing ? "primary" : "secondary"} icon={<Mic size={15} strokeWidth={2.2} />} onClick={() => setTesting((t) => !t)} aria-pressed={testing}>
+          <Button size="sm" variant={testing ? "primary" : "secondary"} icon={<Mic size={14} strokeWidth={2.2} />} onClick={() => setTesting((t) => !t)} aria-pressed={testing}>
             {testing ? "Stop test" : "Test microphone"}
           </Button>
           <div className={`meter ${testing ? "is-on" : ""}`} role="meter" aria-label="Microphone level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={mic.state === "on" ? Math.round(mic.level * 100) : 0}>
@@ -184,7 +272,6 @@ const WPM_MAX = 200;
 
 function TypingSpeed({ value, fallback, onSave }: { value: number; fallback: number; onSave: (wpm: number) => Promise<void> }) {
   const [text, setText] = useState(String(value));
-  // set on blur, not per keystroke: typing "7" on the way to "75" is not an error
   const [rejected, setRejected] = useState(false);
   useEffect(() => setText(String(value)), [value]);
 
@@ -241,8 +328,6 @@ function TypingSpeed({ value, fallback, onSave }: { value: number; fallback: num
 
 // ---------------------------------------------------------------- watcher + AI
 
-/** The probe's verdict decides the colour (green = the Claude app's box reads quickly), not whether the
- * watcher happens to be on: it can be on by hand after a slow verdict, or off by hand after a good one. */
 function verdictTone(verdict: string | null): "ok" | "warn" | "info" {
   if (!verdict) return "info";
   return /^(readable|ok|pass|passed|fast|good)$/i.test(verdict.trim()) ? "ok" : "warn";
@@ -260,7 +345,7 @@ function WatcherSection({ settings, update }: { settings: SettingsData; update: 
   const on = settings.watcherEnabled ?? status?.enabled ?? false;
 
   return (
-    <Group id="learning" title="Learning" icon={<Eye size={17} strokeWidth={2} />}>
+    <Group id="learning" title="Learning" icon={<Eye size={15} strokeWidth={2} />} tone="teal">
       <SetRow
         title="Learn from my corrections"
         desc="After Wren pastes, it reads the text box for a little while. If you change a word it got wrong, Wren learns it. It never reads terminals."
@@ -308,7 +393,7 @@ function AiSection({ settings, update }: { settings: SettingsData; update: (patc
     setPulling(true);
     try {
       await aiCleanupPullModel();
-      toast.show("Model downloaded", { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
+      toast.show("Model downloaded", { tone: "success", icon: <Check size={15} strokeWidth={2.5} /> });
     } catch {
       toast.show("The download didn't finish. Try again.", { tone: "danger" });
     } finally {
@@ -321,7 +406,7 @@ function AiSection({ settings, update }: { settings: SettingsData; update: (patc
   const ready = status?.ollamaReachable && status.modelPresent;
 
   return (
-    <Group id="ai" title="AI clean-up" icon={<WandSparkles size={17} strokeWidth={2} />}>
+    <Group id="ai" title="AI clean-up" icon={<WandSparkles size={15} strokeWidth={2} />} tone="violet">
       <SetRow
         title="Tidy text with a local AI model"
         desc="Fixes punctuation, capitals and obvious mis-hearings using Ollama on this PC. Nothing leaves your computer. If it's slow, Wren pastes the plain text instead."
@@ -343,12 +428,12 @@ function AiSection({ settings, update }: { settings: SettingsData; update: (patc
           )}
           <div className="setrow__foot-actions">
             {status?.ollamaReachable && !status.modelPresent && (
-              <Button size="sm" variant="primary" icon={pulling ? <span className="spinner" aria-hidden="true" /> : <Download size={15} strokeWidth={2.2} />} disabled={pulling} onClick={() => void pull()}>
+              <Button size="sm" variant="primary" icon={pulling ? <span className="spinner" aria-hidden="true" /> : <Download size={14} strokeWidth={2.2} />} disabled={pulling} onClick={() => void pull()}>
                 {pulling ? "Downloading…" : `Download ${model}`}
               </Button>
             )}
             {!ready && !pulling && (
-              <Button size="sm" variant="ghost" icon={<RotateCw size={15} strokeWidth={2.2} />} disabled={checking} onClick={() => void check()}>
+              <Button size="sm" variant="ghost" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={checking} onClick={() => void check()}>
                 Check again
               </Button>
             )}
@@ -381,13 +466,13 @@ function EngineSection({ engine, settings }: { engine: EngineStatus; settings: S
   }
 
   return (
-    <Group id="engine" title="Speech engine" icon={<Cpu size={17} strokeWidth={2} />}>
+    <Group id="engine" title="Speech engine" icon={<Cpu size={15} strokeWidth={2} />} tone="teal">
       <SetRow
         title={words.text}
         dot={words.tone}
         desc={engine.state === "failed" ? <span className="is-bad">{engine.reason || "The engine stopped."}</span> : "Turns your voice into text, on this PC."}
         control={
-          <Button size="sm" variant="secondary" icon={<RotateCw size={15} strokeWidth={2.2} />} disabled={restarting} onClick={() => void restart()}>
+          <Button size="sm" variant="secondary" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={restarting} onClick={() => void restart()}>
             Restart engine
           </Button>
         }
@@ -430,7 +515,7 @@ function HistorySection() {
       const n = await historyDeleteAll();
       toast.show(n === 0 ? "History was already empty" : `Deleted ${formatNumber(n)} ${n === 1 ? "dictation" : "dictations"}`, {
         tone: "success",
-        icon: <Check size={16} strokeWidth={2.6} />,
+        icon: <Check size={15} strokeWidth={2.5} />,
       });
       setConfirming(false);
     } catch {
@@ -441,13 +526,13 @@ function HistorySection() {
   }
 
   return (
-    <Group id="history" title="History" icon={<History size={17} strokeWidth={2} />}>
+    <Group id="history" title="History" icon={<History size={15} strokeWidth={2} />} tone="amber">
       <SetRow
         title="Delete all history now"
         desc={`Wren deletes dictations and their recordings after ${retentionLabel(constants.retentionHours)} anyway. This does it now. Your stats and dictionary stay.`}
         control={
           !confirming && (
-            <Button size="sm" variant="secondary" className="btn--danger-outline" icon={<Trash2 size={15} strokeWidth={2.1} />} onClick={() => setConfirming(true)}>
+            <Button size="sm" variant="secondary" className="btn--danger-outline" icon={<Trash2 size={14} strokeWidth={2.1} />} onClick={() => setConfirming(true)}>
               Delete all…
             </Button>
           )
@@ -456,7 +541,7 @@ function HistorySection() {
         {confirming && (
           <div className="confirm" role="alertdialog" aria-label="Delete all history?">
             <span className="confirm__text">
-              <TriangleAlert size={17} strokeWidth={2.1} /> Delete every dictation and recording? This can't be undone.
+              <TriangleAlert size={16} strokeWidth={2.1} /> Delete every dictation and recording? This can't be undone.
             </span>
             <div className="confirm__actions">
               <Button ref={cancelRef} size="sm" variant="ghost" onClick={() => setConfirming(false)}>
@@ -511,7 +596,7 @@ function UpdatesSection({
   const control = (() => {
     if (update.state === "available") {
       return (
-        <Button size="sm" variant="primary" icon={<Download size={15} strokeWidth={2.2} />} onClick={() => void onInstall()}>
+        <Button size="sm" variant="primary" icon={<Download size={14} strokeWidth={2.2} />} onClick={() => void onInstall()}>
           Update to v{update.version}
         </Button>
       );
@@ -540,24 +625,24 @@ function UpdatesSection({
     if (update.state === "error" && update.version) {
       return (
         <div className="setrow__foot-actions">
-          <Button size="sm" variant="ghost" icon={<RotateCw size={15} strokeWidth={2.2} />} onClick={() => void onCheck()}>
+          <Button size="sm" variant="ghost" icon={<RotateCw size={14} strokeWidth={2.2} />} onClick={() => void onCheck()}>
             Check again
           </Button>
-          <Button size="sm" variant="primary" icon={<Download size={15} strokeWidth={2.2} />} onClick={() => void onInstall()}>
+          <Button size="sm" variant="primary" icon={<Download size={14} strokeWidth={2.2} />} onClick={() => void onInstall()}>
             Retry update
           </Button>
         </div>
       );
     }
     return (
-      <Button size="sm" variant="secondary" icon={<RotateCw size={15} strokeWidth={2.2} />} onClick={() => void onCheck()}>
+      <Button size="sm" variant="secondary" icon={<RotateCw size={14} strokeWidth={2.2} />} onClick={() => void onCheck()}>
         Check for updates
       </Button>
     );
   })();
 
   return (
-    <Group id="updates" title="Updates" icon={<Download size={17} strokeWidth={2} />}>
+    <Group id="updates" title="Updates" icon={<Download size={15} strokeWidth={2} />} tone="violet">
       <SetRow
         title={title}
         dot={dot}
@@ -610,15 +695,18 @@ export default function Settings({
   update: appUpdate,
   onCheckUpdate,
   onInstallUpdate,
+  themeChoice,
+  onThemeChange,
 }: {
   engine: EngineStatus;
   others: string[];
   onSaved: (s: SettingsData) => void;
-  /** A group to scroll to once the settings are on screen (the sidebar's engine status opens "engine"). */
   focus?: { group: "engine" | "updates"; at: number } | null;
   update: UpdateStatus;
   onCheckUpdate: () => Promise<void>;
   onInstallUpdate: () => Promise<void>;
+  themeChoice: ThemeChoice;
+  onThemeChange: (next: ThemeChoice) => Promise<void>;
 }) {
   const constants = useConstants();
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -644,17 +732,20 @@ export default function Settings({
       .catch(() => {});
   }, [load]);
 
+  const scrollToGroup = useCallback((id: string) => {
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const heading = document.getElementById(`set-${id}`);
+    heading?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
+    heading?.focus({ preventScroll: true });
+  }, []);
+
   const loaded = settings != null;
   useEffect(() => {
     if (!loaded || !focus) return;
-    const id = requestAnimationFrame(() => {
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      document.getElementById(`set-${focus.group}`)?.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
-    });
+    const id = requestAnimationFrame(() => scrollToGroup(focus.group));
     return () => cancelAnimationFrame(id);
-  }, [loaded, focus]);
+  }, [loaded, focus, scrollToGroup]);
 
-  /** Apply a change at once, save it, and put it back if the save fails. */
   const update = useCallback(
     async (patch: Partial<SettingsData>) => {
       const before = latest.current;
@@ -679,72 +770,93 @@ export default function Settings({
       <header className="page-head">
         <div>
           <h1 className="page__title">Settings</h1>
-          <p className="page__lede">Everything saves as you change it.</p>
+          <p className="page__lede">Changes save as you make them.</p>
         </div>
       </header>
 
       {!settings && failed && <LoadError what="your settings" onRetry={load} />}
       {settings && (
-        <div className="setgroups">
-          <MicSection settings={settings} update={update} />
+        <>
+          <nav className="settings-index" aria-label="Settings sections">
+            {SECTIONS.map((s) => (
+              <button key={s.id} type="button" className="bare" onClick={() => scrollToGroup(s.id)}>
+                {s.label}
+              </button>
+            ))}
+          </nav>
 
-          <Group id="dictation" title="Dictation" icon={<Keyboard size={17} strokeWidth={2} />}>
-            <SetRow
-              title="Your typing speed"
-              htmlFor="typing-wpm"
-              desc={<span id="typing-wpm-desc">Used to work out time saved. {constants.typingWpmDefault} wpm is a typical typing speed.</span>}
-              control={<TypingSpeed value={settings.typingWpm} fallback={constants.typingWpmDefault} onSave={(wpm) => update({ typingWpm: wpm })} />}
+          <div className="setgroups">
+            <AppearanceSection
+              choice={themeChoice}
+              onSelect={(next) => {
+                if (latest.current) {
+                  latest.current = { ...latest.current, theme: toSettingsTheme(next) };
+                  setSettings(latest.current);
+                }
+                void onThemeChange(next);
+              }}
             />
-            <SetRow
-              title="Sounds"
-              desc="A soft click when Wren starts and stops listening."
-              control={<Toggle checked={settings.sounds} onChange={(v) => void update({ sounds: v })} label="Sounds" />}
-            />
-            <SetRow
-              title="Start with Windows"
-              desc="Turn this on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
-              control={<Toggle checked={settings.startWithWindows} onChange={(v) => void update({ startWithWindows: v })} label="Start with Windows" />}
-            />
-          </Group>
+            <MicSection settings={settings} update={update} />
 
-          <WatcherSection settings={settings} update={update} />
-          <AiSection settings={settings} update={update} />
-          <EngineSection engine={engine} settings={settings} />
-          <HistorySection />
+            <Group id="dictation" title="Dictation" icon={<Keyboard size={15} strokeWidth={2} />} tone="violet">
+              <SetRow
+                title="Your typing speed"
+                htmlFor="typing-wpm"
+                desc={<span id="typing-wpm-desc">Used to work out time saved. {constants.typingWpmDefault} wpm is a typical typing speed.</span>}
+                control={<TypingSpeed value={settings.typingWpm} fallback={constants.typingWpmDefault} onSave={(wpm) => update({ typingWpm: wpm })} />}
+              />
+              <SetRow
+                title="Sounds"
+                desc="A soft click when Wren starts and stops listening."
+                control={<Toggle checked={settings.sounds} onChange={(v) => void update({ sounds: v })} label="Sounds" />}
+              />
+              <SetRow
+                title="Start with Windows"
+                desc="Turn this on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
+                control={<Toggle checked={settings.startWithWindows} onChange={(v) => void update({ startWithWindows: v })} label="Start with Windows" />}
+              />
+            </Group>
 
-          <Group
-            id="others"
-            title="Other dictation apps"
-            icon={others.length ? <TriangleAlert size={17} strokeWidth={2} /> : <ShieldCheck size={17} strokeWidth={2} />}
-          >
-            <SetRow
-              title={others.length ? `${joinNames(others)} ${others.length === 1 ? "is" : "are"} running` : "No other dictation apps running"}
-              desc={
-                others.length
-                  ? "If they use the same keys, you'll get two pastes. Close them, or turn off their shortcut. Wren never closes or changes them."
-                  : "Wren checks for Willow and Glaido when it starts. Running two at once can paste everything twice."
-              }
+            <WatcherSection settings={settings} update={update} />
+            <AiSection settings={settings} update={update} />
+            <EngineSection engine={engine} settings={settings} />
+            <HistorySection />
+
+            <Group
+              id="others"
+              title="Other dictation apps"
+              icon={others.length ? <TriangleAlert size={15} strokeWidth={2} /> : <ShieldCheck size={15} strokeWidth={2} />}
+              tone="amber"
             >
-              {others.length > 0 && (
-                <div className="setrow__foot">
-                  <Status tone="warn">Double pastes are likely until {others.length === 1 ? "it's" : "they're"} closed.</Status>
+              <SetRow
+                title={others.length ? `${joinNames(others)} ${others.length === 1 ? "is" : "are"} running` : "No other dictation apps running"}
+                desc={
+                  others.length
+                    ? "If they use the same keys, you'll get two pastes. Close them, or turn off their shortcut. Wren never closes or changes them."
+                    : "Wren checks for Willow and Glaido when it starts. Running two at once can paste everything twice."
+                }
+              >
+                {others.length > 0 && (
+                  <div className="setrow__foot">
+                    <Status tone="warn">Double pastes are likely until {others.length === 1 ? "it's" : "they're"} closed.</Status>
+                  </div>
+                )}
+              </SetRow>
+            </Group>
+
+            <UpdatesSection version={version} update={appUpdate} onCheck={onCheckUpdate} onInstall={onInstallUpdate} />
+
+            <footer className="about">
+              <WrenTile size={38} />
+              <div>
+                <div className="about__name">
+                  Wren <span className="about__version num">{version ? `v${version}` : ""}</span>
                 </div>
-              )}
-            </SetRow>
-          </Group>
-
-          <UpdatesSection version={version} update={appUpdate} onCheck={onCheckUpdate} onInstall={onInstallUpdate} />
-
-          <footer className="about">
-            <WrenTile size={40} />
-            <div>
-              <div className="about__name">
-                Wren <span className="about__version num">{version ? `v${version}` : ""}</span>
+                <div className="about__line">Free and local. Your voice never leaves this PC.</div>
               </div>
-              <div className="about__line">Free and local. Your voice never leaves this PC.</div>
-            </div>
-          </footer>
-        </div>
+            </footer>
+          </div>
+        </>
       )}
     </div>
   );

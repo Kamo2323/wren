@@ -63,6 +63,10 @@ const mock = {
     aiCleanup: { enabled: false, model: "qwen2.5:3b" },
     watcherEnabled: null,
     willowSeedImported: false,
+    theme: ((): "dark" | "light" | null => {
+      const t = mockParams.get("theme");
+      return t === "dark" || t === "light" ? t : null;
+    })(),
   } as Settings,
 };
 
@@ -100,6 +104,18 @@ export const saveSettings = (settings: Settings): Promise<void> => {
   mock.settings = structuredClone(settings);
   return later(undefined);
 };
+
+export const setWindowTheme = (theme: "dark" | "light" | null): Promise<void> =>
+  inTauri ? call("set_window_theme", { theme }) : Promise.resolve();
+
+export const appIcon = (processName: string): Promise<string | null> =>
+  inTauri ? call<string | null>("app_icon", { processName }) : Promise.resolve(null);
+
+export const historyAudioIds = (ids: string[]): Promise<string[]> =>
+  inTauri ? call<string[]>("history_audio_ids", { ids }) : Promise.resolve([]);
+
+export const historyAudio = (id: string): Promise<string | null> =>
+  inTauri ? call<string | null>("history_audio", { id }) : Promise.resolve(null);
 
 // ---------- Task 4: history, stats, dictionary ----------
 

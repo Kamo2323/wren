@@ -198,11 +198,50 @@ await wait(1600);
 await page.locator(".nav-item", { hasText: "Stats" }).click();
 await page.waitForSelector(".stats-foot");
 await page.locator(".nav-item", { hasText: "Home" }).click();
-check("Home revisit paints its tiles at once (cached)", (await page.locator(".stats--loading").count()) === 0 && (await page.locator(".stat").count()) === 4);
+check("Home revisit paints its hero metrics at once (cached)", (await page.locator(".stats--loading").count()) === 0 && (await page.locator(".stat").count()) === 3);
 check(
   "no entrance replay on revisit",
-  await page.evaluate(() => [...document.querySelectorAll(".stat, .strip, .tcard")].every((el) => getComputedStyle(el).animationName === "none")),
+  await page.evaluate(() => [...document.querySelectorAll(".stat, .hero, .tcard")].every((el) => getComputedStyle(el).animationName === "none")),
 );
+
+// Redesign checks: Light & Dark theme switching, real app icons, Home -> History link, History day filter, Stats 7d/30d toggle
+await page.goto(`${base}/index.html#home`);
+await page.waitForSelector(".tcard");
+check("Home hero waveform canvas renders", (await page.locator(".hero__canvas").count()) === 1);
+check(
+  "transcript cards render real app icons",
+  await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll(".tcard .app-icon img")];
+    return imgs.length > 0 && imgs.every((img) => img.complete && img.naturalWidth > 0);
+  }),
+);
+await page.locator(".toolbar .theme-switch button", { hasText: "Dark" }).click();
+check("Dark theme switch applies data-theme=dark", (await page.evaluate(() => document.documentElement.dataset.theme)) === "dark");
+await page.locator(".toolbar .theme-switch button", { hasText: "Light" }).click();
+check("Light theme switch applies data-theme=light", (await page.evaluate(() => document.documentElement.dataset.theme)) === "light");
+await page.locator(".nav-item", { hasText: "Settings" }).click();
+await page.waitForSelector("#set-appearance");
+await page.locator("#set-appearance").locator("..").getByRole("button", { name: "Dark" }).click();
+check("Settings Appearance updates theme to dark", (await page.evaluate(() => document.documentElement.dataset.theme)) === "dark");
+await page.locator(".nav-item", { hasText: "Home" }).click();
+await page.waitForSelector(".hero");
+await page.getByRole("button", { name: /View history/ }).click();
+await page.waitForSelector(".history-day-select");
+await page.waitForSelector(".tcard");
+check("Home View history link opens History", (await page.locator(".page__title").textContent()) === "History");
+const allHist = await page.locator(".tcard").count();
+await page.locator(".history-day-select").selectOption("Today");
+await wait(100);
+const todayHist = await page.locator(".tcard").count();
+check("History day filter narrows to Today", todayHist > 0 && todayHist < allHist, `${allHist} → ${todayHist}`);
+await page.locator(".history-day-select").selectOption("all");
+await page.locator(".nav-item", { hasText: "Stats" }).click();
+await page.waitForSelector(".chart--daily");
+check("Stats Words per day defaults to 30 bars", (await page.locator(".chart--daily .chart__col").count()) === 30);
+await page.getByRole("button", { name: "7 days" }).click();
+check("Stats 7 days toggle narrows Words per day to 7 bars", (await page.locator(".chart--daily .chart__col").count()) === 7);
+await page.getByRole("button", { name: "30 days" }).click();
+check("Stats 30 days toggle restores 30 bars", (await page.locator(".chart--daily .chart__col").count()) === 30);
 
 check("no page errors or console errors", errors.length === 0, errors.join("; "));
 

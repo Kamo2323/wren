@@ -9,7 +9,7 @@ use crate::settings::Settings;
 use crate::store::{Stats, TranscriptionRow};
 use crate::AppState;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 fn history_changed(app: &AppHandle) {
     let _ = app.emit(EVENT_HISTORY_CHANGED, ());
@@ -85,10 +85,29 @@ pub fn save_settings(
         return Err(err.to_string());
     }
     *state.settings.write() = settings.clone();
+    if old.theme != settings.theme
+        && let Some(main) = app.get_webview_window(crate::tray::MAIN_LABEL)
+    {
+        crate::apply_window_theme(&main, settings.theme.as_deref());
+    }
     if old.engine != settings.engine {
         services.env.replace_engine(settings.engine.clone());
     }
     Ok(())
+}
+
+/// Apply Light / Dark / System to the native Windows titlebar immediately.
+#[tauri::command]
+pub fn set_window_theme(app: AppHandle, theme: Option<String>) {
+    if let Some(main) = app.get_webview_window(crate::tray::MAIN_LABEL) {
+        crate::apply_window_theme(&main, theme.as_deref());
+    }
+}
+
+/// Extract and cache a real Windows app icon PNG data URL for a process name (e.g. `"claude.exe"`).
+#[tauri::command(async)]
+pub fn app_icon(process_name: String) -> Option<String> {
+    crate::app_icons::icon_data_url(&process_name)
 }
 
 // ---- history, stats and dictionary (Task 4) ----
@@ -140,6 +159,27 @@ pub fn history_fix_word(
     let (replacement, term) = state.store.fix_word(&id, &from, &to).map_err(|e| e.to_string())?;
     history_changed(&app);
     Ok(FixWordResult { replacement, term })
+}
+
+/// Returns the subset of transcription ids whose local WAV recording currently exists on disk.
+#[tauri::command(async)]
+pub fn history_audio_ids(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<String>, String> {
+    state.store.ids_with_audio(&ids).map_err(|e| e.to_string())
+}
+
+/// Reads the local WAV recording for one dictation as a `data:audio/wav;base64,...` URL, if present.
+#[tauri::command(async)]
+pub fn history_audio(state: State<'_, AppState>, id: String) -> Result<Option<String>, String> {
+    use base64::Engine;
+    let Some(path) = state.store.audio_path(&id).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).map_err(|_| "Couldn't read that recording.".to_string())?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(format!("data:audio/wav;base64,{b64}")))
 }
 
 #[tauri::command(async)]

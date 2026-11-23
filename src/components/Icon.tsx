@@ -2,6 +2,8 @@
 import { useId } from "react";
 
 export {
+  AppWindow,
+  ArrowLeftRight,
   ArrowRight,
   Ban,
   CalendarDays,
@@ -12,12 +14,17 @@ export {
   Lightbulb,
   Mic,
   MessageSquareText,
+  Monitor,
+  Moon,
+  Pause,
+  Play,
   Plus,
   Power,
   RotateCcw,
   RotateCw,
   Search,
   ShieldCheck,
+  Sun,
   TriangleAlert,
   Volume2,
   WandSparkles,

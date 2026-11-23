@@ -5,6 +5,13 @@ export interface Part {
   unit: string;
 }
 
+/** Time saved in ms from words, speaking duration, and typing WPM (mirrors Rust store/stats.rs). */
+export function computeTimeSavedMs(words: number, speakingMs: number, typingWpm: number): number {
+  const wpm = typingWpm > 0 ? typingWpm : 52;
+  const typingMs = (words * 60_000) / wpm;
+  return Math.max(0, Math.round(typingMs - speakingMs));
+}
+
 /** Time saved as figure/unit pairs: [9 "h", 42 "min"], [18 "min"], [40 "s"], [0 "min"], [2 "hours"]. */
 export function formatSaved(ms: number): Part[] {
   const totalMin = Math.floor(ms / 60_000);
@@ -85,6 +92,9 @@ export function formatNumber(n: number): string {
 
 const APP_NAMES: Record<string, string> = {
   "claude.exe": "Claude",
+  "t3 code (beta).exe": "T3 Code",
+  "t3-code.exe": "T3 Code",
+  "t3code.exe": "T3 Code",
   "code.exe": "VS Code",
   "cursor.exe": "Cursor",
   "outlook.exe": "Outlook",

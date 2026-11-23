@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { niceTicks, dayWpm } from "../src/lib/chart.ts";
 import { replaceWord, wordCount, markMatches } from "../src/lib/text.ts";
 import { copyTextWith } from "../src/lib/copy.ts";
-import { formatBytes } from "../src/lib/format.ts";
+import { appName, computeTimeSavedMs, formatBytes } from "../src/lib/format.ts";
+import { normalizeThemePreference, resolveTheme, toSettingsTheme } from "../src/lib/theme.ts";
 import { dismissMsFor } from "../src/popup/dismiss.ts";
 import { buildManifest, computeVersion, stampCargoVersion } from "./ci-release-meta.mjs";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -150,6 +151,27 @@ test("formatBytes formats B, KB, and MB cleanly", () => {
   assert.equal(formatBytes(512), "512 B");
   assert.equal(formatBytes(512 * 1024), "512 KB");
   assert.equal(formatBytes(10 * 1024 * 1024), "10.0 MB");
+});
+
+test("theme helpers resolve dark, light and system preferences", () => {
+  assert.equal(normalizeThemePreference("dark"), "dark");
+  assert.equal(normalizeThemePreference("light"), "light");
+  assert.equal(normalizeThemePreference(null), "system");
+  assert.equal(normalizeThemePreference(undefined), "system");
+  assert.equal(toSettingsTheme("system"), null);
+  assert.equal(toSettingsTheme("dark"), "dark");
+  assert.equal(resolveTheme("dark", false), "dark");
+  assert.equal(resolveTheme("light", true), "light");
+  assert.equal(resolveTheme("system", true), "dark");
+  assert.equal(resolveTheme("system", false), "light");
+});
+
+test("computeTimeSavedMs and appName match Rust behaviour", () => {
+  assert.equal(computeTimeSavedMs(52, 0, 52), 60_000);
+  assert.equal(computeTimeSavedMs(10, 600_000, 52), 0);
+  assert.equal(computeTimeSavedMs(52, 0, 0), 60_000);
+  assert.equal(appName("T3 Code (Beta).exe"), "T3 Code");
+  assert.equal(appName("claude.exe"), "Claude");
 });
 
 test("ci-release-meta computes versions, stamps Cargo.toml, and builds latest.json", () => {

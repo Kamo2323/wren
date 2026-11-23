@@ -71,6 +71,8 @@ pub struct Settings {
     pub watcher_enabled: Option<bool>,
     /// The Willow dictionary has been offered/imported once.
     pub willow_seed_imported: bool,
+    /// Colour theme preference: `None` follows Windows, or `Some("dark")` / `Some("light")`.
+    pub theme: Option<String>,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             ai_cleanup: AiCleanupSettings::default(),
             watcher_enabled: None,
             willow_seed_imported: false,
+            theme: None,
         }
     }
 }
@@ -160,6 +163,7 @@ mod tests {
         let mut s = Settings::default();
         s.typing_wpm = 55;
         s.mic_device = Some("USB Mic".into());
+        s.theme = Some("dark".into());
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
     }
@@ -181,6 +185,7 @@ mod tests {
         assert_eq!(s.typing_wpm, 70);
         assert_eq!(s.engine, EngineSettings::default());
         assert!(!s.ai_cleanup.enabled);
+        assert_eq!(s.theme, None);
     }
 
     #[test]

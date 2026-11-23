@@ -1,9 +1,9 @@
-// History: search box over everything said in the retention window (72 h), grouped by day, with the
-// same cards as Home (click copies, Fix a word, Delete). Matches are marked in the text.
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+// History: search box + day filter over everything said in the retention window (72 h), grouped
+// by day, with subtle hairline cards, real app icons, inline audio playback, Fix a word and Delete.
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { TranscriptionRow } from "../lib/types";
-import { historyRecent, historySearch, onHistoryChanged, subscribe } from "../lib/api";
-import { formatNumber, retentionLabel } from "../lib/format";
+import { historyAudioIds, historyRecent, historySearch, onHistoryChanged, subscribe } from "../lib/api";
+import { dayLabel, formatNumber, retentionLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { useDayGroups, useNewIds, useTranscriptActions } from "../lib/useTranscriptActions";
 import { TranscriptCard } from "../components/TranscriptCard";
@@ -11,25 +11,27 @@ import { ChordKeys, EmptyState, LoadError } from "../components/Empty";
 import { Button } from "../components/Button";
 import { Clock, Search, X } from "../components/Icon";
 
-/** Far more than 72 hours of dictation can hold, so in practice "everything that's kept". */
 const ALL_LIMIT = 5000;
 const SEARCH_DEBOUNCE_MS = 140;
 
-/** Everything (no search) as last shown, kept for this app session so a revisit paints at once. */
 let lastAll: TranscriptionRow[] | null = null;
 
 export default function History() {
   const constants = useConstants();
   const kept = retentionLabel(constants.retentionHours);
   const [query, setQuery] = useState("");
+  const [dayFilter, setDayFilter] = useState("all");
   const [rows, setRows] = useState<TranscriptionRow[] | null>(lastAll);
-  const [searchedFor, setSearchedFor] = useState(""); // the query the rows on screen belong to
+  const [audioIds, setAudioIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [searchedFor, setSearchedFor] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [failed, setFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const requestId = useRef(0);
   const { onCopy, onDelete, onFix } = useTranscriptActions(setRows);
   const newIds = useNewIds(rows, "history");
+
   useEffect(() => {
     if (rows && !failed && searchedFor === "") lastAll = rows;
   }, [rows, failed, searchedFor]);
@@ -47,20 +49,27 @@ export default function History() {
       setSearchedFor(trimmed);
       return;
     }
-    if (id !== requestId.current) return; // a newer search has started
+    if (id !== requestId.current) return;
     setFailed(false);
     setRows(result);
     setSearchedFor(trimmed);
     setNow(Date.now());
+    if (result.length > 0) {
+      void historyAudioIds(result.map((r) => r.id))
+        .then((ids) => {
+          if (id === requestId.current) setAudioIds(new Set(ids));
+        })
+        .catch(() => {});
+    } else {
+      setAudioIds(new Set());
+    }
   }, []);
 
-  // search as you type (debounced); empty query = everything
   useEffect(() => {
     const t = window.setTimeout(() => void load(query), query.trim() ? SEARCH_DEBOUNCE_MS : 0);
     return () => window.clearTimeout(t);
   }, [query, load]);
 
-  // new dictations, window focus, and the clock
   const queryRef = useRef(query);
   queryRef.current = query;
   useEffect(() => {
@@ -96,53 +105,109 @@ export default function History() {
     }
   }
 
-  const groups = useDayGroups(rows, now);
+  const availableDays = useMemo(() => {
+    const seen = new Set<string>();
+    const labels: string[] = [];
+    const refDate = new Date(now);
+    for (const r of rows ?? []) {
+      const lbl = dayLabel(r.createdAtUtc, refDate);
+      if (!seen.has(lbl)) {
+        seen.add(lbl);
+        labels.push(lbl);
+      }
+    }
+    return labels;
+  }, [rows, now]);
+
+  const effectiveDay = dayFilter === "all" || availableDays.includes(dayFilter) ? dayFilter : "all";
+
+  const visibleRows = useMemo(() => {
+    if (!rows) return null;
+    if (effectiveDay === "all") return rows;
+    const refDate = new Date(now);
+    return rows.filter((r) => dayLabel(r.createdAtUtc, refDate) === effectiveDay);
+  }, [rows, effectiveDay, now]);
+
+  const groups = useDayGroups(visibleRows, now);
   const searching = searchedFor.length > 0;
-  const words = (rows ?? []).reduce((a, r) => a + r.words, 0);
+  const words = (visibleRows ?? []).reduce((a, r) => a + r.words, 0);
 
   return (
     <div className="page page--history">
       <header className="page-head">
         <div>
           <h1 className="page__title">History</h1>
-          <p className="page__lede">Everything you said in the last {kept}. Click a card to copy it.</p>
+          <p className="page__lede">Dictations and their recordings are kept on this PC for {kept}. Click a card to copy it.</p>
         </div>
         <span className="keep-note">
-          <Clock size={15} strokeWidth={2} /> Deleted after {kept}
+          <Clock size={15} strokeWidth={2} aria-hidden="true" /> Deleted after {kept}
         </span>
       </header>
 
-      <div className="search">
-        <Search className="search__icon" size={19} strokeWidth={2} aria-hidden="true" />
-        <input
-          ref={inputRef}
-          className="search__input"
-          type="search"
-          value={query}
-          placeholder="Search what you said"
-          aria-label="Search history"
-          spellCheck={false}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onSearchKey}
-        />
-        {query ? (
-          <button type="button" className="search__clear" aria-label="Clear search" title="Clear search" onClick={() => { setQuery(""); inputRef.current?.focus(); }}>
-            <X size={16} strokeWidth={2.2} />
-          </button>
-        ) : (
-          <kbd className="search__kbd" aria-hidden="true">Ctrl F</kbd>
-        )}
+      <div className="history-controls">
+        <div className="search">
+          <Search className="search__icon" size={16} strokeWidth={2} aria-hidden="true" />
+          <input
+            ref={inputRef}
+            className="search__input"
+            type="search"
+            value={query}
+            placeholder="Search what you said"
+            aria-label="Search history"
+            spellCheck={false}
+            onChange={(e) => {
+              setPlayingId(null);
+              setQuery(e.target.value);
+            }}
+            onKeyDown={onSearchKey}
+          />
+          {query ? (
+            <button
+              type="button"
+              className="search__clear"
+              aria-label="Clear search"
+              title="Clear search"
+              onClick={() => {
+                setQuery("");
+                inputRef.current?.focus();
+              }}
+            >
+              <X size={15} strokeWidth={2.2} />
+            </button>
+          ) : (
+            <kbd className="search__kbd" aria-hidden="true">
+              Ctrl F
+            </kbd>
+          )}
+        </div>
+
+        <select
+          className="select history-day-select"
+          aria-label="Filter by day"
+          value={effectiveDay}
+          onChange={(e) => {
+            setPlayingId(null);
+            setDayFilter(e.target.value);
+          }}
+        >
+          <option value="all">All days</option>
+          {availableDays.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {rows !== null && rows.length > 0 && (
+      {visibleRows !== null && visibleRows.length > 0 && (
         <p className="results-line num" aria-live="polite">
           {searching ? (
             <>
-              <strong>{formatNumber(rows.length)}</strong> {rows.length === 1 ? "match" : "matches"} for “{searchedFor}”
+              <strong>{formatNumber(visibleRows.length)}</strong> {visibleRows.length === 1 ? "match" : "matches"} for “{searchedFor}”
             </>
           ) : (
             <>
-              <strong>{formatNumber(rows.length)}</strong> {rows.length === 1 ? "dictation" : "dictations"} ·{" "}
+              <strong>{formatNumber(visibleRows.length)}</strong> {visibleRows.length === 1 ? "dictation" : "dictations"} ·{" "}
               <strong>{formatNumber(words)}</strong> words
             </>
           )}
@@ -151,21 +216,32 @@ export default function History() {
 
       {failed ? (
         <LoadError what={searchedFor ? "search results" : "your history"} onRetry={() => void load(query)} />
-      ) : rows === null ? null : rows.length === 0 ? (
-        searching ? (
+      ) : visibleRows === null ? null : visibleRows.length === 0 ? (
+        searching || effectiveDay !== "all" ? (
           <EmptyState
-            icon={<Search size={22} strokeWidth={2} />}
-            title={`Nothing matches “${searchedFor}”`}
+            icon={<Search size={20} strokeWidth={2} />}
+            title={searching ? `Nothing matches “${searchedFor}”` : "No dictations on this day"}
             action={
-              <Button variant="secondary" onClick={() => { setQuery(""); inputRef.current?.focus(); }}>
-                Clear search
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setQuery("");
+                  setDayFilter("all");
+                  inputRef.current?.focus();
+                }}
+              >
+                {searching ? "Clear search" : "Show all days"}
               </Button>
             }
           >
             Search looks through everything you said in the last {kept}. Older dictations are already gone.
           </EmptyState>
         ) : (
-          <EmptyState art={<ChordKeys />} title={`Nothing from the last ${kept}`} note="Your stats are kept for good, even after dictations are deleted.">
+          <EmptyState
+            art={<ChordKeys />}
+            title={`Nothing from the last ${kept}`}
+            note="Your stats are kept for good, even after dictations are deleted."
+          >
             Hold the left Ctrl and Windows keys and speak. Everything you dictate is kept here for {kept}, so you can
             search it and copy it again.
           </EmptyState>
@@ -189,6 +265,9 @@ export default function History() {
                     onDelete={onDelete}
                     onFix={onFix}
                     isNew={newIds.has(r.id)}
+                    hasAudio={audioIds.has(r.id)}
+                    playingId={playingId}
+                    onPlayToggle={setPlayingId}
                   />
                 ))}
               </div>
