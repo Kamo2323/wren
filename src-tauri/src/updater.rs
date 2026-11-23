@@ -290,6 +290,13 @@ impl UpdaterService {
     /// silent NSIS installer helper, and exits Wren cleanly so the installer can replace it and
     /// relaunch the updated app.
     pub async fn install(&self, app: &AppHandle) -> Result<(), String> {
+        if matches!(
+            *self.status.read(),
+            UpdateStatus::Downloading { .. } | UpdateStatus::Installing { .. }
+        ) {
+            return Ok(());
+        }
+
         if self.pending.lock().is_none() {
             let status = self.check(app, true).await;
             if !matches!(status, UpdateStatus::Available { .. }) {
@@ -912,7 +919,7 @@ fn cleanup_old_updates(updates_dir: &Path) {
 }
 
 /// PowerShell script that waits for `wren.exe` to finish shutting down, runs the silent NSIS
-/// installer with `/S /UPDATE /R`, logs the outcome, and cleans up temporary files.
+/// installer with `/S /UPDATE /R`, logs the outcome, ensures Wren relaunches, and cleans up.
 pub fn apply_script_body() -> String {
     format!(
         r#"param(
@@ -929,17 +936,48 @@ function Write-Log([string]$msg) {{
     Add-Content -Path $LogPath -Value ("$(Get-Date -Format o) $msg")
   }}
 }}
-Write-Log "Waiting for Wren (pid $ParentPid) to exit..."
-try {{
-  Wait-Process -Id $ParentPid -Timeout {UPDATE_WAIT_PARENT_SECS} -ErrorAction SilentlyContinue
-}} catch {{}}
-Start-Sleep -Milliseconds 400
+if ($ParentPid -gt 0) {{
+  Write-Log "Waiting for Wren (pid $ParentPid) to exit..."
+  try {{
+    Wait-Process -Id $ParentPid -Timeout {UPDATE_WAIT_PARENT_SECS} -ErrorAction SilentlyContinue
+  }} catch {{}}
+  if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {{
+    Write-Log "Wren (pid $ParentPid) did not exit in time; forcing stop before install"
+    Stop-Process -Id $ParentPid -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 1000
+  }}
+}}
+Start-Sleep -Milliseconds 500
 Write-Log "Starting silent installer: $InstallerPath /S /UPDATE /R"
-$proc = Start-Process -FilePath $InstallerPath -ArgumentList '/S', '/UPDATE', '/R' -PassThru -Wait
-$code = if ($proc) {{ $proc.ExitCode }} else {{ -1 }}
+$code = -1
+try {{
+  $proc = Start-Process -FilePath $InstallerPath -ArgumentList '/S', '/UPDATE', '/R' -WindowStyle Hidden -PassThru
+  if ($proc) {{
+    $null = $proc.Handle
+    $proc.WaitForExit()
+    $code = [int]$proc.ExitCode
+  }}
+}} catch {{
+  Write-Log "Failed to launch installer: $_"
+}}
 Write-Log "Installer finished with exit code $code"
 Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
-if ($code -ne 0 -and $FallbackExe -and (Test-Path -LiteralPath $FallbackExe)) {{
+if ($code -eq 0) {{
+  if ($FallbackExe -and (Test-Path -LiteralPath $FallbackExe)) {{
+    $restarted = $false
+    for ($i = 0; $i -lt 12; $i++) {{
+      if (Get-Process -Name 'wren' -ErrorAction SilentlyContinue) {{
+        $restarted = $true
+        break
+      }}
+      Start-Sleep -Milliseconds 250
+    }}
+    if (-not $restarted) {{
+      Write-Log "Installer succeeded; relaunching $FallbackExe"
+      Start-Process -FilePath $FallbackExe
+    }}
+  }}
+}} elseif ($FallbackExe -and (Test-Path -LiteralPath $FallbackExe)) {{
   Write-Log "Installer failed (code $code); relaunching $FallbackExe"
   Start-Process -FilePath $FallbackExe
 }}
@@ -961,8 +999,12 @@ fn spawn_install_helper(
     log_path: &Path,
 ) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
+    // IMPORTANT: Do NOT combine `DETACHED_PROCESS` with `CREATE_NO_WINDOW`.
+    // Per Win32 CreateProcess docs, `CREATE_NO_WINDOW` is ignored when `DETACHED_PROCESS` is set,
+    // which starts Windows PowerShell 5.1 with no console host and causes `powershell.exe` to exit
+    // immediately with status 0 without executing `-File`. `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`
+    // gives PowerShell its own hidden console host that survives parent process exit.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
     let script_path = updates_dir.join("apply-update.ps1");
@@ -991,7 +1033,7 @@ fn spawn_install_helper(
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
-    .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
     cmd.spawn()
         .map_err(|e| format!("Couldn't start the update installer: {e}"))?;
@@ -1052,6 +1094,58 @@ mod tests {
         assert!(s.contains("Wait-Process -Id $ParentPid"));
         assert!(s.contains("'/S', '/UPDATE', '/R'"));
         assert!(s.contains("FallbackExe"));
+        assert!(s.contains("$null = $proc.Handle"));
+    }
+
+    #[test]
+    fn spawn_install_helper_executes_installer_logs_and_cleans_up() {
+        let root = std::env::temp_dir().join(format!("wren-upd-helper-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let marker = root.join("ran.txt");
+        let log_path = root.join("logs").join("updater.log");
+        let dummy_installer = root.join("dummy-setup.cmd");
+        std::fs::write(
+            &dummy_installer,
+            format!("@echo off\r\necho %* > \"{}\"\r\nexit /b 0\r\n", marker.display()),
+        )
+        .unwrap();
+
+        // Spawn a short-lived dummy parent process so the test exercises real Wait-Process + exit.
+        let mut dummy_parent = std::process::Command::new("cmd.exe")
+            .args(["/C", "exit", "0"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let parent_pid = dummy_parent.id();
+        spawn_install_helper(&root, parent_pid, &dummy_installer, None, &log_path).unwrap();
+        let _ = dummy_parent.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if log_path.exists()
+                && !dummy_installer.exists()
+                && !root.join("apply-update.ps1").exists()
+                && marker.exists()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+        let installer_removed = !dummy_installer.exists();
+        let script_removed = !root.join("apply-update.ps1").exists();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(log.contains("Installer finished with exit code 0"), "unexpected updater.log:\n{log}");
+        assert!(ran.contains("/S") && ran.contains("/UPDATE") && ran.contains("/R"), "unexpected args: {ran}");
+        assert!(installer_removed, "installer was not cleaned up");
+        assert!(script_removed, "apply-update.ps1 was not cleaned up");
     }
 
     #[derive(Clone)]
