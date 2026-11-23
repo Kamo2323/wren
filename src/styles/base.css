@@ -1,4 +1,4 @@
-/* Base styles for the main window. The popup has its own sheet (src/popup/popup.css). */
+/* Base styles for the main window. The popup keeps its own stylesheet (src/popup/popup.css). */
 *,
 *::before,
 *::after {
@@ -13,18 +13,22 @@ body,
 }
 
 body {
-  background: var(--canvas);
-  color: var(--text-1);
+  background: var(--ground);
+  color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--text-body);
   line-height: 1.5;
-  font-feature-settings: "ss01"; /* Inter stylistic set 1: open digits (6, 9 and 4 read better at stat sizes) */
+  font-feature-settings: "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  /* A desktop app, not a web page: no stray text selection while clicking cards. */
   user-select: none;
   -webkit-user-select: none;
   overflow: hidden;
+}
+
+::selection {
+  background: var(--blue-soft);
+  color: var(--ink);
 }
 
 input,
@@ -48,8 +52,12 @@ button {
   padding: 0;
 }
 
-:focus-visible {
-  outline: 2px solid var(--primary);
+button:disabled {
+  cursor: default;
+}
+
+:where(button, a, input, select):focus-visible {
+  outline: 2px solid var(--blue);
   outline-offset: 2px;
 }
 
@@ -65,7 +73,7 @@ p {
   font-variant-numeric: tabular-nums;
 }
 
-/* Thin, quiet scrollbars */
+/* Thin, quiet scrollbars in both themes */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -74,25 +82,28 @@ p {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(36, 35, 43, 0.12);
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(36, 35, 43, 0.22);
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
 }
 
 .sr-only {
   position: absolute;
+  display: block;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   padding: 0;
   margin: -1px;
   overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }

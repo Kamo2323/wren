@@ -1,12 +1,10 @@
-// Single-series line chart (the 30-day words-per-minute trend). Days with no value are gaps in the line,
-// not zeros. Same frame as BarChart (y labels on the left, recessive grid, dashed reference line, dark
-// tooltip); drawn in pixels from a measured width so the line and dots never stretch.
-import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+// Single-series line chart (the speaking speed words-per-minute trend) with teal theme accent
+// and dashed typing baseline reference line.
+import { useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { niceTicks } from "../lib/chart";
 
 export interface LineChartProps {
   values: Array<number | null>;
-  /** Index drawn as the big accent dot (today). */
   accent?: number | null;
   tipLabel: (i: number) => string;
   tipValue: (i: number) => string;
@@ -16,11 +14,25 @@ export interface LineChartProps {
   ariaLabel: string;
   emptyText?: ReactNode;
   className?: string;
+  onActiveChange?: (index: number | null) => void;
 }
 
-const PAD_X = 7; // keeps the end dots inside the plot
+const PAD_X = 7;
 
-export function LineChart({ values, accent, tipLabel, tipValue, xTicks, reference, height = 130, ariaLabel, emptyText, className = "" }: LineChartProps) {
+export function LineChart({
+  values,
+  accent,
+  tipLabel,
+  tipValue,
+  xTicks,
+  reference,
+  height = 128,
+  ariaLabel,
+  emptyText,
+  className = "",
+  onActiveChange,
+}: LineChartProps) {
+  const gradId = useId();
   const plotRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<number | null>(null);
@@ -42,7 +54,6 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
   const x = (i: number) => (n <= 1 ? width / 2 : PAD_X + (i / (n - 1)) * (width - 2 * PAD_X));
   const y = (v: number) => height - (v / top) * height;
 
-  // one path per run of consecutive days with a value
   const runs: number[][] = [];
   values.forEach((v, i) => {
     if (v == null) return;
@@ -52,6 +63,11 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
   });
   const line = (run: number[]) => run.map((i, k) => `${k ? "L" : "M"}${x(i).toFixed(1)},${y(values[i]!).toFixed(1)}`).join("");
   const area = (run: number[]) => `${line(run)}L${x(run[run.length - 1]).toFixed(1)},${height}L${x(run[0]).toFixed(1)},${height}Z`;
+
+  function setHovered(i: number | null) {
+    setHover(i);
+    onActiveChange?.(i);
+  }
 
   function onMove(e: MouseEvent<HTMLDivElement>) {
     if (empty || width === 0) return;
@@ -67,7 +83,7 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
         best = i;
       }
     });
-    setHover(best);
+    setHovered(best);
   }
 
   const h = hover != null && values[hover] != null ? hover : null;
@@ -84,7 +100,7 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
           ))}
       </div>
 
-      <div ref={plotRef} className="chart__plot" role="img" aria-label={ariaLabel} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <div ref={plotRef} className="chart__plot" role="img" aria-label={ariaLabel} onMouseMove={onMove} onMouseLeave={() => setHovered(null)}>
         {(empty ? [0] : ticks).map((t) => (
           <div key={t} className={`chart__grid ${t === 0 ? "is-base" : ""}`} style={{ bottom: `${(t / top) * 100}%` }} />
         ))}
@@ -97,13 +113,13 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
         {width > 0 && !empty && (
           <svg className="line" width={width} height={height} aria-hidden="true">
             <defs>
-              <linearGradient id="line-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="var(--primary)" stopOpacity="0.1" />
-                <stop offset="1" stopColor="var(--primary)" stopOpacity="0" />
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="var(--chart-active, var(--teal-deep))" stopOpacity="0.24" />
+                <stop offset="1" stopColor="var(--chart-active, var(--teal-deep))" stopOpacity="0" />
               </linearGradient>
             </defs>
             {runs.map((run) => (
-              <path key={`a${run[0]}`} className="line__area" d={area(run)} fill="url(#line-fill)" />
+              <path key={`a${run[0]}`} className="line__area" d={area(run)} fill={`url(#${gradId})`} />
             ))}
             {runs.map((run) => (
               <path key={`l${run[0]}`} className="line__path" d={line(run)} />
@@ -116,7 +132,7 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
                   className={`line__dot ${i === accent ? "is-accent" : ""} ${i === h ? "is-hover" : ""}`}
                   cx={x(i)}
                   cy={y(v)}
-                  r={i === accent || i === h ? 5 : 2.6}
+                  r={i === accent || i === h ? 4.8 : 2.6}
                 />
               ),
             )}
@@ -124,7 +140,15 @@ export function LineChart({ values, accent, tipLabel, tipValue, xTicks, referenc
         )}
 
         {h != null && (
-          <div className={`chart__tip ${tipEdge}`} style={{ left: tipEdge === "is-end" ? undefined : tipEdge === "is-start" ? Math.max(0, x(h) - 14) : x(h), right: tipEdge === "is-end" ? Math.max(0, width - x(h) - 14) : undefined, bottom: height - y(values[h]!) + 12 }} role="presentation">
+          <div
+            className={`chart__tip ${tipEdge}`}
+            style={{
+              left: tipEdge === "is-end" ? undefined : tipEdge === "is-start" ? Math.max(0, x(h) - 14) : x(h),
+              right: tipEdge === "is-end" ? Math.max(0, width - x(h) - 14) : undefined,
+              bottom: height - y(values[h]!) + 12,
+            }}
+            role="presentation"
+          >
             <span className="chart__tip-label">{tipLabel(h)}</span>
             <span className="chart__tip-value num">{tipValue(h)}</span>
           </div>

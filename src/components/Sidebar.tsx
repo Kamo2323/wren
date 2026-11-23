@@ -5,15 +5,33 @@ import { BookA, ChartColumn, Download, History, House, RotateCw, Settings, WrenT
 export type PageId = "home" | "history" | "dictionary" | "stats" | "settings";
 
 const MAIN: Array<{ id: PageId; label: string; icon: ReactNode }> = [
-  { id: "home", label: "Home", icon: <House size={19} strokeWidth={1.9} /> },
-  { id: "history", label: "History", icon: <History size={19} strokeWidth={1.9} /> },
-  { id: "dictionary", label: "Dictionary", icon: <BookA size={19} strokeWidth={1.9} /> },
-  { id: "stats", label: "Stats", icon: <ChartColumn size={19} strokeWidth={1.9} /> },
+  { id: "home", label: "Home", icon: <House size={18} strokeWidth={1.9} /> },
+  { id: "history", label: "History", icon: <History size={18} strokeWidth={1.9} /> },
+  { id: "dictionary", label: "Dictionary", icon: <BookA size={18} strokeWidth={1.9} /> },
+  { id: "stats", label: "Stats", icon: <ChartColumn size={18} strokeWidth={1.9} /> },
 ];
 
-function NavItem({ id, label, icon, active, onSelect }: { id: PageId; label: string; icon: ReactNode; active: boolean; onSelect: (p: PageId) => void }) {
+function NavItem({
+  id,
+  label,
+  icon,
+  active,
+  onSelect,
+}: {
+  id: PageId;
+  label: string;
+  icon: ReactNode;
+  active: boolean;
+  onSelect: (p: PageId) => void;
+}) {
   return (
-    <button type="button" className={`nav-item ${active ? "is-active" : ""}`} aria-current={active ? "page" : undefined} onClick={() => onSelect(id)}>
+    <button
+      type="button"
+      data-page={id}
+      className={`nav-item ${active ? "is-active" : ""}`}
+      aria-current={active ? "page" : undefined}
+      onClick={() => onSelect(id)}
+    >
       <span className="nav-item__icon">{icon}</span>
       {label}
     </button>
@@ -29,7 +47,7 @@ function UpdatePill({ update, onInstall }: { update: UpdateStatus; onInstall: ()
     return (
       <button type="button" className="update-pill update-pill--available" onClick={onInstall} title={tip}>
         <span className="update-pill__icon">
-          <Download size={15} strokeWidth={2.2} />
+          <Download size={14} strokeWidth={2.2} />
         </span>
         <span className="update-pill__text">Update · v{update.version}</span>
         <span className="update-pill__dot" aria-hidden="true" />
@@ -69,7 +87,7 @@ function UpdatePill({ update, onInstall }: { update: UpdateStatus; onInstall: ()
     return (
       <button type="button" className="update-pill update-pill--error" onClick={onInstall} title={`${update.message} Click to try again.`}>
         <span className="update-pill__icon">
-          <RotateCw size={15} strokeWidth={2.2} />
+          <RotateCw size={14} strokeWidth={2.2} />
         </span>
         <span className="update-pill__text">Retry update</span>
       </button>
@@ -107,7 +125,6 @@ export function Sidebar({
   page: PageId;
   onSelect: (p: PageId) => void;
   engine: EngineStatus;
-  /** Open Settings at the speech engine (offered when something is wrong). */
   onOpenEngine: () => void;
   update: UpdateStatus;
   onInstallUpdate: () => void;
@@ -115,9 +132,9 @@ export function Sidebar({
   const status = engineWords(engine);
   const actionable = status.tone === "warn" || status.tone === "bad";
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" aria-label="Wren sidebar">
       <div className="sidebar__brand">
-        <WrenTile size={30} />
+        <WrenTile size={32} />
         <span className="sidebar__name">Wren</span>
       </div>
       <nav className="sidebar__nav" aria-label="Pages">
@@ -127,9 +144,14 @@ export function Sidebar({
       </nav>
       <div className="sidebar__foot">
         <UpdatePill update={update} onInstall={onInstallUpdate} />
-        <NavItem id="settings" label="Settings" icon={<Settings size={19} strokeWidth={1.9} />} active={page === "settings"} onSelect={onSelect} />
+        <NavItem id="settings" label="Settings" icon={<Settings size={18} strokeWidth={1.9} />} active={page === "settings"} onSelect={onSelect} />
         {actionable ? (
-          <button type="button" className={`engine engine--${status.tone} engine--action`} title={`${status.detail ?? status.text}. Open the speech settings.`} onClick={onOpenEngine}>
+          <button
+            type="button"
+            className={`engine engine--${status.tone} engine--action`}
+            title={`${status.detail ?? status.text}. Open the speech settings.`}
+            onClick={onOpenEngine}
+          >
             <span className="engine__dot" />
             <span className="engine__text">{status.text}</span>
           </button>

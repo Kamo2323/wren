@@ -96,15 +96,15 @@ if (!only || only === "home") {
   // hover a card
   const cards = page.locator(".tcard");
   await cards.nth(1).hover();
-  await page.locator(".strip__col").nth(27).hover();
-  await cards.nth(1).hover();
   await wait(350);
   await shoot(page, "home-card-hover");
 
-  // hover a strip bar
-  await page.locator(".strip__col").nth(27).hover();
+  // Dark mode home
+  await page.locator(".toolbar .theme-switch button", { hasText: "Dark" }).click();
+  await wait(300);
+  await shoot(page, "home-dark-1200x800");
+  await page.locator(".toolbar .theme-switch button", { hasText: "Light" }).click();
   await wait(250);
-  await shoot(page, "home-strip-hover", { clip: { x: 216, y: 0, width: 984, height: 300 } });
 
   // click → copied
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });

@@ -535,6 +535,34 @@ impl Store {
             .optional()?)
     }
 
+    /// The stored recording path for one dictation, if recorded.
+    pub fn audio_path(&self, id: &str) -> StoreResult<Option<PathBuf>> {
+        let path: Option<Option<String>> = self
+            .conn()?
+            .query_row("SELECT audio_path FROM transcriptions WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(path.flatten().map(PathBuf::from))
+    }
+
+    /// Subset of `ids` whose stored WAV recording currently exists on disk.
+    pub fn ids_with_audio(&self, ids: &[String]) -> StoreResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut st = conn.prepare("SELECT audio_path FROM transcriptions WHERE id = ?1")?;
+        let mut present = Vec::new();
+        for id in ids {
+            let p: Option<Option<String>> = st.query_row([id], |r| r.get(0)).optional()?;
+            if let Some(Some(path)) = p
+                && Path::new(&path).is_file()
+            {
+                present.push(id.clone());
+            }
+        }
+        Ok(present)
+    }
+
     /// Delete one dictation, its audio and its correction events. Hourly totals stay.
     pub fn delete_transcription(&self, id: &str) -> StoreResult<()> {
         let mut conn = self.conn()?;

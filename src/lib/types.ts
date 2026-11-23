@@ -60,6 +60,8 @@ export interface Settings {
   aiCleanup: AiCleanupSettings;
   watcherEnabled: boolean | null;
   willowSeedImported: boolean;
+  /** Colour theme preference: `null` / omitted follows Windows, or `"dark"` / `"light"`. */
+  theme?: "dark" | "light" | null;
 }
 
 /** Task 4 `Mode`. Serialised in camelCase; "handsfree" is accepted too (it is how the DB stores it). */

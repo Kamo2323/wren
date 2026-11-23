@@ -1,6 +1,7 @@
 //! Wren — local dictation for Windows. See docs/design/SPEC.md.
 
 pub mod ai_cleanup;
+pub mod app_icons;
 pub mod audio;
 pub mod commands;
 pub mod constants;
@@ -70,26 +71,66 @@ fn sweep_store(store: &Store, paths: &Paths) {
     }
 }
 
-/// Colour the main window's caption bar like the canvas (#f3f3f5) with dark text (#24232b), so it
-/// reads as one surface with the sidebar even when Windows is in dark mode. Windows 11 only; on
-/// Windows 10 the call fails and the window's light theme alone gives a light bar.
-fn light_caption(win: &tauri::WebviewWindow) {
+/// Colour the main window's caption bar, border and title text to match the active Light or Dark
+/// theme (`None` / `"system"` follows Windows). Windows 11 DWM attributes; on Windows 10 the call
+/// fails cleanly and the Tauri window theme still applies.
+pub fn apply_window_theme(win: &tauri::WebviewWindow, theme: Option<&str>) {
     use windows::Win32::Foundation::{COLORREF, HWND};
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR};
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+        DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let dark = match theme.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("dark") => {
+            let _ = win.set_theme(Some(tauri::Theme::Dark));
+            true
+        }
+        Some("light") => {
+            let _ = win.set_theme(Some(tauri::Theme::Light));
+            false
+        }
+        _ => {
+            let _ = win.set_theme(None);
+            matches!(win.theme(), Ok(tauri::Theme::Dark))
+        }
+    };
+
     let Ok(h) = win.hwnd() else { return };
     let hwnd = HWND(h.0 as *mut core::ffi::c_void);
-    let set = |attr, colour: u32| unsafe {
+    let set_color = |attr, colour: u32| unsafe {
         let value = COLORREF(colour);
-        DwmSetWindowAttribute(hwnd, attr, &value as *const COLORREF as *const core::ffi::c_void, std::mem::size_of::<COLORREF>() as u32)
+        DwmSetWindowAttribute(
+            hwnd,
+            attr,
+            &value as *const COLORREF as *const core::ffi::c_void,
+            std::mem::size_of::<COLORREF>() as u32,
+        )
     };
-    // COLORREF is 0x00BBGGRR.
+    let dark_flag: i32 = if dark { 1 } else { 0 };
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_flag as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+
+    // COLORREF is 0x00BBGGRR. Dark matches --ground (#1c232d) / --line (#323e4b) / --ink (#f2f4f7);
+    // Light matches --ground (#fbfcff) / --line (#e1e6ee) / --ink (#1b2738).
+    let (caption, border, text) = if dark {
+        (0x002D_231C, 0x004B_3E32, 0x00F7_F4F2)
+    } else {
+        (0x00FF_FCFB, 0x00EE_E6E1, 0x0038_271B)
+    };
     let results = [
-        set(DWMWA_CAPTION_COLOR, 0x00F5_F3F3),
-        set(DWMWA_BORDER_COLOR, 0x00F5_F3F3),
-        set(DWMWA_TEXT_COLOR, 0x002B_2324),
+        set_color(DWMWA_CAPTION_COLOR, caption),
+        set_color(DWMWA_BORDER_COLOR, border),
+        set_color(DWMWA_TEXT_COLOR, text),
     ];
     if let Some(Err(err)) = results.into_iter().find(|r| r.is_err()) {
-        tracing::info!(error = %err, "caption colour not supported (Windows 10?); using the light theme only");
+        tracing::info!(error = %err, "caption colour not supported (Windows 10?); using window theme only");
     }
 }
 
@@ -194,7 +235,8 @@ pub fn run() {
                     std::thread::sleep(std::time::Duration::from_millis(constants::SWEEP_INTERVAL_MS));
                 })?;
             if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {
-                light_caption(&main);
+                let theme = app.state::<AppState>().settings.read().theme.clone();
+                apply_window_theme(&main, theme.as_deref());
             }
             if !start_hidden && !popup_check {
                 // Shown once the page has painted (it calls `main_ready`), so the first thing seen is
@@ -242,11 +284,15 @@ pub fn run() {
             commands::app_version,
             commands::get_settings,
             commands::save_settings,
+            commands::set_window_theme,
+            commands::app_icon,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,
             commands::history_delete_all,
             commands::history_fix_word,
+            commands::history_audio_ids,
+            commands::history_audio,
             commands::stats_get,
             commands::dictionary_list,
             commands::dictionary_add_term,

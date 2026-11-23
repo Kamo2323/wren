@@ -1,6 +1,5 @@
-// Dictionary: Words (terms the model listens out for), Replacements (heard → written) and Learned
-// (what Wren picked up from fixes in History and edits after a paste, with Undo and Delete).
-// Spec §8: a disabled entry records that the user said no, so Undo disables rather than deletes.
+// Dictionary: Words (teal), Replacements (violet) and Learned (amber) with semantic tinted lists,
+// inline add forms, toggle switches, candidate promotion, Undo and Delete.
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { DictionaryEntry, EntrySource, EntryStatus } from "../lib/types";
 import { dictionaryAddReplacement, dictionaryAddTerm, dictionaryDelete, dictionaryList, dictionarySetStatus } from "../lib/api";
@@ -10,7 +9,7 @@ import { Button, IconButton } from "../components/Button";
 import { Toggle } from "../components/Toggle";
 import { EmptyState, LoadError } from "../components/Empty";
 import { useToast } from "../components/Toast";
-import { ArrowRight, BookA, Check, Plus, RotateCcw, Sparkles, Trash2, Undo2, X } from "../components/Icon";
+import { ArrowLeftRight, ArrowRight, BookA, Check, Plus, RotateCcw, Sparkles, Trash2, Undo2 } from "../components/Icon";
 
 type TabId = "words" | "replacements" | "learned";
 type StatusChange = { id: number; status: EntryStatus };
@@ -37,7 +36,6 @@ export function usedLabel(hits: number): string {
   return `Used ${formatNumber(hits)} times`;
 }
 
-/** One learned row: a replacement plus the matching learned word it brought with it, or a word alone. */
 interface LearnedRow {
   main: DictionaryEntry;
   term: DictionaryEntry | null;
@@ -95,12 +93,12 @@ function AddWord({ existing, onAdd }: { existing: DictionaryEntry[]; onAdd: (wor
             aria-describedby="add-word-hint"
           />
         </label>
-        <Button type="submit" variant="primary" icon={<Plus size={17} strokeWidth={2.2} />} disabled={!w || dupe || busy}>
+        <Button type="submit" variant="primary" icon={<Plus size={16} strokeWidth={2.2} />} disabled={!w || dupe || busy}>
           Add word
         </Button>
       </div>
       <p id="add-word-hint" className={`addbar__hint ${dupe ? "is-warn" : ""}`}>
-        {dupe ? dupeText : "Wren listens out for these and spells them your way. The number is how often each one has helped."}
+        {dupe ? dupeText : "Give Wren the spellings of names and terms you use often."}
       </p>
     </form>
   );
@@ -156,7 +154,7 @@ function AddReplacement({ existing, onAdd }: { existing: DictionaryEntry[]; onAd
             aria-describedby="add-rep-hint"
           />
         </label>
-        <ArrowRight className="addbar__arrow" size={20} strokeWidth={2} aria-hidden="true" />
+        <ArrowRight className="addbar__arrow" size={18} strokeWidth={2} aria-hidden="true" />
         <label className="field field--grow">
           <span className="field__label">Write</span>
           <input
@@ -170,7 +168,7 @@ function AddReplacement({ existing, onAdd }: { existing: DictionaryEntry[]; onAd
             aria-describedby="add-rep-hint"
           />
         </label>
-        <Button type="submit" variant="primary" icon={<Plus size={17} strokeWidth={2.2} />} disabled={!f || !t || same || dupe || busy}>
+        <Button type="submit" variant="primary" icon={<Plus size={16} strokeWidth={2.2} />} disabled={!f || !t || same || dupe || busy}>
           Add
         </Button>
       </div>
@@ -183,7 +181,6 @@ function AddReplacement({ existing, onAdd }: { existing: DictionaryEntry[]; onAd
 
 // ---------------------------------------------------------------- rows
 
-/** Small inline "Delete?" confirm, same pattern as the transcript cards. */
 function DeleteButton({ onDelete, label }: { onDelete: () => void; label: string }) {
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
@@ -197,7 +194,7 @@ function DeleteButton({ onDelete, label }: { onDelete: () => void; label: string
     </button>
   ) : (
     <IconButton label={label} tone="danger" onClick={() => setConfirm(true)}>
-      <Trash2 size={17} strokeWidth={1.9} />
+      <Trash2 size={15} strokeWidth={1.9} />
     </IconButton>
   );
 }
@@ -206,14 +203,21 @@ function Swap({ from, to }: { from: string; to: string }) {
   return (
     <span className="swap">
       <span className="swap__from">{from}</span>
-      <ArrowRight className="swap__arrow" size={17} strokeWidth={2} aria-hidden="true" />
+      <ArrowRight className="swap__arrow" size={15} strokeWidth={2} aria-hidden="true" />
       <span className="swap__to">{to}</span>
     </span>
   );
 }
 
-function Row({ children, muted, className = "" }: { children: ReactNode; muted?: boolean; className?: string }) {
-  return <li className={`drow ${muted ? "is-muted" : ""} ${className}`}>{children}</li>;
+function Row({ icon, children, muted, className = "" }: { icon: ReactNode; children: ReactNode; muted?: boolean; className?: string }) {
+  return (
+    <li className={`drow ${muted ? "is-muted" : ""} ${className}`}>
+      <span className="tinted-icon" aria-hidden="true">
+        {icon}
+      </span>
+      {children}
+    </li>
+  );
 }
 
 // ---------------------------------------------------------------- page
@@ -238,7 +242,7 @@ export default function Dictionary() {
       setEntries(await dictionaryList());
       setFailed(false);
     } catch {
-      setFailed(true); // keep what is on screen; the error state shows only when there is nothing
+      setFailed(true);
     }
   }, []);
 
@@ -260,7 +264,6 @@ export default function Dictionary() {
   );
   const learned = useMemo(() => learnedRows(all), [all]);
 
-  // the latest statuses, for undo and rollback from inside async handlers
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
   const statusOf = (e: DictionaryEntry) => entriesRef.current?.find((x) => x.id === e.id)?.status ?? e.status;
@@ -270,12 +273,11 @@ export default function Dictionary() {
   const drop = (ids: number[]) => setEntries((es) => (es ?? []).filter((e) => !ids.includes(e.id)));
   const fail = (what: string) => toast.show(`Couldn't ${what}. Try again.`, { tone: "danger" });
 
-  // ---- words
   async function addWord(word: string) {
     try {
       const e = await dictionaryAddTerm(word);
       setEntries((es) => [...(es ?? []).filter((x) => x.id !== e.id), e]);
-      toast.show(`Added “${e.toText}”`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
+      toast.show(`Added “${e.toText}”`, { tone: "success", icon: <Check size={15} strokeWidth={2.5} /> });
     } catch {
       fail("add that word");
       throw new Error("add failed");
@@ -294,13 +296,12 @@ export default function Dictionary() {
     }
   }
 
-  // ---- replacements
   async function addReplacement(from: string, to: string) {
     try {
       const e = await dictionaryAddReplacement(from, to);
       setEntries((es) => [...(es ?? []).filter((x) => x.id !== e.id), e]);
-      toast.show(`Wren will write “${to}” for “${from}”`, { tone: "success", icon: <Check size={16} strokeWidth={2.6} /> });
-      void load(); // an active rule can replace other rules for the same heard words (Rust drop_superseded)
+      toast.show(`Wren will write “${to}” for “${from}”`, { tone: "success", icon: <Check size={15} strokeWidth={2.5} /> });
+      void load();
     } catch {
       fail("add that replacement");
       throw new Error("add failed");
@@ -312,8 +313,6 @@ export default function Dictionary() {
     if (!ok) fail(on ? "turn that on" : "turn that off");
   }
 
-  /** Set statuses at once on screen, then in the store; put them back if that fails. Reloads after
-   * anything goes active (Rust may drop other rules for the same words) and after a failure. */
   async function applyStatuses(changes: StatusChange[], previous: StatusChange[]): Promise<boolean> {
     changes.forEach((c) => patch(c.id, { status: c.status }));
     try {
@@ -339,8 +338,6 @@ export default function Dictionary() {
     }
   }
 
-  // ---- learned
-  /** The learned word goes with its replacement unless another active learned replacement still writes it. */
   function termGoesWith(row: LearnedRow): DictionaryEntry | null {
     if (!row.term) return null;
     const shared = all.some(
@@ -360,7 +357,6 @@ export default function Dictionary() {
     if (!ok) return fail("change that");
     const what = row.main.kind === "replacement" ? `“${row.main.fromText}” → “${row.main.toText}”` : `“${row.main.toText}”`;
     if (status === "disabled") {
-      // Undo puts back exactly what was there before (a candidate stays a candidate)
       toast.show(`Undone. Wren won't learn ${what} again.`, {
         action: {
           label: "Undo",
@@ -386,9 +382,9 @@ export default function Dictionary() {
   }
 
   const tabs = [
-    { id: "words" as const, label: "Words", count: words.length },
-    { id: "replacements" as const, label: "Replacements", count: replacements.length },
-    { id: "learned" as const, label: "Learned", count: learned.length },
+    { id: "words" as const, label: "Words", count: words.length, icon: <BookA size={14} strokeWidth={2} /> },
+    { id: "replacements" as const, label: "Replacements", count: replacements.length, icon: <ArrowLeftRight size={14} strokeWidth={2} /> },
+    { id: "learned" as const, label: "Learned", count: learned.length, icon: <Sparkles size={14} strokeWidth={2} /> },
   ];
 
   return (
@@ -396,122 +392,127 @@ export default function Dictionary() {
       <header className="page-head">
         <div>
           <h1 className="page__title">Dictionary</h1>
-          <p className="page__lede">Teach Wren the names and words it gets wrong. It learns some on its own, too.</p>
+          <p className="page__lede">Keep the names, phrases and spellings you use. Wren learns from your fixes too.</p>
         </div>
       </header>
 
-      <Tabs items={tabs} value={tab} onChange={setTab} label="Dictionary lists" idPrefix="dict" />
+      <div className="dictionary-content" data-tab={tab}>
+        <Tabs items={tabs} value={tab} onChange={setTab} label="Dictionary lists" idPrefix="dict" />
 
-      <div className="tabpanel" role="tabpanel" id={`dict-panel-${tab}`} aria-labelledby={`dict-tab-${tab}`} key={tab}>
-        {entries === null ? (
-          failed ? <LoadError compact what="your dictionary" onRetry={() => void load()} /> : null
-        ) : tab === "words" ? (
-          <>
-            <AddWord existing={all} onAdd={addWord} />
-            {words.length === 0 ? (
-              <EmptyState compact icon={<BookA size={22} strokeWidth={2} />} title="No words yet">
-                Add names, product names and jargon you say often. Wren will listen out for them and spell them your way.
-              </EmptyState>
-            ) : (
-              <ul className="wordgrid" aria-label="Words">
-                {words.map((w) => (
-                  <li key={w.id} className={`wordchip ${w.status === "disabled" ? "is-muted" : ""}`} title={usedLabel(w.hits)}>
-                    <span className="wordchip__text">{w.toText}</span>
-                    <span className="wordchip__hits num" aria-label={usedLabel(w.hits)}>
-                      {w.hits > 0 ? formatNumber(w.hits) : "new"}
-                    </span>
-                    <button type="button" className="wordchip__remove" aria-label={`Remove ${w.toText}`} title="Remove" onClick={() => void removeWord(w)}>
-                      <X size={14} strokeWidth={2.4} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </>
-        ) : tab === "replacements" ? (
-          <>
-            <AddReplacement existing={all} onAdd={addReplacement} />
-            {replacements.length === 0 ? (
-              <EmptyState compact icon={<ArrowRight size={22} strokeWidth={2} />} title="No replacements yet">
-                When Wren hears one thing and you want another, add it here. For example “pie test” → “pytest”.
-              </EmptyState>
-            ) : (
-              <ul className="dlist" aria-label="Replacements">
-                {replacements.map((r) => (
-                  <Row key={r.id} muted={r.status === "disabled"}>
-                    <div className="drow__main">
-                      <Swap from={r.fromText ?? ""} to={r.toText} />
-                    </div>
-                    <span className="drow__meta num">{r.status === "disabled" ? "Off" : usedLabel(r.hits)}</span>
-                    <div className="drow__actions">
-                      <Toggle checked={r.status !== "disabled"} onChange={(on) => void setOn(r, on)} label={`Use ${r.fromText} → ${r.toText}`} />
-                      <DeleteButton label={`Delete ${r.fromText} → ${r.toText}`} onDelete={() => void removeReplacement(r)} />
-                    </div>
-                  </Row>
-                ))}
-              </ul>
-            )}
-          </>
-        ) : (
-          <>
-            <p className="tab-intro">
-              Wren learns when you fix a word in History, and when you correct a word right after it pastes. Undo stops it
-              for good; Delete lets Wren learn it again.
-            </p>
-            {learned.length === 0 ? (
-              <EmptyState compact icon={<Sparkles size={22} strokeWidth={2} />} title="Nothing learned yet">
-                Fix a word in History, or correct one straight after Wren pastes it, and it will show up here.
-              </EmptyState>
-            ) : (
-              <ul className="dlist dlist--learned" aria-label="Learned">
-                {learned.map((row) => {
-                  const e = row.main;
-                  const off = e.status === "disabled";
-                  const waiting = e.status === "candidate";
-                  return (
-                    <Row key={e.id} muted={off}>
-                      <div className="drow__main">
-                        {e.kind === "replacement" ? <Swap from={e.fromText ?? ""} to={e.toText} /> : <span className="swap swap__to">{e.toText}</span>}
-                        <div className="drow__tags">
-                          <span className="chip chip--plain">{e.source === "learnedHistory" ? "Fixed in History" : "From your edit"}</span>
-                          {e.kind === "term" && <span className="chip chip--plain">Word</span>}
-                          {row.term && e.kind === "replacement" && <span className="chip chip--plain">Added to Words too</span>}
-                          {waiting && <span className="chip chip--quiet">Seen once · needs one more</span>}
-                          {off && <span className="chip chip--plain">Undone</span>}
-                        </div>
+        <div className="tabpanel" role="tabpanel" id={`dict-panel-${tab}`} aria-labelledby={`dict-tab-${tab}`} key={tab}>
+          {entries === null ? (
+            failed ? <LoadError compact what="your dictionary" onRetry={() => void load()} /> : null
+          ) : tab === "words" ? (
+            <>
+              <AddWord existing={all} onAdd={addWord} />
+              {words.length === 0 ? (
+                <EmptyState compact icon={<BookA size={20} strokeWidth={2} />} title="No words yet">
+                  Add names, product names and jargon you say often. Wren will listen out for them and spell them your way.
+                </EmptyState>
+              ) : (
+                <ul className="dict-list" aria-label="Words">
+                  {words.map((w) => (
+                    <li key={w.id} className={`wordchip ${w.status === "disabled" ? "is-muted" : ""}`} title={usedLabel(w.hits)}>
+                      <span className="tinted-icon" aria-hidden="true">
+                        <BookA size={15} strokeWidth={2} />
+                      </span>
+                      <div className="wordchip__body">
+                        <span className="wordchip__text">{w.toText}</span>
+                        <span className="wordchip__meta num">{w.hits > 0 ? usedLabel(w.hits) : "New"}</span>
                       </div>
-                      <span className="drow__meta num">{waiting || off ? "" : usedLabel(e.hits)}</span>
+                      <IconButton label={`Remove ${w.toText}`} tone="danger" onClick={() => void removeWord(w)}>
+                        <Trash2 size={15} strokeWidth={1.9} />
+                      </IconButton>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : tab === "replacements" ? (
+            <>
+              <AddReplacement existing={all} onAdd={addReplacement} />
+              {replacements.length === 0 ? (
+                <EmptyState compact icon={<ArrowLeftRight size={20} strokeWidth={2} />} title="No replacements yet">
+                  When Wren hears one thing and you want another, add it here. For example “pie test” → “pytest”.
+                </EmptyState>
+              ) : (
+                <ul className="dlist" aria-label="Replacements">
+                  {replacements.map((r) => (
+                    <Row key={r.id} icon={<ArrowLeftRight size={15} strokeWidth={2} />} muted={r.status === "disabled"}>
+                      <div className="drow__main">
+                        <Swap from={r.fromText ?? ""} to={r.toText} />
+                      </div>
+                      <span className="drow__meta num">{r.status === "disabled" ? "Off" : usedLabel(r.hits)}</span>
                       <div className="drow__actions">
-                        {off ? (
-                          <Button size="sm" variant="ghost" icon={<RotateCcw size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "active")}>
-                            Turn back on
-                          </Button>
-                        ) : waiting ? (
-                          <>
-                            <Button size="sm" variant="secondary" icon={<Check size={15} strokeWidth={2.4} />} onClick={() => void setLearned(row, "active")}>
-                              Keep
-                            </Button>
-                            <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
-                              Undo
-                            </Button>
-                          </>
-                        ) : (
-                          <Button size="sm" variant="ghost" icon={<Undo2 size={15} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
-                            Undo
-                          </Button>
-                        )}
-                        <DeleteButton
-                          label={e.kind === "replacement" ? `Delete ${e.fromText} → ${e.toText}` : `Delete ${e.toText}`}
-                          onDelete={() => void removeLearned(row)}
-                        />
+                        <Toggle checked={r.status !== "disabled"} onChange={(on) => void setOn(r, on)} label={`Use ${r.fromText} → ${r.toText}`} />
+                        <DeleteButton label={`Delete ${r.fromText} → ${r.toText}`} onDelete={() => void removeReplacement(r)} />
                       </div>
                     </Row>
-                  );
-                })}
-              </ul>
-            )}
-          </>
-        )}
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="tab-intro">
+                Wren learns when you fix a word in History, and when you correct a word right after it pastes. Undo stops it
+                for good; Delete lets Wren learn it again.
+              </p>
+              {learned.length === 0 ? (
+                <EmptyState compact icon={<Sparkles size={20} strokeWidth={2} />} title="Nothing learned yet">
+                  Fix a word in History, or correct one straight after Wren pastes it, and it will show up here.
+                </EmptyState>
+              ) : (
+                <ul className="dlist dlist--learned" aria-label="Learned">
+                  {learned.map((row) => {
+                    const e = row.main;
+                    const off = e.status === "disabled";
+                    const waiting = e.status === "candidate";
+                    return (
+                      <Row key={e.id} icon={<Sparkles size={15} strokeWidth={2} />} muted={off}>
+                        <div className="drow__main">
+                          {e.kind === "replacement" ? <Swap from={e.fromText ?? ""} to={e.toText} /> : <span className="swap swap__to">{e.toText}</span>}
+                          <div className="drow__tags">
+                            <span className="chip chip--plain">{e.source === "learnedHistory" ? "Fixed in History" : "From your edit"}</span>
+                            {e.kind === "term" && <span className="chip chip--plain">Word</span>}
+                            {row.term && e.kind === "replacement" && <span className="chip chip--plain">Added to Words too</span>}
+                            {waiting && <span className="chip chip--quiet">Seen once · needs one more</span>}
+                            {off && <span className="chip chip--plain">Undone</span>}
+                          </div>
+                        </div>
+                        <span className="drow__meta num">{waiting || off ? "" : usedLabel(e.hits)}</span>
+                        <div className="drow__actions">
+                          {off ? (
+                            <Button size="sm" variant="ghost" icon={<RotateCcw size={14} strokeWidth={2.2} />} onClick={() => void setLearned(row, "active")}>
+                              Turn back on
+                            </Button>
+                          ) : waiting ? (
+                            <>
+                              <Button size="sm" variant="secondary" icon={<Check size={14} strokeWidth={2.4} />} onClick={() => void setLearned(row, "active")}>
+                                Keep
+                              </Button>
+                              <Button size="sm" variant="ghost" icon={<Undo2 size={14} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
+                                Undo
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="ghost" icon={<Undo2 size={14} strokeWidth={2.2} />} onClick={() => void setLearned(row, "disabled")}>
+                              Undo
+                            </Button>
+                          )}
+                          <DeleteButton
+                            label={e.kind === "replacement" ? `Delete ${e.fromText} → ${e.toText}` : `Delete ${e.toText}`}
+                            onDelete={() => void removeLearned(row)}
+                          />
+                        </div>
+                      </Row>
+                    );
+                  })}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
