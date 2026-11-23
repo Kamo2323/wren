@@ -37,6 +37,24 @@ that runs the speech model. The design and every rule it follows are in
 
 ## Installing and updating
 
+### Updating from inside Wren
+
+Wren checks GitHub Releases silently on start-up (after a short delay) and every hour:
+
+- When a new release is available, a compact **Update · vX.Y.Z** button appears quietly at the bottom of
+  the sidebar (and in **Settings → Updates** and the tray menu).
+- Click it once to download the signed installer, verify its Ed25519 signature, install silently over
+  `%LOCALAPPDATA%\Programs\Wren\`, and relaunch Wren. Your history, dictionary, settings and speech
+  models stay untouched.
+- Pushing changes to `main` on GitHub triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
+  which builds the Windows NSIS installer, signs it with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret,
+  and publishes the GitHub Release (`latest.json` + installer + `.sig`).
+- While the GitHub repository is private, Wren automatically falls back to the GitHub API using your
+  local `gh auth token` (or `WREN_GITHUB_TOKEN` / `GITHUB_TOKEN`). Once the repository is public, it
+  downloads directly from GitHub Releases with no token needed.
+
+### Building and installing locally
+
 From a terminal in the repo:
 
 ```powershell

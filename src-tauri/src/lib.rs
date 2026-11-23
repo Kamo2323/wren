@@ -17,6 +17,7 @@ pub mod session;
 pub mod settings;
 pub mod store;
 pub mod tray;
+pub mod updater;
 pub mod watcher;
 
 use parking_lot::RwLock;
@@ -153,11 +154,18 @@ pub fn run() {
             // The database is opened here, after the plugins' setup, so a second launch (which
             // the single-instance plugin ends before this point) never opens, migrates or sweeps it.
             let store = open_store(&paths);
+            let updates_dir = paths.updates_dir();
+            let logs_dir = paths.logs_dir();
             app.manage(AppState {
                 paths,
                 settings: RwLock::new(settings),
                 store,
             });
+            app.manage(updater::UpdaterService::new(
+                app.package_info().version.to_string(),
+                updates_dir,
+                logs_dir,
+            ));
             // Neither is fatal (M-7): without the tray or the popup Wren still dictates and pastes
             // (the popup helpers no-op without a window). The popup check needs the popup.
             if let Err(err) = tray::build(app.handle()) {
@@ -174,6 +182,7 @@ pub fn run() {
             if !popup_check {
                 let services = session::app::start_services(app.handle())?;
                 app.manage(services);
+                updater::UpdaterService::start_background(app.handle().clone());
             }
             // Retention sweep now (off the main thread) and then every SWEEP_INTERVAL_MS.
             let handle = app.handle().clone();
@@ -260,6 +269,9 @@ pub fn run() {
             commands::watcher_status,
             commands::ai_cleanup_status,
             commands::ai_cleanup_pull_model,
+            commands::update_status,
+            commands::update_check,
+            commands::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wren")

@@ -990,6 +990,7 @@
   align-items: center;
   gap: 9px;
   margin: 0 0 10px 4px;
+  scroll-margin-top: 24px;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: -0.005em;
@@ -1265,6 +1266,57 @@
 .dot--bad {
   background: var(--danger);
 }
+.dot--accent {
+  background: var(--primary);
+}
+
+.update-notes {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.update-notes__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.update-notes__body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+.update-progress {
+  margin-top: 14px;
+}
+.update-progress__track {
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--surface-sunk);
+  overflow: hidden;
+}
+.update-progress__fill {
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--primary);
+  transition: width 160ms var(--ease-out);
+}
+.update-progress__fill.is-indeterminate {
+  width: 35%;
+  animation: update-slide 1.2s ease-in-out infinite;
+}
+.update-progress__meta {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
 
 .btn--secondary.btn--danger-outline {
   color: var(--danger-text);
@@ -1306,6 +1358,14 @@
   border: 2px solid rgba(255, 255, 255, 0.35);
   border-top-color: #fff;
   animation: spin 800ms linear infinite;
+}
+.spinner--indigo {
+  border-color: rgba(68, 67, 170, 0.22);
+  border-top-color: var(--primary);
+}
+.spinner--dark {
+  border-color: rgba(36, 35, 43, 0.18);
+  border-top-color: var(--text-2);
 }
 @keyframes spin {
   to {
@@ -1359,5 +1419,17 @@
     animation: none;
     border-color: #fff;
     opacity: 0.8;
+  }
+  .spinner--indigo {
+    border-color: var(--primary);
+  }
+  .spinner--dark {
+    border-color: var(--text-2);
+  }
+  .update-pill__fill.is-indeterminate,
+  .update-progress__fill.is-indeterminate {
+    animation: none;
+    width: 100%;
+    opacity: 0.45;
   }
 }

@@ -81,6 +81,9 @@ impl Paths {
     pub fn logs_dir(&self) -> PathBuf {
         self.local.join("logs")
     }
+    pub fn updates_dir(&self) -> PathBuf {
+        self.local.join("updates")
+    }
 
     /// Create every directory Wren writes to.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {

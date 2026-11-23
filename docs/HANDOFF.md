@@ -63,6 +63,67 @@ for now — just keep them noted.** Start with Windows is on in Wren; he took Wi
 elease.ps1` (runs every step via WMI,
   outside the Claude app's MSIX sandbox). Don't run `cargo fmt` on the crate (reformats ~40 files).
 
+## Status (2026-11-23) — In-app GitHub updater added
+
+### Completed
+- Added a full in-app updater backed by GitHub Releases (`src-tauri/src/updater.rs`, `src-tauri/src/commands.rs`,
+  `src-tauri/src/tray.rs`, `src-tauri/src/constants.rs`, `src-tauri/src/paths.rs`, `src-tauri/src/lib.rs`).
+- **Private repo today, public repo later with zero changes:** checks the unauthenticated public
+  `releases/latest/download/latest.json` endpoint first (zero API rate limit once open-sourced); on 404 it
+  automatically falls back to the GitHub REST API using `WREN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`
+  (run silently with `CREATE_NO_WINDOW`) and strips the `Authorization` header on cross-host blob redirects.
+- **Cryptographic verification + clean silent install:** every downloaded NSIS installer is verified with
+  Ed25519 minisign (`minisign-verify`, matching `tauri signer sign --app-version <ver>` version binding) against
+  `UPDATE_PUBLIC_KEY` before anything executes. Installing writes a small detached PowerShell helper under
+  `%LOCALAPPDATA%\Wren\updates\apply-update.ps1` that waits for `wren.exe` to shut down cleanly (unhooking the
+  keyboard and stopping the Python sidecar), runs `/S /UPDATE /R` (preserving `%LOCALAPPDATA%\Programs\Wren` and
+  all user data), logs to `%LOCALAPPDATA%\Wren\logs\updater.log`, and relaunches Wren automatically.
+- **Non-intrusive UI (similar to T3 Code):**
+  - Sidebar (`src/components/Sidebar.tsx`, `src/styles/components.css`): completely hidden when up to date;
+    shows a compact soft-indigo `Update · vX.Y.Z` button when a newer GitHub release is available. One click
+    downloads with in-place progress fill (`Updating · 42%`), verifies, and restarts into the new version.
+  - Settings (`src/pages/Settings.tsx`, `src/styles/pages.css`): dedicated `Updates` section with current
+    version, manual `Check for updates`, release notes, progress bar, and error/retry controls. Also added
+    `scroll-margin-top: 24px` to `.setgroup__title` so focus-scrolling into Settings groups never clips.
+  - System tray (`src-tauri/src/tray.rs`): `Check for updates` item updates live to `Update available (vX.Y.Z)` /
+    progress and jumps straight to Settings → Updates.
+- **GitHub Actions CI release pipeline (`.github/workflows/release.yml`, `scripts/ci-release-meta.mjs`):**
+  - Triggers on pushes to `main` (ignoring `docs/**` and `README.md`) and `workflow_dispatch`.
+  - Auto-stamps `0.1.<run_number>` (or explicit manual version), builds the NSIS installer with
+    `CARGO_TARGET_DIR` overriding `.cargo/config.toml`, signs with `npx tauri signer sign --app-version`, writes
+    `latest.json`, and publishes the GitHub Release via `gh release create`.
+- Generated the Ed25519 minisign keypair, uploaded `TAURI_SIGNING_PRIVATE_KEY` to GitHub Actions secrets on
+  `Kamo2323/wren`, and backed up the keypair outside the repo at `%USERPROFILE%\.wren\updater.key` (`.pub`).
+- Fast-forwarded local `main` to `origin/main` (`b4787a6`) before committing.
+
+### Verification (raw counts)
+- `npm run build`: succeeded cleanly (2.35s).
+- `node scripts/unit-tests.mjs`: 18/18 passed (`all unit tests passed`).
+- `node scripts/nsis-template.mjs --check`: `NSIS template up to date`.
+- `node scripts/check-pages.mjs`: 47/47 passed (`all checks passed`, including 5 new updater UI checks).
+- `cargo test --offline --manifest-path src-tauri\Cargo.toml --lib`: `255 passed; 0 failed; 11 ignored`
+  (including 7 new updater tests covering semver, minisign + version binding, HTTPS validation, apply script,
+  public download, private API fallback with auth-stripped redirect, and no-releases-yet handling).
+
+### Not done / next steps
+- Not yet pushed to `origin/main` and not yet rebuilt/installed locally via `scripts/release.ps1` (waiting for
+  Maximilian to review or ask to push + reinstall so his running tray copy picks up the updater).
+- Once pushed to `main`, `.github/workflows/release.yml` will build and publish `v0.1.<run_number>` on GitHub;
+  after reinstalling locally once (so the installed `wren.exe` has the updater code), future pushes to `main`
+  will show the sidebar update button automatically.
+
+### Decisions & lessons learned
+- Built a custom Rust updater module (`reqwest` + `minisign-verify` + `semver`) instead of `tauri-plugin-updater`
+  because `tauri-plugin-updater` cannot download assets from private GitHub repos (where `github.com/.../download`
+  returns 404 and the GitHub REST API asset endpoint requires `Accept: application/octet-stream` + stripping
+  `Authorization` on redirect). Using the exact Tauri `latest.json` + minisign format gives full compatibility
+  plus seamless private→public transition.
+- `.cargo/config.toml` is tracked and pins `target-dir = "C:/Wren/.cargo-target"`, so `.github/workflows/release.yml`
+  sets `CARGO_TARGET_DIR: ${{ github.workspace }}\src-tauri\target` to keep builds inside the runner workspace and
+  aligned with `Swatinem/rust-cache`.
+- Do NOT put `createUpdaterArtifacts: true` permanently in `tauri.conf.json`, or local `scripts/release.ps1`
+  would fail without the private signing key; CI runs `npx tauri signer sign --app-version` explicitly instead.
+
 ## Things to tell Maximilian (all in docs/MORNING.md)
 
 - Glaido closed (not uninstalled); Willow wasn't running; both should come out of Windows startup before he turns

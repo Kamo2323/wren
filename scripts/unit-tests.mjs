@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { niceTicks, dayWpm } from "../src/lib/chart.ts";
 import { replaceWord, wordCount, markMatches } from "../src/lib/text.ts";
 import { copyTextWith } from "../src/lib/copy.ts";
+import { formatBytes } from "../src/lib/format.ts";
 import { dismissMsFor } from "../src/popup/dismiss.ts";
+import { buildManifest, computeVersion, stampCargoVersion } from "./ci-release-meta.mjs";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,6 +144,37 @@ test("dismissMsFor: noSound while recording stays; after a recording it dismisse
   assert.equal(dismissMsFor({ kind: "noSound", recording: false }, d), 4000);
   assert.equal(dismissMsFor({ kind: "pasted" }, d), 1500);
   assert.equal(dismissMsFor({ kind: "handsfree", startedAtMs: 1, cpu: false }, d), undefined);
+});
+
+test("formatBytes formats B, KB, and MB cleanly", () => {
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(512 * 1024), "512 KB");
+  assert.equal(formatBytes(10 * 1024 * 1024), "10.0 MB");
+});
+
+test("ci-release-meta computes versions, stamps Cargo.toml, and builds latest.json", () => {
+  assert.equal(computeVersion("0.1.0", { runNumber: "7", explicitVersion: "" }), "0.1.7");
+  assert.equal(computeVersion("0.1.0", { runNumber: "7", explicitVersion: "v0.2.0" }), "0.2.0");
+  assert.throws(() => computeVersion("0.1.0", { runNumber: "0", explicitVersion: "" }));
+  const cargo = '[package]\nname = "wren"\nversion = "0.1.0"\n\n[dependencies]\nserde = { version = "1" }\n';
+  const stamped = stampCargoVersion(cargo, "0.1.7");
+  assert.ok(stamped.includes('version = "0.1.7"'));
+  assert.ok(stamped.includes('serde = { version = "1" }'), "dependency versions stay untouched");
+  const manifest = buildManifest({
+    version: "v0.1.7",
+    repo: "Kamo2323/wren",
+    installer: "Wren_0.1.7_x64-setup.exe",
+    signature: "  SIGDATA  \n",
+    notes: "  - Fix bug  ",
+    pubDate: "2026-11-23T03:00:00Z",
+  });
+  assert.equal(manifest.version, "0.1.7");
+  assert.equal(manifest.notes, "- Fix bug");
+  assert.equal(manifest.platforms["windows-x86_64"].signature, "SIGDATA");
+  assert.equal(
+    manifest.platforms["windows-x86_64"].url,
+    "https://github.com/Kamo2323/wren/releases/download/v0.1.7/Wren_0.1.7_x64-setup.exe",
+  );
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

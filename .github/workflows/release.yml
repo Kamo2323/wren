@@ -1,0 +1,155 @@
+name: Build and release Wren
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Optional explicit version (e.g. 0.2.0). Leave blank for automatic 0.1.<run_number>.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build Windows installer & publish release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}\src-tauri\target
+    steps:
+      - name: Verify signing key secret is configured
+        shell: pwsh
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if ($env:HAS_KEY -ne 'true') {
+            Write-Error 'Missing TAURI_SIGNING_PRIVATE_KEY repository secret. Add it under Settings -> Secrets and variables -> Actions.'
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check NSIS template and unit tests
+        shell: pwsh
+        run: |
+          node scripts/nsis-template.mjs --check
+          node scripts/unit-tests.mjs
+
+      - name: Stamp release version
+        id: meta
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          $ver = (node scripts/ci-release-meta.mjs bump --run-number $env:RUN_NUMBER --version "$env:INPUT_VERSION").Trim()
+          if (-not $ver) { throw 'Failed to compute version' }
+          $shortSha = (git rev-parse --short HEAD).Trim()
+          $buildId = "ci-$ver-$shortSha"
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=v$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version: $ver (tag v$ver, build $buildId)"
+
+      - name: Build Windows NSIS installer
+        shell: pwsh
+        env:
+          WREN_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+        run: |
+          npx tauri build --bundles nsis
+
+      - name: Sign installer and write latest.json
+        id: sign
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ver = $env:VERSION
+          $installerName = "Wren_${ver}_x64-setup.exe"
+          $installerPath = Join-Path $env:CARGO_TARGET_DIR "release\bundle\nsis\$installerName"
+          if (-not (Test-Path -LiteralPath $installerPath)) {
+            throw "Expected installer not found at $installerPath"
+          }
+
+          npx tauri signer sign --app-version $ver $installerPath
+          $sigPath = "$installerPath.sig"
+          if (-not (Test-Path -LiteralPath $sigPath)) {
+            throw "Expected signature not found at $sigPath"
+          }
+
+          # Collect commit summaries since the last release tag for clean in-app notes.
+          $prevTag = (git tag --list 'v*' --sort=-v:refname | Select-Object -First 1)
+          $range = if ($prevTag) { "$prevTag..HEAD" } else { "-n 5" }
+          $commits = if ($prevTag) {
+            git log --no-merges --pretty=format:"- %s" $range
+          } else {
+            git log --no-merges -n 5 --pretty=format:"- %s"
+          }
+          $notesText = if ($commits) { ($commits -join "`n").Trim() } else { "Maintenance update." }
+          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $manifestPath = Join-Path $env:RUNNER_TEMP 'latest.json'
+          Set-Content -Path $notesPath -Value $notesText -Encoding utf8
+
+          node scripts/ci-release-meta.mjs manifest `
+            --version $ver `
+            --repo $env:REPO `
+            --installer $installerName `
+            --sig-file $sigPath `
+            --notes-file $notesPath `
+            --out $manifestPath
+
+          "installer=$installerPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "sig=$sigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "notes=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "manifest=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          INSTALLER: ${{ steps.sign.outputs.installer }}
+          SIG: ${{ steps.sign.outputs.sig }}
+          NOTES: ${{ steps.sign.outputs.notes }}
+          MANIFEST: ${{ steps.sign.outputs.manifest }}
+        run: |
+          if (gh release view $env:TAG 2>$null) {
+            gh release upload $env:TAG $env:INSTALLER $env:SIG $env:MANIFEST --clobber
+            gh release edit $env:TAG --title "Wren v$env:VERSION" --notes-file $env:NOTES --latest
+          } else {
+            gh release create $env:TAG $env:INSTALLER $env:SIG $env:MANIFEST `
+              --title "Wren v$env:VERSION" `
+              --notes-file $env:NOTES `
+              --latest
+          }

@@ -127,6 +127,102 @@
   gap: 6px;
 }
 
+/* Non-intrusive update pill in the sidebar footer (shown only when an update is ready or running). */
+.update-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  font-size: 13.5px;
+  font-weight: 580;
+  text-align: left;
+  overflow: hidden;
+  transition:
+    background-color 150ms var(--ease-hover),
+    border-color 150ms var(--ease-hover),
+    box-shadow 150ms var(--ease-hover),
+    transform 120ms var(--ease-hover);
+}
+.update-pill--available {
+  background: var(--primary-subtle);
+  color: var(--primary);
+  border: 1px solid var(--primary-border);
+}
+.update-pill--available:hover {
+  background: #e5e1fc;
+  box-shadow: var(--shadow-raised);
+}
+.update-pill--available:active {
+  transform: scale(0.98);
+}
+.update-pill--busy {
+  background: var(--primary-subtle);
+  color: var(--primary);
+  border: 1px solid var(--primary-border);
+  cursor: default;
+}
+.update-pill--error {
+  background: var(--warning-subtle);
+  color: #8f5607;
+  border: 1px solid #f2d4a7;
+}
+.update-pill--error:hover {
+  background: #fbe6c8;
+}
+.update-pill:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.update-pill__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--update-pct, 0%);
+  background: rgba(68, 67, 170, 0.13);
+  transition: width 160ms var(--ease-out);
+  pointer-events: none;
+}
+.update-pill__fill.is-indeterminate {
+  width: 45%;
+  animation: update-slide 1.2s ease-in-out infinite;
+}
+.update-pill__icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex: none;
+}
+.update-pill__text {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.update-pill__dot {
+  position: relative;
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 3px rgba(68, 67, 170, 0.16);
+  flex: none;
+}
+@keyframes update-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 .engine {
   display: flex;
   align-items: center;

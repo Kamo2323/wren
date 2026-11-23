@@ -206,6 +206,25 @@ check(
 
 check("no page errors or console errors", errors.length === 0, errors.join("; "));
 
+// App updater: hidden when idle, subtle sidebar button when available, one-click starts update, Settings check works
+await page.goto(`${base}/index.html#home`);
+await page.waitForSelector(".tcard");
+check("sidebar update button stays hidden when up to date", (await page.locator(".update-pill").count()) === 0);
+await page.goto(`${base}/index.html?update=available#home`);
+await page.waitForSelector(".update-pill--available");
+check("sidebar shows non-intrusive update button with version", (await page.locator(".update-pill").textContent())?.includes("Update · v0.1.2"));
+await page.locator(".update-pill--available").click();
+await page.waitForFunction(() => document.querySelector(".update-pill")?.textContent?.includes("Restarting"));
+check("clicking sidebar update button downloads and transitions to Restarting", (await page.locator(".update-pill").textContent())?.includes("Restarting"));
+await page.goto(`${base}/index.html#settings`);
+await page.waitForSelector("#set-updates");
+await page.getByRole("button", { name: "Check for updates" }).click();
+await page.waitForFunction(() => document.body.textContent?.includes("You're on the latest version."));
+check("Settings Check for updates reports Up to date", (await page.locator("section", { hasText: "Updates" }).textContent())?.includes("Up to date"));
+await page.goto(`${base}/index.html?update=retry#home`);
+await page.waitForSelector(".update-pill--error");
+check("failed download offers Retry update pill in sidebar", (await page.locator(".update-pill--error").textContent())?.includes("Retry update"));
+
 // Load failures: a short "Couldn't load · Try again", never a misleading empty page
 for (const [hash, what] of [
   ["history", "your history"],

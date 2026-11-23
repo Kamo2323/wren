@@ -1,7 +1,7 @@
 // Settings (spec §11): microphone + live level test, dictation basics, correction watcher, AI clean-up,
 // engine, history, other dictation apps, version. Every switch saves at once through `save_settings`.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AiCleanupStatus, EngineStatus, Settings as SettingsData, WatcherStatus } from "../lib/types";
+import type { AiCleanupStatus, EngineStatus, Settings as SettingsData, UpdateStatus, WatcherStatus } from "../lib/types";
 import {
   aiCleanupPullModel,
   aiCleanupStatus,
@@ -14,7 +14,7 @@ import {
   setAudioDevice,
   watcherStatus,
 } from "../lib/api";
-import { formatNumber, joinNames, retentionLabel } from "../lib/format";
+import { formatBytes, formatNumber, joinNames, retentionLabel, whenLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { useMicLevel } from "../lib/useMicLevel";
 import { LoadError } from "../components/Empty";
@@ -473,6 +473,133 @@ function HistorySection() {
   );
 }
 
+// ---------------------------------------------------------------- updates
+
+function UpdatesSection({
+  version,
+  update,
+  onCheck,
+  onInstall,
+}: {
+  version: string;
+  update: UpdateStatus;
+  onCheck: () => Promise<void>;
+  onInstall: () => Promise<void>;
+}) {
+  const titleAndDot = (): { title: string; dot?: string } => {
+    switch (update.state) {
+      case "available":
+        return { title: `Version ${update.version} is available`, dot: "accent" };
+      case "downloading":
+        return { title: `Downloading v${update.version}…`, dot: "busy" };
+      case "installing":
+        return { title: `Installing v${update.version}…`, dot: "busy" };
+      case "checking":
+        return { title: "Checking for updates…", dot: "busy" };
+      case "upToDate":
+        return { title: "Up to date", dot: "ok" };
+      case "error":
+        return { title: update.version ? "Update didn't finish" : "Couldn't check for updates", dot: "warn" };
+      default:
+        return { title: version ? `Wren v${version}` : "Wren updates" };
+    }
+  };
+
+  const { title, dot } = titleAndDot();
+  const pct = update.state === "downloading" ? (update.percent ?? null) : null;
+
+  const control = (() => {
+    if (update.state === "available") {
+      return (
+        <Button size="sm" variant="primary" icon={<Download size={15} strokeWidth={2.2} />} onClick={() => void onInstall()}>
+          Update to v{update.version}
+        </Button>
+      );
+    }
+    if (update.state === "downloading") {
+      return (
+        <Button size="sm" variant="primary" icon={<span className="spinner" aria-hidden="true" />} disabled>
+          {pct != null ? `${pct}%` : "Downloading…"}
+        </Button>
+      );
+    }
+    if (update.state === "installing") {
+      return (
+        <Button size="sm" variant="primary" icon={<span className="spinner" aria-hidden="true" />} disabled>
+          Restarting…
+        </Button>
+      );
+    }
+    if (update.state === "checking") {
+      return (
+        <Button size="sm" variant="secondary" icon={<span className="spinner spinner--dark" aria-hidden="true" />} disabled>
+          Checking…
+        </Button>
+      );
+    }
+    if (update.state === "error" && update.version) {
+      return (
+        <div className="setrow__foot-actions">
+          <Button size="sm" variant="ghost" icon={<RotateCw size={15} strokeWidth={2.2} />} onClick={() => void onCheck()}>
+            Check again
+          </Button>
+          <Button size="sm" variant="primary" icon={<Download size={15} strokeWidth={2.2} />} onClick={() => void onInstall()}>
+            Retry update
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <Button size="sm" variant="secondary" icon={<RotateCw size={15} strokeWidth={2.2} />} onClick={() => void onCheck()}>
+        Check for updates
+      </Button>
+    );
+  })();
+
+  return (
+    <Group id="updates" title="Updates" icon={<Download size={17} strokeWidth={2} />}>
+      <SetRow
+        title={title}
+        dot={dot}
+        desc={`You're running ${version ? `v${version}` : "this build"}. Updates come from GitHub and keep your history, dictionary and settings.`}
+        control={control}
+      >
+        {update.state === "available" && update.notes && (
+          <div className="update-notes" aria-label="What changed in this update">
+            <div className="update-notes__label">What's new</div>
+            <pre className="update-notes__body">{update.notes}</pre>
+          </div>
+        )}
+        {update.state === "downloading" && (
+          <div className="update-progress">
+            <div className="update-progress__track" role="progressbar" aria-label="Download progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
+              <div className={`update-progress__fill ${pct == null ? "is-indeterminate" : ""}`} style={pct != null ? { width: `${pct}%` } : undefined} />
+            </div>
+            <div className="update-progress__meta num">
+              {update.totalBytes ? `${formatBytes(update.downloadedBytes)} of ${formatBytes(update.totalBytes)}` : formatBytes(update.downloadedBytes)}
+              {" · Wren will restart once the download is verified."}
+            </div>
+          </div>
+        )}
+        {update.state === "installing" && (
+          <p className="setrow__note">Wren is closing to install the update and will open again in a moment.</p>
+        )}
+        {update.state === "upToDate" && (
+          <div className="setrow__foot">
+            <Status tone="ok">You're on the latest version.</Status>
+            <span className="setrow__aside">Checked {whenLabel(update.checkedAt).toLowerCase()}</span>
+          </div>
+        )}
+        {update.state === "error" && (
+          <div className="setrow__foot">
+            <Status tone="warn">{update.message}</Status>
+          </div>
+        )}
+      </SetRow>
+    </Group>
+  );
+}
+
 // ---------------------------------------------------------------- page
 
 export default function Settings({
@@ -480,12 +607,18 @@ export default function Settings({
   others,
   onSaved,
   focus,
+  update: appUpdate,
+  onCheckUpdate,
+  onInstallUpdate,
 }: {
   engine: EngineStatus;
   others: string[];
   onSaved: (s: SettingsData) => void;
   /** A group to scroll to once the settings are on screen (the sidebar's engine status opens "engine"). */
-  focus?: { group: "engine"; at: number } | null;
+  focus?: { group: "engine" | "updates"; at: number } | null;
+  update: UpdateStatus;
+  onCheckUpdate: () => Promise<void>;
+  onInstallUpdate: () => Promise<void>;
 }) {
   const constants = useConstants();
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -599,6 +732,8 @@ export default function Settings({
               )}
             </SetRow>
           </Group>
+
+          <UpdatesSection version={version} update={appUpdate} onCheck={onCheckUpdate} onInstall={onInstallUpdate} />
 
           <footer className="about">
             <WrenTile size={40} />

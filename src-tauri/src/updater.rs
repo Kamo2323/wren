@@ -1,0 +1,1314 @@
+//! In-app updater backed by GitHub Releases.
+//!
+//! Checks `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` first (no auth,
+//! no API rate limit — works automatically once the repo is public). If GitHub returns 404 because
+//! the repository is private, it falls back to the GitHub REST API using a token from
+//! `WREN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (run silently with no console window).
+//!
+//! Every downloaded installer is verified against [`UPDATE_PUBLIC_KEY`] (Ed25519 minisign, with the
+//! release version bound inside the signed trusted comment) before anything is executed. Installing
+//! spawns a small detached PowerShell helper that waits for this `wren.exe` process to shut down
+//! cleanly (unhooking the keyboard and stopping the Python sidecar), runs the NSIS installer with
+//! `/S /UPDATE /R`, and cleans up afterwards.
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use base64::Engine as _;
+use futures_util::StreamExt;
+use parking_lot::{Mutex, RwLock};
+use reqwest::header::{ACCEPT, AUTHORIZATION, LOCATION, USER_AGENT};
+use semver::Version;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::constants::{
+    UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_TIMEOUT_MS, UPDATE_DOWNLOAD_TIMEOUT_MS, UPDATE_EXIT_DELAY_MS,
+    UPDATE_FIRST_CHECK_DELAY_MS, UPDATE_GH_TOKEN_TIMEOUT_MS, UPDATE_PROGRESS_EMIT_MS, UPDATE_PUBLIC_KEY,
+    UPDATE_REPO_NAME, UPDATE_REPO_OWNER, UPDATE_WAIT_PARENT_SECS,
+};
+
+/// Payload: [`UpdateStatus`], emitted whenever update state or download progress changes.
+pub const EVENT_UPDATE_STATUS: &str = "app://update-status";
+/// No payload: user clicked the tray's update item; front end navigates to Settings → Updates.
+pub const EVENT_OPEN_UPDATES: &str = "tray://open-updates";
+
+const PLATFORM_KEY: &str = "windows-x86_64";
+const PLATFORM_KEY_NSIS: &str = "windows-x86_64-nsis";
+
+/// Front-end update state (contract with `src/lib/types.ts` `UpdateStatus`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum UpdateStatus {
+    Idle,
+    Checking,
+    #[serde(rename_all = "camelCase")]
+    UpToDate {
+        checked_at: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Available {
+        version: String,
+        notes: Option<String>,
+        pub_date: Option<String>,
+        release_url: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Downloading {
+        version: String,
+        downloaded_bytes: u64,
+        total_bytes: Option<u64>,
+        percent: Option<u8>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Installing {
+        version: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Error {
+        message: String,
+        version: Option<String>,
+    },
+}
+
+/// Standard Tauri updater manifest (`latest.json`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateManifest {
+    pub version: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub pub_date: Option<String>,
+    #[serde(default)]
+    pub platforms: HashMap<String, PlatformArtifact>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformArtifact {
+    pub url: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubRelease {
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    url: String,
+}
+
+#[derive(Debug, Clone)]
+enum DownloadSource {
+    /// Public URL (no GitHub auth header needed).
+    DirectUrl(String),
+    /// Private-repo GitHub REST API asset URL (`Accept: application/octet-stream` + Bearer token).
+    GitHubAssetApi { asset_url: String },
+}
+
+#[derive(Debug, Clone)]
+struct PendingUpdate {
+    version: String,
+    notes: Option<String>,
+    pub_date: Option<String>,
+    release_url: Option<String>,
+    signature_b64: String,
+    source: DownloadSource,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdaterConfig {
+    pub public_latest_url: String,
+    pub api_latest_release_url: String,
+    pub public_key_b64: String,
+    pub current_version: String,
+    pub allow_insecure_localhost: bool,
+}
+
+impl UpdaterConfig {
+    pub fn production(current_version: String) -> Self {
+        Self {
+            public_latest_url: format!(
+                "https://github.com/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest/download/latest.json"
+            ),
+            api_latest_release_url: format!(
+                "https://api.github.com/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
+            ),
+            public_key_b64: UPDATE_PUBLIC_KEY.to_string(),
+            current_version,
+            allow_insecure_localhost: false,
+        }
+    }
+}
+
+/// Managed updater service shared across Tauri commands, tray events and the background checker.
+pub struct UpdaterService {
+    config: UpdaterConfig,
+    updates_dir: PathBuf,
+    logs_dir: PathBuf,
+    status: RwLock<UpdateStatus>,
+    pending: Mutex<Option<PendingUpdate>>,
+    busy: AtomicBool,
+}
+
+struct BusyGuard<'a>(&'a AtomicBool);
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+impl UpdaterService {
+    pub fn new(current_version: String, updates_dir: PathBuf, logs_dir: PathBuf) -> Self {
+        Self {
+            config: UpdaterConfig::production(current_version),
+            updates_dir,
+            logs_dir,
+            status: RwLock::new(UpdateStatus::Idle),
+            pending: Mutex::new(None),
+            busy: AtomicBool::new(false),
+        }
+    }
+
+    pub fn current_status(&self) -> UpdateStatus {
+        self.status.read().clone()
+    }
+
+    fn set_status(&self, app: &AppHandle, next: UpdateStatus) {
+        *self.status.write() = next.clone();
+        crate::tray::set_update_status(&next);
+        let _ = app.emit(EVENT_UPDATE_STATUS, &next);
+    }
+
+    /// Starts the silent background checker (15 s after launch, then hourly).
+    pub fn start_background(app: AppHandle) {
+        if std::env::var_os("WREN_DISABLE_UPDATER").is_some_and(|v| !v.is_empty() && v != "0")
+            || std::env::var_os("WREN_HOME").is_some_and(|v| !v.is_empty())
+        {
+            tracing::info!("background update checker disabled for test environment");
+            return;
+        }
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(UPDATE_FIRST_CHECK_DELAY_MS)).await;
+            loop {
+                {
+                    let svc = app.state::<UpdaterService>();
+                    let _ = svc.check(&app, false).await;
+                }
+                tokio::time::sleep(Duration::from_millis(UPDATE_CHECK_INTERVAL_MS)).await;
+            }
+        });
+    }
+
+    /// Checks GitHub Releases for a newer version.
+    ///
+    /// Background checks (`manual == false`) stay quiet on offline/auth errors so Wren never nags;
+    /// manual checks from Settings or the tray report clear status and error messages.
+    pub async fn check(&self, app: &AppHandle, manual: bool) -> UpdateStatus {
+        if self.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return self.current_status();
+        }
+        let _guard = BusyGuard(&self.busy);
+
+        if matches!(
+            *self.status.read(),
+            UpdateStatus::Downloading { .. } | UpdateStatus::Installing { .. }
+        ) {
+            return self.current_status();
+        }
+
+        let previous = self.current_status();
+        if manual {
+            self.set_status(app, UpdateStatus::Checking);
+        }
+
+        let config = self.config.clone();
+        let outcome = check_remote(&config, resolve_github_token).await;
+
+        match outcome {
+            Ok(CheckResult::Available(pending)) => {
+                tracing::info!(
+                    current = %self.config.current_version,
+                    available = %pending.version,
+                    "Wren update available"
+                );
+                let next = UpdateStatus::Available {
+                    version: pending.version.clone(),
+                    notes: pending.notes.clone(),
+                    pub_date: pending.pub_date.clone(),
+                    release_url: pending.release_url.clone(),
+                };
+                *self.pending.lock() = Some(pending);
+                self.set_status(app, next.clone());
+                next
+            }
+            Ok(CheckResult::UpToDate) => {
+                tracing::info!(current = %self.config.current_version, "Wren is up to date");
+                *self.pending.lock() = None;
+                let next = UpdateStatus::UpToDate {
+                    checked_at: chrono::Utc::now().to_rfc3339(),
+                };
+                if manual || matches!(previous, UpdateStatus::Available { .. } | UpdateStatus::Error { .. }) {
+                    self.set_status(app, next.clone());
+                } else {
+                    *self.status.write() = next.clone();
+                }
+                next
+            }
+            Err(err) => {
+                tracing::info!(error = %err, manual, "update check did not finish");
+                if manual {
+                    let next = UpdateStatus::Error {
+                        message: err,
+                        version: self.pending.lock().as_ref().map(|p| p.version.clone()),
+                    };
+                    self.set_status(app, next.clone());
+                    next
+                } else {
+                    // Keep the existing status (e.g. Idle or a previously discovered Available) silently.
+                    previous
+                }
+            }
+        }
+    }
+
+    /// Downloads the pending update, verifies its Ed25519 minisign signature, spawns the detached
+    /// silent NSIS installer helper, and exits Wren cleanly so the installer can replace it and
+    /// relaunch the updated app.
+    pub async fn install(&self, app: &AppHandle) -> Result<(), String> {
+        if self.pending.lock().is_none() {
+            let status = self.check(app, true).await;
+            if !matches!(status, UpdateStatus::Available { .. }) {
+                return match status {
+                    UpdateStatus::UpToDate { .. } => Ok(()),
+                    UpdateStatus::Error { message, .. } => Err(message),
+                    _ => Err("No update is ready to install.".into()),
+                };
+            }
+        }
+
+        if self.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Ok(());
+        }
+        let _guard = BusyGuard(&self.busy);
+
+        let Some(pending) = self.pending.lock().clone() else {
+            return Err("No update is ready to install.".into());
+        };
+
+        let version = pending.version.clone();
+        self.set_status(
+            app,
+            UpdateStatus::Downloading {
+                version: version.clone(),
+                downloaded_bytes: 0,
+                total_bytes: None,
+                percent: Some(0),
+            },
+        );
+
+        let installer_path = match self.download_and_verify(app, &pending).await {
+            Ok(path) => path,
+            Err(message) => {
+                tracing::warn!(version = %version, error = %message, "update download or verification failed");
+                self.set_status(
+                    app,
+                    UpdateStatus::Error {
+                        message: message.clone(),
+                        version: Some(version),
+                    },
+                );
+                return Err(message);
+            }
+        };
+
+        self.set_status(
+            app,
+            UpdateStatus::Installing {
+                version: version.clone(),
+            },
+        );
+
+        let fallback_exe = std::env::current_exe().ok();
+        let log_path = self.logs_dir.join("updater.log");
+        if let Err(message) = spawn_install_helper(
+            &self.updates_dir,
+            std::process::id(),
+            &installer_path,
+            fallback_exe.as_deref(),
+            &log_path,
+        ) {
+            tracing::error!(version = %version, error = %message, "cannot launch update installer helper");
+            self.set_status(
+                app,
+                UpdateStatus::Error {
+                    message: message.clone(),
+                    version: Some(version),
+                },
+            );
+            return Err(message);
+        }
+
+        tracing::info!(version = %version, installer = %installer_path.display(), "update verified; exiting so the installer can finish");
+        let exit_handle = app.clone();
+        std::thread::Builder::new()
+            .name("wren-update-exit".into())
+            .spawn(move || {
+                std::thread::sleep(Duration::from_millis(UPDATE_EXIT_DELAY_MS));
+                exit_handle.exit(0);
+            })
+            .map_err(|e| format!("Couldn't restart Wren for the update: {e}"))?;
+
+        Ok(())
+    }
+
+    async fn download_and_verify(&self, app: &AppHandle, pending: &PendingUpdate) -> Result<PathBuf, String> {
+        std::fs::create_dir_all(&self.updates_dir)
+            .map_err(|e| format!("Couldn't prepare the updates folder: {e}"))?;
+        cleanup_old_updates(&self.updates_dir);
+
+        let safe_ver = sanitize_version_for_filename(&pending.version);
+        let final_path = self.updates_dir.join(format!("Wren_{safe_ver}_x64-setup.exe"));
+        let part_path = self.updates_dir.join(format!("Wren_{safe_ver}_x64-setup.exe.part"));
+        let _ = std::fs::remove_file(&part_path);
+
+        let token = match &pending.source {
+            DownloadSource::DirectUrl(_) => None,
+            DownloadSource::GitHubAssetApi { .. } => resolve_github_token(),
+        };
+
+        let mut last_emit = Instant::now() - Duration::from_secs(1);
+        let mut last_pct: Option<u8> = None;
+        let version = pending.version.clone();
+
+        let bytes = download_installer_to_file(
+            &pending.source,
+            token.as_deref(),
+            &self.config.current_version,
+            self.config.allow_insecure_localhost,
+            &part_path,
+            |downloaded, total| {
+                let pct = total.and_then(|t| (t > 0).then(|| ((downloaded.saturating_mul(100)) / t).min(100) as u8));
+                let elapsed_ok = last_emit.elapsed() >= Duration::from_millis(UPDATE_PROGRESS_EMIT_MS);
+                let pct_changed = pct != last_pct && pct.is_some();
+                if elapsed_ok || pct_changed || pct == Some(100) {
+                    last_emit = Instant::now();
+                    last_pct = pct;
+                    self.set_status(
+                        app,
+                        UpdateStatus::Downloading {
+                            version: version.clone(),
+                            downloaded_bytes: downloaded,
+                            total_bytes: total,
+                            percent: pct,
+                        },
+                    );
+                }
+            },
+        )
+        .await
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&part_path);
+        })?;
+
+        verify_signature(&self.config.public_key_b64, &bytes, &pending.signature_b64, &pending.version).map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            tracing::error!(error = %e, "update signature verification failed");
+            "The downloaded update couldn't be verified and was discarded.".to_string()
+        })?;
+
+        let _ = std::fs::remove_file(&final_path);
+        std::fs::rename(&part_path, &final_path).map_err(|e| {
+            let _ = std::fs::remove_file(&part_path);
+            format!("Couldn't save the downloaded update: {e}")
+        })?;
+
+        Ok(final_path)
+    }
+}
+
+// ---- Core check, download and verification logic (pure / testable) ----
+
+#[derive(Debug)]
+enum CheckResult {
+    UpToDate,
+    Available(PendingUpdate),
+}
+
+fn user_agent(version: &str) -> String {
+    format!("Wren/{version}")
+}
+
+fn build_client(timeout: Duration, follow_redirects: bool) -> Result<reqwest::Client, String> {
+    let mut b = reqwest::Client::builder().timeout(timeout);
+    if !follow_redirects {
+        b = b.redirect(reqwest::redirect::Policy::none());
+    }
+    b.build().map_err(|e| format!("Couldn't start the network client: {e}"))
+}
+
+fn validate_download_url(url: &str, allow_insecure_localhost: bool) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "The update address wasn't valid.".to_string())?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if allow_insecure_localhost && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost")) => Ok(()),
+        _ => Err("Refusing to download an update over an insecure connection.".to_string()),
+    }
+}
+
+/// Parses a version string (with or without a leading `v`) and returns whether `remote` is newer.
+pub fn is_newer_version(current: &str, remote: &str) -> Result<bool, String> {
+    let cur = Version::parse(current.trim().trim_start_matches(['v', 'V']))
+        .map_err(|e| format!("Current version '{current}' isn't valid semver: {e}"))?;
+    let rem = Version::parse(remote.trim().trim_start_matches(['v', 'V']))
+        .map_err(|e| format!("Release version '{remote}' isn't valid semver: {e}"))?;
+    Ok(rem > cur)
+}
+
+fn pick_windows_artifact(manifest: &UpdateManifest) -> Result<&PlatformArtifact, String> {
+    let art = manifest
+        .platforms
+        .get(PLATFORM_KEY)
+        .or_else(|| manifest.platforms.get(PLATFORM_KEY_NSIS))
+        .ok_or_else(|| "This release doesn't include a Windows installer.".to_string())?;
+    if art.url.trim().is_empty() || art.signature.trim().is_empty() {
+        return Err("This release is missing its installer or signature.".to_string());
+    }
+    Ok(art)
+}
+
+fn filename_from_url(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments().and_then(|mut s| s.next_back().map(str::to_string)))
+        .filter(|s| !s.is_empty())
+}
+
+fn clean_notes(notes: Option<String>) -> Option<String> {
+    notes.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn sanitize_version_for_filename(version: &str) -> String {
+    let cleaned: String = version
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() { "update".into() } else { cleaned }
+}
+
+async fn check_remote<F>(config: &UpdaterConfig, token_provider: F) -> Result<CheckResult, String>
+where
+    F: FnOnce() -> Option<String>,
+{
+    let timeout = Duration::from_millis(UPDATE_CHECK_TIMEOUT_MS);
+    let client = build_client(timeout, true)?;
+    let ua = user_agent(&config.current_version);
+
+    // 1. Try the public GitHub Releases URL first (no token, no API rate limit).
+    let public_resp = client
+        .get(&config.public_latest_url)
+        .header(USER_AGENT, &ua)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await;
+
+    match public_resp {
+        Ok(resp) if resp.status().is_success() => {
+            let text = resp
+                .text()
+                .await
+                .map_err(|_| "Couldn't read the update details from GitHub.".to_string())?;
+            let manifest: UpdateManifest = serde_json::from_str(&text)
+                .map_err(|_| "GitHub returned unreadable update details.".to_string())?;
+            return evaluate_manifest(config, manifest, None, None, None);
+        }
+        Ok(resp) if resp.status().as_u16() == 404 => {
+            // Either the repository is private or no release has been published yet. Fall through
+            // to the GitHub REST API with a local token if available.
+        }
+        Ok(resp) => {
+            return Err(format!("GitHub answered with HTTP {}. Try again shortly.", resp.status().as_u16()));
+        }
+        Err(_) => {
+            return Err("Couldn't reach GitHub. Check your internet connection and try again.".to_string());
+        }
+    }
+
+    // 2. Private-repo fallback via GitHub REST API + token (env var or `gh auth token`).
+    let token = token_provider();
+    let Some(token) = token else {
+        return Err(
+            "No public release was found. While the repo is private, sign in with GitHub CLI (gh auth login) so Wren can check for updates."
+                .to_string(),
+        );
+    };
+
+    let api_resp = client
+        .get(&config.api_latest_release_url)
+        .header(USER_AGENT, &ua)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach GitHub. Check your internet connection and try again.".to_string())?;
+
+    let status = api_resp.status().as_u16();
+    if status == 404 {
+        // Authenticated against the private repo, and no releases exist yet.
+        return Ok(CheckResult::UpToDate);
+    }
+    if status == 401 || status == 403 {
+        return Err("GitHub refused the update check. Run gh auth login and try again.".to_string());
+    }
+    if !api_resp.status().is_success() {
+        return Err(format!("GitHub answered with HTTP {status}. Try again shortly."));
+    }
+
+    let release_bytes = api_resp
+        .bytes()
+        .await
+        .map_err(|_| "GitHub returned unreadable release details.".to_string())?;
+    let release: GitHubRelease = serde_json::from_slice(&release_bytes)
+        .map_err(|_| "GitHub returned unreadable release details.".to_string())?;
+
+    let latest_asset = release
+        .assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("latest.json"))
+        .ok_or_else(|| {
+            format!(
+                "Release {} doesn't have a latest.json update manifest yet.",
+                release.tag_name
+            )
+        })?;
+
+    let manifest_bytes = download_github_asset_bytes(
+        &latest_asset.url,
+        Some(&token),
+        &config.current_version,
+        config.allow_insecure_localhost,
+        timeout,
+    )
+    .await?;
+
+    let manifest: UpdateManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|_| "The release's latest.json file wasn't valid JSON.".to_string())?;
+
+    evaluate_manifest(config, manifest, Some(&release), release.html_url.clone(), release.body.clone())
+}
+
+fn evaluate_manifest(
+    config: &UpdaterConfig,
+    manifest: UpdateManifest,
+    release: Option<&GitHubRelease>,
+    fallback_release_url: Option<String>,
+    fallback_notes: Option<String>,
+) -> Result<CheckResult, String> {
+    let clean_ver = manifest.version.trim().trim_start_matches(['v', 'V']).to_string();
+    if !is_newer_version(&config.current_version, &clean_ver)? {
+        return Ok(CheckResult::UpToDate);
+    }
+
+    let artifact = pick_windows_artifact(&manifest)?;
+    validate_download_url(&artifact.url, config.allow_insecure_localhost)?;
+    let signature_b64 = artifact.signature.trim().to_string();
+
+    let source = if let Some(rel) = release {
+        let wanted = filename_from_url(&artifact.url);
+        let asset = wanted
+            .as_deref()
+            .and_then(|name| rel.assets.iter().find(|a| a.name == name))
+            .or_else(|| rel.assets.iter().find(|a| a.name.ends_with("_x64-setup.exe")))
+            .ok_or_else(|| "This release doesn't have the Windows installer attached.".to_string())?;
+        validate_download_url(&asset.url, config.allow_insecure_localhost)?;
+        DownloadSource::GitHubAssetApi {
+            asset_url: asset.url.clone(),
+        }
+    } else {
+        DownloadSource::DirectUrl(artifact.url.clone())
+    };
+
+    let release_url = fallback_release_url.or_else(|| {
+        Some(format!(
+            "https://github.com/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/tag/v{clean_ver}"
+        ))
+    });
+
+    Ok(CheckResult::Available(PendingUpdate {
+        version: clean_ver,
+        notes: clean_notes(manifest.notes).or_else(|| clean_notes(fallback_notes)),
+        pub_date: manifest.pub_date.or_else(|| release.and_then(|r| r.published_at.clone())),
+        release_url,
+        signature_b64,
+        source,
+    }))
+}
+
+/// Fetches a GitHub Release asset via the API without forwarding `Authorization` to the redirected
+/// blob host (`objects.githubusercontent.com`).
+async fn open_github_asset_response(
+    asset_url: &str,
+    token: Option<&str>,
+    current_version: &str,
+    allow_insecure_localhost: bool,
+    timeout: Duration,
+) -> Result<reqwest::Response, String> {
+    validate_download_url(asset_url, allow_insecure_localhost)?;
+    let ua = user_agent(current_version);
+    let no_redirect = build_client(timeout, false)?;
+
+    let mut req = no_redirect
+        .get(asset_url)
+        .header(USER_AGENT, &ua)
+        .header(ACCEPT, "application/octet-stream")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    if let Some(t) = token {
+        req = req.header(AUTHORIZATION, format!("Bearer {t}"));
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach GitHub to download the update.".to_string())?;
+
+    if resp.status().is_redirection() {
+        let loc = resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "GitHub sent an incomplete download redirect.".to_string())?;
+        validate_download_url(loc, allow_insecure_localhost)?;
+        let clean_client = build_client(timeout, true)?;
+        let blob_resp = clean_client
+            .get(loc)
+            .header(USER_AGENT, &ua)
+            .send()
+            .await
+            .map_err(|_| "The download connection was interrupted. Try again.".to_string())?;
+        if !blob_resp.status().is_success() {
+            return Err(format!("Download failed with HTTP {}. Try again.", blob_resp.status().as_u16()));
+        }
+        return Ok(blob_resp);
+    }
+
+    let code = resp.status().as_u16();
+    if code == 401 || code == 403 {
+        return Err("GitHub refused the update download. Run gh auth login and try again.".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("Download failed with HTTP {code}. Try again."));
+    }
+    Ok(resp)
+}
+
+async fn download_github_asset_bytes(
+    asset_url: &str,
+    token: Option<&str>,
+    current_version: &str,
+    allow_insecure_localhost: bool,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let resp = open_github_asset_response(asset_url, token, current_version, allow_insecure_localhost, timeout).await?;
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|_| "Couldn't finish reading the update metadata from GitHub.".to_string())
+}
+
+async fn download_installer_to_file<F>(
+    source: &DownloadSource,
+    token: Option<&str>,
+    current_version: &str,
+    allow_insecure_localhost: bool,
+    dest: &Path,
+    mut on_progress: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let timeout = Duration::from_millis(UPDATE_DOWNLOAD_TIMEOUT_MS);
+    let resp = match source {
+        DownloadSource::DirectUrl(url) => {
+            validate_download_url(url, allow_insecure_localhost)?;
+            let client = build_client(timeout, true)?;
+            let r = client
+                .get(url)
+                .header(USER_AGENT, user_agent(current_version))
+                .send()
+                .await
+                .map_err(|_| "Couldn't reach GitHub to download the update.".to_string())?;
+            if !r.status().is_success() {
+                return Err(format!("Download failed with HTTP {}. Try again.", r.status().as_u16()));
+            }
+            r
+        }
+        DownloadSource::GitHubAssetApi { asset_url } => {
+            open_github_asset_response(asset_url, token, current_version, allow_insecure_localhost, timeout).await?
+        }
+    };
+
+    let total = resp.content_length();
+    let mut file = std::fs::File::create(dest).map_err(|e| format!("Couldn't create the update file: {e}"))?;
+    let mut buf = Vec::with_capacity(total.unwrap_or(0).min(32 * 1024 * 1024) as usize);
+    let mut downloaded: u64 = 0;
+    on_progress(0, total);
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "The download was interrupted before it finished. Try again.".to_string())?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Couldn't write the update file: {e}"))?;
+        buf.extend_from_slice(&chunk);
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        on_progress(downloaded, total);
+    }
+
+    file.sync_all()
+        .map_err(|e| format!("Couldn't finish saving the update file: {e}"))?;
+
+    if buf.is_empty() {
+        return Err("The downloaded update file was empty.".to_string());
+    }
+    Ok(buf)
+}
+
+/// Verifies `payload` against the base64-encoded minisign public key and signature produced by
+/// `tauri signer sign --app-version <expected_version>`.
+pub fn verify_signature(
+    public_key_b64: &str,
+    payload: &[u8],
+    signature_b64: &str,
+    expected_version: &str,
+) -> Result<(), String> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+
+    let pk_raw = b64
+        .decode(public_key_b64.trim())
+        .map_err(|e| format!("invalid base64 public key: {e}"))?;
+    let pk_text = String::from_utf8(pk_raw).map_err(|e| format!("public key is not utf-8: {e}"))?;
+    let pk_line = pk_text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("untrusted comment:"))
+        .ok_or_else(|| "public key box has no key line".to_string())?;
+    let pk = minisign_verify::PublicKey::from_base64(pk_line)
+        .map_err(|e| format!("invalid minisign public key: {e}"))?;
+
+    let sig_raw = b64
+        .decode(signature_b64.trim())
+        .map_err(|e| format!("invalid base64 signature: {e}"))?;
+    let sig_text = String::from_utf8(sig_raw).map_err(|e| format!("signature is not utf-8: {e}"))?;
+    let sig = minisign_verify::Signature::decode(&sig_text)
+        .map_err(|e| format!("invalid minisign signature: {e}"))?;
+
+    pk.verify(payload, &sig, false)
+        .map_err(|e| format!("signature verification failed: {e}"))?;
+
+    // Enforce version binding embedded by `tauri signer sign --app-version <ver>` so a tampered
+    // manifest cannot pair a newer version string with an older signed installer.
+    let expected_ver = expected_version.trim().trim_start_matches(['v', 'V']);
+    let signed_version = sig
+        .trusted_comment()
+        .split('\t')
+        .find_map(|part| part.strip_prefix("version:"))
+        .map(str::trim);
+    match signed_version {
+        Some(v) if v.trim_start_matches(['v', 'V']) == expected_ver => Ok(()),
+        Some(v) => Err(format!("signature is bound to version {v}, expected {expected_ver}")),
+        None => Err("signature is missing its signed version tag".to_string()),
+    }
+}
+
+/// Resolves a GitHub token for private-repo access: env var first, then `gh auth token`.
+pub fn resolve_github_token() -> Option<String> {
+    for var in ["WREN_GITHUB_TOKEN", "GITHUB_TOKEN"] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    gh_auth_token()
+}
+
+fn gh_exe() -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH")
+        && let Some(found) = std::env::split_paths(&paths).map(|d| d.join("gh.exe")).find(|p| p.exists())
+    {
+        return Some(found);
+    }
+    let mut candidates = vec![
+        PathBuf::from(r"C:\Program Files\GitHub CLI\gh.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\GitHub CLI\gh.exe"),
+    ];
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        candidates.push(PathBuf::from(local).join("Programs").join("GitHub CLI").join("gh.exe"));
+    }
+    candidates.into_iter().find(|p| p.exists())
+}
+
+fn gh_auth_token() -> Option<String> {
+    use std::io::Read;
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let exe = gh_exe()?;
+    let mut child = std::process::Command::new(exe)
+        .args(["auth", "token"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + Duration::from_millis(UPDATE_GH_TOKEN_TIMEOUT_MS);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut out = String::new();
+                child.stdout.take()?.read_to_string(&mut out).ok()?;
+                let trimmed = out.trim();
+                return (!trimmed.is_empty()).then(|| trimmed.to_string());
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return None,
+        }
+    }
+}
+
+fn cleanup_old_updates(updates_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(updates_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// PowerShell script that waits for `wren.exe` to finish shutting down, runs the silent NSIS
+/// installer with `/S /UPDATE /R`, logs the outcome, and cleans up temporary files.
+pub fn apply_script_body() -> String {
+    format!(
+        r#"param(
+  [int]$ParentPid,
+  [string]$InstallerPath,
+  [string]$FallbackExe,
+  [string]$LogPath
+)
+$ErrorActionPreference = 'SilentlyContinue'
+function Write-Log([string]$msg) {{
+  if ($LogPath) {{
+    $dir = Split-Path -Parent $LogPath
+    if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
+    Add-Content -Path $LogPath -Value ("$(Get-Date -Format o) $msg")
+  }}
+}}
+Write-Log "Waiting for Wren (pid $ParentPid) to exit..."
+try {{
+  Wait-Process -Id $ParentPid -Timeout {UPDATE_WAIT_PARENT_SECS} -ErrorAction SilentlyContinue
+}} catch {{}}
+Start-Sleep -Milliseconds 400
+Write-Log "Starting silent installer: $InstallerPath /S /UPDATE /R"
+$proc = Start-Process -FilePath $InstallerPath -ArgumentList '/S', '/UPDATE', '/R' -PassThru -Wait
+$code = if ($proc) {{ $proc.ExitCode }} else {{ -1 }}
+Write-Log "Installer finished with exit code $code"
+Remove-Item -LiteralPath $InstallerPath -Force -ErrorAction SilentlyContinue
+if ($code -ne 0 -and $FallbackExe -and (Test-Path -LiteralPath $FallbackExe)) {{
+  Write-Log "Installer failed (code $code); relaunching $FallbackExe"
+  Start-Process -FilePath $FallbackExe
+}}
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+"#
+    )
+}
+
+fn powershell_exe() -> PathBuf {
+    let sys = PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+    if sys.exists() { sys } else { PathBuf::from("powershell.exe") }
+}
+
+fn spawn_install_helper(
+    updates_dir: &Path,
+    parent_pid: u32,
+    installer_path: &Path,
+    fallback_exe: Option<&Path>,
+    log_path: &Path,
+) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    let script_path = updates_dir.join("apply-update.ps1");
+    std::fs::write(&script_path, apply_script_body())
+        .map_err(|e| format!("Couldn't prepare the update helper: {e}"))?;
+
+    let mut cmd = std::process::Command::new(powershell_exe());
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(&script_path)
+    .arg("-ParentPid")
+    .arg(parent_pid.to_string())
+    .arg("-InstallerPath")
+    .arg(installer_path)
+    .arg("-FallbackExe")
+    .arg(fallback_exe.map(|p| p.as_os_str()).unwrap_or_default())
+    .arg("-LogPath")
+    .arg(log_path)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+
+    cmd.spawn()
+        .map_err(|e| format!("Couldn't start the update installer: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    // Real Tauri-generated test signature over `b"hello wren updater"` bound to `--app-version 0.1.2`
+    // using UPDATE_PUBLIC_KEY.
+    const SAMPLE_PAYLOAD: &[u8] = b"hello wren updater";
+    const SAMPLE_SIG_0_1_2: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUWGVIVU4xVHYwRTdrNFRJRW1zaGJNNXVQVFNsWmd3R3gwalNTYjIvZ1cwaDdhelZleU44d3A3bDllWUx5QUdnSE1zWEg4NGFndjBGM1ZRamlWYWJYTldyZU9uK1o5SUF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NDAxNTI4CWZpbGU6c2FtcGxlLmJpbgl2ZXJzaW9uOjAuMS4yCncxamNvS2hkS1lxbS9kZjNZV2R6OERVT3MrUkFBMlh5N0JmMCt0dGNzUHF0UWpVYWNEWVV1dVQxbTBCZHNicTBtZzUxSzk3VjNmanh2OWJkRmY5b0FnPT0K";
+
+    #[test]
+    fn semver_comparison_handles_v_prefix_and_ordering() {
+        assert!(is_newer_version("0.1.0", "0.1.1").unwrap());
+        assert!(is_newer_version("0.1.0", "v0.1.12").unwrap());
+        assert!(is_newer_version("0.1.99", "0.2.0").unwrap());
+        assert!(!is_newer_version("0.1.2", "0.1.2").unwrap());
+        assert!(!is_newer_version("0.1.5", "0.1.4").unwrap());
+        assert!(is_newer_version("0.1.0", "not-a-version").is_err());
+    }
+
+    #[test]
+    fn minisign_verification_accepts_valid_and_rejects_tampering_or_wrong_version() {
+        verify_signature(UPDATE_PUBLIC_KEY, SAMPLE_PAYLOAD, SAMPLE_SIG_0_1_2, "0.1.2").unwrap();
+        verify_signature(UPDATE_PUBLIC_KEY, SAMPLE_PAYLOAD, SAMPLE_SIG_0_1_2, "v0.1.2").unwrap();
+
+        // 1-byte tamper in installer payload must fail.
+        let mut tampered = SAMPLE_PAYLOAD.to_vec();
+        tampered[0] ^= 0x01;
+        assert!(verify_signature(UPDATE_PUBLIC_KEY, &tampered, SAMPLE_SIG_0_1_2, "0.1.2").is_err());
+
+        // Manifest claiming a different version than the signed trusted comment must fail.
+        let wrong_ver = verify_signature(UPDATE_PUBLIC_KEY, SAMPLE_PAYLOAD, SAMPLE_SIG_0_1_2, "0.1.3").unwrap_err();
+        assert!(wrong_ver.contains("0.1.2") && wrong_ver.contains("0.1.3"), "{wrong_ver}");
+
+        // Malformed public key fails cleanly.
+        assert!(verify_signature("not-base64!!!", SAMPLE_PAYLOAD, SAMPLE_SIG_0_1_2, "0.1.2").is_err());
+    }
+
+    #[test]
+    fn download_url_validation_requires_https_in_production() {
+        assert!(validate_download_url("https://github.com/Kamo2323/wren/releases/download/v0.1.2/Wren.exe", false).is_ok());
+        assert!(validate_download_url("http://github.com/Kamo2323/wren/releases/download/v0.1.2/Wren.exe", false).is_err());
+        assert!(validate_download_url("http://127.0.0.1:8080/Wren.exe", false).is_err());
+        assert!(validate_download_url("http://127.0.0.1:8080/Wren.exe", true).is_ok());
+    }
+
+    #[test]
+    fn apply_script_uses_silent_update_relaunch_flags() {
+        let s = apply_script_body();
+        assert!(s.contains("Wait-Process -Id $ParentPid"));
+        assert!(s.contains("'/S', '/UPDATE', '/R'"));
+        assert!(s.contains("FallbackExe"));
+    }
+
+    #[derive(Clone)]
+    struct RecordedReq {
+        path: String,
+        auth: Option<String>,
+    }
+
+    /// Tiny HTTP/1.1 test server that responds to a scripted set of routes and records headers.
+    fn start_mock_server<F>(handler: F) -> (String, Arc<StdMutex<Vec<RecordedReq>>>)
+    where
+        F: Fn(&str, Option<&str>) -> (u16, Vec<(String, String)>, Vec<u8>) + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let log_clone = log.clone();
+        let handler = Arc::new(handler);
+
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 16 * 1024];
+                let Ok(n) = stream.read(&mut buf) else { continue };
+                if n == 0 {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&buf[..n]);
+                let mut lines = text.lines();
+                let path = lines
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                let mut auth = None;
+                for l in lines {
+                    if l.is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = l.split_once(':')
+                        && k.trim().eq_ignore_ascii_case("authorization")
+                    {
+                        auth = Some(v.trim().to_string());
+                    }
+                }
+                log_clone.lock().unwrap().push(RecordedReq {
+                    path: path.clone(),
+                    auth: auth.clone(),
+                });
+                let (code, headers, body) = handler(&path, auth.as_deref());
+                let reason = match code {
+                    200 => "OK",
+                    302 => "Found",
+                    401 => "Unauthorized",
+                    404 => "Not Found",
+                    _ => "Error",
+                };
+                let mut resp = format!("HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+                for (k, v) in headers {
+                    resp.push_str(&format!("{k}: {v}\r\n"));
+                }
+                resp.push_str("\r\n");
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+
+        (base, log)
+    }
+
+    #[test]
+    fn public_repo_check_and_verified_download_succeed() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base_slot: Arc<std::sync::OnceLock<String>> = Arc::new(std::sync::OnceLock::new());
+        let slot_for_handler = base_slot.clone();
+        let (base, _reqs) = start_mock_server(move |path, _auth| {
+            let b = slot_for_handler.get().unwrap();
+            match path {
+                "/releases/latest/download/latest.json" => {
+                    let body = serde_json::json!({
+                        "version": "0.1.2",
+                        "notes": "Fix microphone warm-up",
+                        "pub_date": "2026-11-23T03:00:00Z",
+                        "platforms": {
+                            "windows-x86_64": {
+                                "signature": SAMPLE_SIG_0_1_2,
+                                "url": format!("{b}/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe")
+                            }
+                        }
+                    })
+                    .to_string();
+                    (200, vec![("Content-Type".into(), "application/json".into())], body.into_bytes())
+                }
+                "/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe" => {
+                    (200, vec![("Content-Type".into(), "application/octet-stream".into())], SAMPLE_PAYLOAD.to_vec())
+                }
+                _ => (404, vec![], vec![]),
+            }
+        });
+        base_slot.set(base.clone()).unwrap();
+
+        let cfg = UpdaterConfig {
+            public_latest_url: format!("{base}/releases/latest/download/latest.json"),
+            api_latest_release_url: format!("{base}/api/releases/latest"),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.0".into(),
+            allow_insecure_localhost: true,
+        };
+
+        let result = rt.block_on(check_remote(&cfg, || None)).unwrap();
+        let CheckResult::Available(pending) = result else {
+            panic!("expected Available");
+        };
+        assert_eq!(pending.version, "0.1.2");
+        assert_eq!(pending.notes.as_deref(), Some("Fix microphone warm-up"));
+
+        let tmp = std::env::temp_dir().join(format!("wren-upd-pub-{}.exe.part", std::process::id()));
+        let mut saw_progress = false;
+        let bytes = rt
+            .block_on(download_installer_to_file(
+                &pending.source,
+                None,
+                "0.1.0",
+                true,
+                &tmp,
+                |d, _| {
+                    if d > 0 {
+                        saw_progress = true;
+                    }
+                },
+            ))
+            .unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(saw_progress);
+        verify_signature(&cfg.public_key_b64, &bytes, &pending.signature_b64, &pending.version).unwrap();
+    }
+
+    #[test]
+    fn private_repo_fallback_uses_api_and_strips_auth_on_blob_redirect() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let base_slot: Arc<std::sync::OnceLock<String>> = Arc::new(std::sync::OnceLock::new());
+        let slot_for_handler = base_slot.clone();
+
+        let (base, reqs) = start_mock_server(move |path, auth| {
+            let b = slot_for_handler.get().unwrap();
+            match path {
+                // Public endpoint returns 404 on a private repo.
+                "/releases/latest/download/latest.json" => (404, vec![], vec![]),
+                // GitHub REST API requires Bearer token.
+                "/api/releases/latest" => {
+                    if auth != Some("Bearer ghp_test_secret") {
+                        return (401, vec![], vec![]);
+                    }
+                    let body = serde_json::json!({
+                        "tag_name": "v0.1.2",
+                        "body": "Private release notes",
+                        "html_url": "https://github.com/Kamo2323/wren/releases/tag/v0.1.2",
+                        "published_at": "2026-11-23T03:00:00Z",
+                        "assets": [
+                            { "name": "latest.json", "url": format!("{b}/api/assets/1") },
+                            { "name": "Wren_0.1.2_x64-setup.exe", "url": format!("{b}/api/assets/2") }
+                        ]
+                    })
+                    .to_string();
+                    (200, vec![("Content-Type".into(), "application/json".into())], body.into_bytes())
+                }
+                "/api/assets/1" => {
+                    if auth != Some("Bearer ghp_test_secret") {
+                        return (401, vec![], vec![]);
+                    }
+                    (302, vec![("Location".into(), format!("{b}/blob/latest.json"))], vec![])
+                }
+                "/blob/latest.json" => {
+                    // Simulated S3/Azure blob host: must NEVER receive Authorization header!
+                    if auth.is_some() {
+                        return (400, vec![], b"unexpected auth header".to_vec());
+                    }
+                    let body = serde_json::json!({
+                        "version": "0.1.2",
+                        "notes": "Add in-app updater",
+                        "platforms": {
+                            "windows-x86_64": {
+                                "signature": SAMPLE_SIG_0_1_2,
+                                "url": "https://github.com/Kamo2323/wren/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe"
+                            }
+                        }
+                    })
+                    .to_string();
+                    (200, vec![], body.into_bytes())
+                }
+                "/api/assets/2" => {
+                    if auth != Some("Bearer ghp_test_secret") {
+                        return (401, vec![], vec![]);
+                    }
+                    (302, vec![("Location".into(), format!("{b}/blob/setup.exe"))], vec![])
+                }
+                "/blob/setup.exe" => {
+                    if auth.is_some() {
+                        return (400, vec![], b"unexpected auth header".to_vec());
+                    }
+                    (200, vec![], SAMPLE_PAYLOAD.to_vec())
+                }
+                _ => (404, vec![], vec![]),
+            }
+        });
+        base_slot.set(base.clone()).unwrap();
+
+        let cfg = UpdaterConfig {
+            public_latest_url: format!("{base}/releases/latest/download/latest.json"),
+            api_latest_release_url: format!("{base}/api/releases/latest"),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.0".into(),
+            allow_insecure_localhost: true,
+        };
+
+        let result = rt
+            .block_on(check_remote(&cfg, || Some("ghp_test_secret".to_string())))
+            .unwrap();
+        let CheckResult::Available(pending) = result else {
+            panic!("expected Available");
+        };
+        assert_eq!(pending.version, "0.1.2");
+        assert!(matches!(pending.source, DownloadSource::GitHubAssetApi { .. }));
+
+        let tmp = std::env::temp_dir().join(format!("wren-upd-priv-{}.exe.part", std::process::id()));
+        let bytes = rt
+            .block_on(download_installer_to_file(
+                &pending.source,
+                Some("ghp_test_secret"),
+                "0.1.0",
+                true,
+                &tmp,
+                |_, _| {},
+            ))
+            .unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        verify_signature(&cfg.public_key_b64, &bytes, &pending.signature_b64, &pending.version).unwrap();
+
+        let recorded = reqs.lock().unwrap();
+        assert!(recorded.iter().any(|r| r.path == "/blob/latest.json" && r.auth.is_none()));
+        assert!(recorded.iter().any(|r| r.path == "/blob/setup.exe" && r.auth.is_none()));
+    }
+
+    #[test]
+    fn no_releases_yet_on_authenticated_private_repo_reports_up_to_date() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (base, _) = start_mock_server(|_path, _auth| (404, vec![], vec![]));
+        let cfg = UpdaterConfig {
+            public_latest_url: format!("{base}/releases/latest/download/latest.json"),
+            api_latest_release_url: format!("{base}/api/releases/latest"),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.0".into(),
+            allow_insecure_localhost: true,
+        };
+        let result = rt
+            .block_on(check_remote(&cfg, || Some("ghp_test_secret".to_string())))
+            .unwrap();
+        assert!(matches!(result, CheckResult::UpToDate));
+    }
+}

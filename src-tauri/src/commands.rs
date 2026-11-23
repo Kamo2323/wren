@@ -359,6 +359,29 @@ pub fn ai_cleanup_pull_model(state: State<'_, AppState>) -> Result<(), String> {
     crate::ai_cleanup::pull(&model)
 }
 
+// ---- app updater ----
+
+#[tauri::command]
+pub fn update_status(updater: State<'_, crate::updater::UpdaterService>) -> crate::updater::UpdateStatus {
+    updater.current_status()
+}
+
+#[tauri::command]
+pub async fn update_check(
+    app: AppHandle,
+    updater: State<'_, crate::updater::UpdaterService>,
+) -> Result<crate::updater::UpdateStatus, String> {
+    Ok(updater.check(&app, true).await)
+}
+
+#[tauri::command]
+pub async fn update_install(
+    app: AppHandle,
+    updater: State<'_, crate::updater::UpdaterService>,
+) -> Result<(), String> {
+    updater.install(&app).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

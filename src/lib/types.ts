@@ -142,3 +142,13 @@ export interface AiCleanupStatus {
   modelPresent: boolean;
   model: string;
 }
+
+/** App updater state from Rust (`updater::UpdateStatus`, emitted on `app://update-status`). */
+export type UpdateStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "upToDate"; checkedAt: string }
+  | { state: "available"; version: string; notes?: string | null; pubDate?: string | null; releaseUrl?: string | null }
+  | { state: "downloading"; version: string; downloadedBytes: number; totalBytes?: number | null; percent?: number | null }
+  | { state: "installing"; version: string }
+  | { state: "error"; message: string; version?: string | null };

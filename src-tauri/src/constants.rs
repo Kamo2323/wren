@@ -280,3 +280,28 @@ pub const AI_CLEANUP_MIN_WORD_OVERLAP: f32 = 0.8;
 pub const AI_CLEANUP_LEAD_IN_MAX_CHARS: usize = 60;
 /// `ollama pull` of the clean-up model gives up after this long.
 pub const AI_CLEANUP_PULL_TIMEOUT_MS: u64 = 1_800_000;
+
+// ---- App updater (GitHub Releases) ----
+
+/// GitHub repository that publishes signed Wren releases (`latest.json` + NSIS installer).
+pub const UPDATE_REPO_OWNER: &str = "Kamo2323";
+pub const UPDATE_REPO_NAME: &str = "wren";
+/// Base64-encoded minisign public key matching the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret.
+pub const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzRjQzQkQ1MEQ3NTc4RDcKUldUWGVIVU4xVHYwRTBMTHFTNFFHQUpNczUwM2p4MW14V1lkc1R2UWNidHVQbEpwZzlCeVkvcFoK";
+/// Wait this long after start-up before the first silent update check, so start-up and engine
+/// warm-up are never delayed.
+pub const UPDATE_FIRST_CHECK_DELAY_MS: u64 = 15_000;
+/// Silent background update checks repeat this often.
+pub const UPDATE_CHECK_INTERVAL_MS: u64 = 3_600_000;
+/// Timeout for checking release metadata on GitHub.
+pub const UPDATE_CHECK_TIMEOUT_MS: u64 = 15_000;
+/// Timeout for downloading the Windows installer from GitHub Releases.
+pub const UPDATE_DOWNLOAD_TIMEOUT_MS: u64 = 300_000;
+/// Timeout for reading a GitHub token via `gh auth token` when the repository is private.
+pub const UPDATE_GH_TOKEN_TIMEOUT_MS: u64 = 5_000;
+/// Emit download progress events to the UI at most this often.
+pub const UPDATE_PROGRESS_EMIT_MS: u64 = 100;
+/// Short grace period before quitting so the front end receives the "installing" reply cleanly.
+pub const UPDATE_EXIT_DELAY_MS: u64 = 150;
+/// Seconds the detached update helper waits for the current `wren.exe` to exit cleanly.
+pub const UPDATE_WAIT_PARENT_SECS: u64 = 25;

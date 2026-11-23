@@ -1,10 +1,22 @@
 // Main window shell: sidebar on the canvas, one white content panel, toasts, and the app-wide banner
 // when another dictation app (Willow, Glaido) is running.
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import type { EngineStatus, Settings as SettingsData } from "./lib/types";
-import { engineStatus, getSettings, mainReady, onEngineStatus, otherAppsRunning, subscribe } from "./lib/api";
+import type { EngineStatus, Settings as SettingsData, UpdateStatus } from "./lib/types";
+import {
+  engineStatus,
+  getSettings,
+  mainReady,
+  onEngineStatus,
+  onOpenUpdates,
+  onUpdateStatus,
+  otherAppsRunning,
+  subscribe,
+  updateCheck,
+  updateInstall,
+  updateStatus,
+} from "./lib/api";
 import { Sidebar, type PageId } from "./components/Sidebar";
-import { ToastProvider } from "./components/Toast";
+import { ToastProvider, useToast } from "./components/Toast";
 import { OthersBanner } from "./components/Banner";
 import Home from "./pages/Home";
 import History from "./pages/History";
@@ -28,14 +40,18 @@ function initialPage(): PageId {
   return h in TITLES ? h : "home";
 }
 
-export default function App() {
+function AppShell() {
   const [page, setPage] = useState<PageId>(initialPage);
   const [engine, setEngine] = useState<EngineStatus>({ state: "unknown" });
+  const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const [typingWpm, setTypingWpm] = useState<number | undefined>(undefined); // pages fall back to the constants default
   const [others, setOthers] = useState<string[]>([]);
   const [bannerHiddenFor, setBannerHiddenFor] = useState<string | null>(null);
   const [settled, setSettled] = useState(false);
-  const [settingsFocus, setSettingsFocus] = useState<{ group: "engine"; at: number } | null>(null);
+  const [settingsFocus, setSettingsFocus] = useState<{ group: "engine" | "updates"; at: number } | null>(null);
+  const updateRef = useRef<UpdateStatus>(update);
+  updateRef.current = update;
+  const toast = useToast();
 
   useEffect(() => {
     const t = window.setTimeout(() => setSettled(true), SETTLE_MS);
@@ -44,13 +60,44 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, []);
 
+  const checkForUpdate = useCallback(async () => {
+    try {
+      const next = await updateCheck();
+      setUpdate(next);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e || "Couldn't check for updates.");
+      setUpdate({ state: "error", message: msg, version: null });
+    }
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    try {
+      await updateInstall();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e || "The update didn't finish.");
+      toast.show(msg, { tone: "danger" });
+    }
+  }, [toast]);
+
   useEffect(() => {
     void engineStatus().then(setEngine).catch(() => setEngine({ state: "unknown" }));
+    void updateStatus().then(setUpdate).catch(() => {});
     void getSettings()
       .then((s) => setTypingWpm(s.typingWpm))
       .catch(() => {});
-    return subscribe(onEngineStatus(setEngine));
-  }, []);
+    return subscribe([
+      onEngineStatus(setEngine),
+      onUpdateStatus(setUpdate),
+      onOpenUpdates(() => {
+        setPage("settings");
+        setSettingsFocus({ group: "updates", at: Date.now() });
+        const st = updateRef.current.state;
+        if (st === "idle" || st === "upToDate" || st === "error") {
+          void checkForUpdate();
+        }
+      }),
+    ]);
+  }, [checkForUpdate]);
 
   // Other dictation apps: checked at startup and whenever the window comes back to the front.
   useEffect(() => {
@@ -101,26 +148,49 @@ export default function App() {
   const showBanner = others.length > 0 && bannerHiddenFor !== othersKey;
 
   return (
-    <ToastProvider>
-      <div className={`shell ${settled ? "is-settled" : ""}`}>
-        <Sidebar page={page} onSelect={select} engine={engine} onOpenEngine={openEngine} />
-        <main className="panel" ref={panelRef}>
-          {showBanner && (
-            <OthersBanner
-              names={others}
-              onDismiss={() => setBannerHiddenFor(othersKey)}
-              onMore={page === "settings" ? undefined : () => select("settings")}
+    <div className={`shell ${settled ? "is-settled" : ""}`}>
+      <Sidebar
+        page={page}
+        onSelect={select}
+        engine={engine}
+        onOpenEngine={openEngine}
+        update={update}
+        onInstallUpdate={() => void installUpdate()}
+      />
+      <main className="panel" ref={panelRef}>
+        {showBanner && (
+          <OthersBanner
+            names={others}
+            onDismiss={() => setBannerHiddenFor(othersKey)}
+            onMore={page === "settings" ? undefined : () => select("settings")}
+          />
+        )}
+        <Fragment key={page}>
+          {page === "home" && <Home typingWpm={typingWpm} />}
+          {page === "history" && <History />}
+          {page === "dictionary" && <Dictionary />}
+          {page === "stats" && <Stats typingWpm={typingWpm} />}
+          {page === "settings" && (
+            <Settings
+              engine={engine}
+              others={others}
+              onSaved={onSaved}
+              focus={settingsFocus}
+              update={update}
+              onCheckUpdate={checkForUpdate}
+              onInstallUpdate={installUpdate}
             />
           )}
-          <Fragment key={page}>
-            {page === "home" && <Home typingWpm={typingWpm} />}
-            {page === "history" && <History />}
-            {page === "dictionary" && <Dictionary />}
-            {page === "stats" && <Stats typingWpm={typingWpm} />}
-            {page === "settings" && <Settings engine={engine} others={others} onSaved={onSaved} focus={settingsFocus} />}
-          </Fragment>
-        </main>
-      </div>
+        </Fragment>
+      </main>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppShell />
     </ToastProvider>
   );
 }

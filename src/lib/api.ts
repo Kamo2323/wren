@@ -16,6 +16,7 @@ import type {
   Stats,
   TranscriptionRow,
   UiConstants,
+  UpdateStatus,
   WatcherStatus,
 } from "./types";
 import { emptyStats, mockDictionary, mockStats, mockTranscriptions } from "./mock";
@@ -290,6 +291,78 @@ export const aiCleanupPullModel = (): Promise<void> => {
   return later(undefined, 2500);
 };
 
+// ---------- app updater ----------
+
+const mockUpdateListeners = new Set<(s: UpdateStatus) => void>();
+
+function initialMockUpdate(): UpdateStatus {
+  const mode = mockParams.get("update");
+  if (mode === "available") {
+    return {
+      state: "available",
+      version: "0.1.2",
+      notes: "• Add one-click GitHub updates in the sidebar and Settings\n• Keep history, dictionary and settings intact across updates",
+      pubDate: new Date().toISOString(),
+      releaseUrl: "https://github.com/Kamo2323/wren/releases/tag/v0.1.2",
+    };
+  }
+  if (mode === "downloading") {
+    return { state: "downloading", version: "0.1.2", downloadedBytes: 4_404_019, totalBytes: 10_485_760, percent: 42 };
+  }
+  if (mode === "installing") {
+    return { state: "installing", version: "0.1.2" };
+  }
+  if (mode === "uptodate") {
+    return { state: "upToDate", checkedAt: new Date().toISOString() };
+  }
+  if (mode === "error") {
+    return { state: "error", message: "Couldn't reach GitHub. Check your internet connection and try again.", version: null };
+  }
+  if (mode === "retry") {
+    return { state: "error", message: "The download was interrupted before it finished. Try again.", version: "0.1.2" };
+  }
+  return { state: "idle" };
+}
+
+let mockUpdateState: UpdateStatus = initialMockUpdate();
+
+function emitMockUpdate(next: UpdateStatus) {
+  mockUpdateState = next;
+  mockUpdateListeners.forEach((h) => h(structuredClone(next)));
+}
+
+export const updateStatus = (): Promise<UpdateStatus> =>
+  inTauri ? call<UpdateStatus>("update_status") : later(structuredClone(mockUpdateState));
+
+export const updateCheck = async (): Promise<UpdateStatus> => {
+  if (inTauri) return call<UpdateStatus>("update_check");
+  emitMockUpdate({ state: "checking" });
+  await later(undefined, 180);
+  const next: UpdateStatus =
+    mockParams.get("update") === "available"
+      ? initialMockUpdate()
+      : { state: "upToDate", checkedAt: new Date().toISOString() };
+  emitMockUpdate(next);
+  return structuredClone(next);
+};
+
+export const updateInstall = async (): Promise<void> => {
+  if (inTauri) return call("update_install");
+  const version = "version" in mockUpdateState && mockUpdateState.version ? mockUpdateState.version : "0.1.2";
+  const total = 10_485_760;
+  for (const pct of [18, 54, 100]) {
+    emitMockUpdate({
+      state: "downloading",
+      version,
+      downloadedBytes: Math.round((total * pct) / 100),
+      totalBytes: total,
+      percent: pct,
+    });
+    await later(undefined, 90);
+  }
+  emitMockUpdate({ state: "installing", version });
+};
+
 // ---------- events ----------
 
 type Unlisten = () => void;
@@ -323,6 +396,14 @@ export const onPopupState = (h: (s: PopupState) => void) => on<PopupState>("popu
 export const onPopupLevel = (h: (level: number) => void) => on<number>("popup://level", h);
 export const onEngineStatus = (h: (s: EngineStatus) => void) => on<unknown>("app://engine-status", (raw) => h(normaliseEngineStatus(raw)));
 export const onHistoryChanged = (h: () => void) => on<unknown>("app://history-changed", () => h());
+export const onUpdateStatus = (h: (s: UpdateStatus) => void): Promise<Unlisten> => {
+  if (inTauri) return on<UpdateStatus>("app://update-status", h);
+  mockUpdateListeners.add(h);
+  return Promise.resolve(() => {
+    mockUpdateListeners.delete(h);
+  });
+};
+export const onOpenUpdates = (h: () => void) => on<unknown>("tray://open-updates", () => h());
 
 // ---------- helpers ----------
 

@@ -1,23 +1,30 @@
 //! System tray icon and menu: Open Wren, Pause dictation, Reinstall hotkey, Quit.
 //! Pause and Reinstall are broadcast as app events; the session listens for them.
 
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Wry};
+
+use crate::updater::{EVENT_OPEN_UPDATES, UpdateStatus};
 
 pub const MAIN_LABEL: &str = "main";
 /// Payload: `bool` (true = paused).
 pub const EVENT_PAUSE_TOGGLED: &str = "tray://pause-toggled";
 pub const EVENT_REINSTALL_HOOK: &str = "tray://reinstall-hook";
 
+static UPDATE_MENU_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
+
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Wren", true, None::<&str>)?;
     let pause = CheckMenuItem::with_id(app, "pause", "Pause dictation", true, false, None::<&str>)?;
     let reinstall = MenuItem::with_id(app, "reinstall_hook", "Reinstall hotkey", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Wren", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &pause, &reinstall, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &pause, &reinstall, &update, &separator, &quit])?;
+    *UPDATE_MENU_ITEM.lock() = Some(update);
 
     let pause_item = pause.clone();
     let mut builder = TrayIconBuilder::with_id("wren")
@@ -32,6 +39,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             }
             "reinstall_hook" => {
                 let _ = app.emit(EVENT_REINSTALL_HOOK, ());
+            }
+            "update" => {
+                show_main(app);
+                let _ = app.emit(EVENT_OPEN_UPDATES, ());
             }
             "quit" => app.exit(0),
             _ => {}
@@ -80,4 +91,19 @@ pub fn show_main(app: &AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// Keeps the tray menu's update item in sync with [`UpdateStatus`].
+pub fn set_update_status(status: &UpdateStatus) {
+    let guard = UPDATE_MENU_ITEM.lock();
+    let Some(item) = guard.as_ref() else { return };
+    let label = match status {
+        UpdateStatus::Available { version, .. } => format!("Update available (v{version})"),
+        UpdateStatus::Downloading { percent: Some(p), .. } => format!("Downloading update ({p}%)…"),
+        UpdateStatus::Downloading { percent: None, .. } => "Downloading update…".to_string(),
+        UpdateStatus::Installing { .. } => "Installing update…".to_string(),
+        UpdateStatus::Checking => "Checking for updates…".to_string(),
+        _ => "Check for updates".to_string(),
+    };
+    let _ = item.set_text(label);
 }
