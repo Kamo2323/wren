@@ -12,7 +12,9 @@
 //! Clicks: the window is 360 × 120 so the pill can spring inside it, while remaining click-through
 //! everywhere except over the pill itself during interactive states.
 
-use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_HIT_SLOP, POPUP_HOVER_POLL_MS, POPUP_WINDOW_H, POPUP_WINDOW_W};
+#[cfg(windows)]
+use crate::constants::POPUP_BOTTOM_MARGIN;
+use crate::constants::{POPUP_HIT_SLOP, POPUP_HOVER_POLL_MS, POPUP_WINDOW_H, POPUP_WINDOW_W};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -507,10 +509,21 @@ mod platform {
         }
     }
 
+    /// Compute the Cocoa bottom-left origin `(x, y)` for the popup on a display.
+    ///
+    /// Anchors flush to the physical bottom edge (`frame.origin.y`) instead of `visible.origin.y`,
+    /// which reserves ~100+ pt for the macOS Dock even in full-screen apps. `popup.css` already adds
+    /// 14 pt of bottom padding inside the window, so the pill sits cleanly 14 pt above the bottom
+    /// screen edge (floating above the Dock at `NSStatusWindowLevel`).
+    pub(super) fn bottom_origin(frame: NSRect, visible: NSRect) -> NSPoint {
+        let x = visible.origin.x + ((visible.size.width - POPUP_WINDOW_W) / 2.0).round();
+        let y = frame.origin.y.round();
+        NSPoint::new(x, y)
+    }
+
     /// Pick the screen holding the focused application's active window (matching Windows'
     /// `MonitorFromWindow(GetForegroundWindow())`), falling back to the screen under the mouse
-    /// cursor and then the main screen. Places the popup horizontally centred above the bottom edge
-    /// (and above a bottom Dock if present).
+    /// cursor and then the main screen. Places the popup horizontally centred at the bottom edge.
     fn compute_frame(mtm: MainThreadMarker) -> Option<NSRect> {
         let screens = NSScreen::screens(mtm);
         // Primary screen height is used to flip CoreGraphics top-left Y into Cocoa bottom-left Y.
@@ -537,13 +550,9 @@ mod platform {
             }
         }
         let screen = chosen.or_else(|| NSScreen::mainScreen(mtm))?;
-        let frame = screen.frame();
-        let visible = screen.visibleFrame();
-        let x = visible.origin.x + ((visible.size.width - POPUP_WINDOW_W) / 2.0).round();
-        // Keep the pill cleanly above the Dock (visible.origin.y) or POPUP_BOTTOM_MARGIN above screen bottom.
-        let y = visible.origin.y.max(frame.origin.y + POPUP_BOTTOM_MARGIN).round();
+        let origin = bottom_origin(screen.frame(), screen.visibleFrame());
         Some(NSRect::new(
-            NSPoint::new(x, y),
+            origin,
             NSSize::new(POPUP_WINDOW_W, POPUP_WINDOW_H),
         ))
     }
@@ -825,5 +834,16 @@ mod tests {
         let win150 = (0, 0, 540, 180); // 150 %
         assert!(cursor_over((270, 130), win150, Some(PILL)));
         assert!(!cursor_over((270, 60), win150, Some(PILL)), "above the pill at 150 %");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_popup_anchors_to_physical_screen_bottom_ignoring_dock_inset() {
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0));
+        let visible = NSRect::new(NSPoint::new(0.0, 107.0), NSSize::new(1440.0, 763.0));
+        let origin = platform::bottom_origin(frame, visible);
+        assert_eq!(origin.x, 540.0);
+        assert_eq!(origin.y, 0.0);
     }
 }
