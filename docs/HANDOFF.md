@@ -25,7 +25,14 @@
 - Maximilian: the Mac app matters most (most meetings there); both apps must be bug-free.
 - Council round 2 (on 627dc87): Opus 7/10, Sol 5/10, Gemini 7/10. Shared/Windows/UI fixes done (4d1434b, 9a0a848);
   macOS round-2 fixes running in a T3 thread on the MacBook.
-- Next: merge Mac fixes → council round 3 → fixes until all satisfied → merge to main → release → update both apps.
+- Council round 3 (on 0ec68be): Opus 8/10, Sol 5/10, Gemini 8/10. Shared/Windows/UI fixes done in d7751ea
+  (mute fails closed before the first Teams read, the dictation record is kept for the whole meeting, quit waits
+  for a starting meeting and cuts a long Stop short, the watcher is joined on stop, Windows reads every queued
+  packet, notes flush on quit, auto notes wait 1.5 s). Verified: lib 396 passed, 0 warnings, 106 page checks,
+  live Windows 3/3, p50 229→227 ms. macOS round-3 fixes running in a T3 thread on the MacBook (2026-11-25).
+- Page check "day groups" was time-of-day flaky after midnight: it now accepts Today or Yesterday.
+- Next: merge Mac round-3 fixes → verify Windows → council round 4 → repeat until satisfied → merge to main →
+  release → update both apps.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
