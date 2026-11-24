@@ -153,6 +153,7 @@ fn meeting_round_trip_on_the_real_engine() {
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".into()),
         drain_timeout: Duration::from_secs(30),
+        max_backlog_ms: 20 * 60_000,
     };
     let svc = MeetingService::new(deps);
     let m = svc.start(Some("Live test".into())).unwrap();

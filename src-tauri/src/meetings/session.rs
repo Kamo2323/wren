@@ -63,7 +63,11 @@ pub struct Deps {
     pub me_name: Arc<dyn Fn() -> String + Send + Sync>,
     /// How long Stop waits for queued clips before marking the rest "[not transcribed]".
     pub drain_timeout: Duration,
+    /// Most audio kept waiting for transcription; older clips beyond it are saved as gaps (memory bound).
+    pub max_backlog_ms: u64,
 }
+
+
 
 /// The running meeting, as the UI sees it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -104,6 +108,7 @@ struct Job {
 
 #[derive(Default)]
 struct Queue {
+    next_seq: u64,
     jobs: VecDeque<Job>,
     in_flight: Option<(u64, Source, u64, u64)>,
     closed: bool,
@@ -135,6 +140,7 @@ struct Shared {
     abort: AtomicBool,
     listener: Arc<RwLock<Option<Listener>>>,
     dir: PathBuf,
+    max_backlog_ms: u64,
 }
 
 impl Shared {
@@ -196,6 +202,14 @@ struct Running {
 pub struct MeetingService {
     deps: Deps,
     running: Mutex<Option<Running>>,
+    /// Set while `start` opens the audio (outside the `running` lock, so dictation never waits on it).
+    starting: AtomicBool,
+    /// The meeting `stop` is still draining (delete must wait for it).
+    stopping: Mutex<Option<String>>,
+    max_backlog_ms: AtomicU64,
+    /// One meeting transcription at a time across this service's meetings: a stopping meeting's slow
+    /// clip and the next meeting's first clip never both queue on the sidecar ahead of a dictation.
+    asr_permit: Arc<Mutex<()>>,
     listener: Arc<RwLock<Option<Listener>>>,
     on_stopped: RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>,
 }
@@ -223,7 +237,17 @@ fn write_clip(path: &Path, samples: &[f32]) -> anyhow::Result<()> {
 
 impl MeetingService {
     pub fn new(deps: Deps) -> Self {
-        Self { deps, running: Mutex::new(None), listener: Arc::new(RwLock::new(None)), on_stopped: RwLock::new(None) }
+        let max = deps.max_backlog_ms;
+        Self {
+            deps,
+            running: Mutex::new(None),
+            starting: AtomicBool::new(false),
+            stopping: Mutex::new(None),
+            max_backlog_ms: AtomicU64::new(max),
+            asr_permit: Arc::new(Mutex::new(())),
+            listener: Arc::new(RwLock::new(None)),
+            on_stopped: RwLock::new(None),
+        }
     }
 
     pub fn set_listener(&self, l: Listener) {
@@ -243,12 +267,40 @@ impl MeetingService {
         self.running.lock().as_ref().map(|r| r.shared.snapshot())
     }
 
-    /// Start recording a new meeting. Fails if one is already running.
+    /// True while meeting `id` records or is still being stopped (deleting it then would race).
+    pub fn is_busy(&self, id: &str) -> bool {
+        self.running.lock().as_ref().is_some_and(|r| r.shared.id == id) || self.stopping.lock().as_deref() == Some(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_backlog_ms(&mut self, ms: u64) {
+        self.max_backlog_ms.store(ms, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backlog_ms_for_test(&self) -> u64 {
+        self.running.lock().as_ref().map_or(0, |r| r.shared.backlog_ms())
+    }
+
+    /// Start recording a new meeting. Fails if one is already running. Opening the audio happens
+    /// outside the `running` lock: dictation's start/stop notices take that lock and must not wait.
     pub fn start(&self, title: Option<String>) -> Result<MeetingRow, String> {
-        let mut running = self.running.lock();
-        if running.is_some() {
+        if self.running.lock().is_some() || self.starting.swap(true, Ordering::SeqCst) {
             return Err("A meeting is already being recorded.".into());
         }
+        struct Starting<'a>(&'a AtomicBool);
+        impl Drop for Starting<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        let _starting = Starting(&self.starting);
+        if self.running.lock().is_some() {
+            return Err("A meeting is already being recorded.".into());
+        }
+        // One clock for everything: both sources count their stream positions from (about) now, and
+        // observations and dictation windows are measured from the same instant.
+        let t0 = Instant::now();
         let (mut mic, mut teams) = (self.deps.make_sources)();
         let (me_tx, me_rx) = crossbeam_channel::unbounded();
         let (them_tx, them_rx) = crossbeam_channel::unbounded();
@@ -265,7 +317,14 @@ impl MeetingService {
             }
         };
         let title = title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        let row = self.deps.store.meeting_create(title.as_deref().unwrap_or(&default_title()), mode).map_err(|e| e.to_string())?;
+        let row = match self.deps.store.meeting_create(title.as_deref().unwrap_or(&default_title()), mode) {
+            Ok(r) => r,
+            Err(e) => {
+                mic.stop();
+                teams.stop();
+                return Err(e.to_string());
+            }
+        };
         if title.is_some() {
             let _ = self.deps.store.meeting_update(&row.id, title.as_deref(), None, None, None);
         }
@@ -273,7 +332,7 @@ impl MeetingService {
         let _ = std::fs::create_dir_all(dir.join("segments"));
         let shared = Arc::new(Shared {
             id: row.id.clone(),
-            t0: Instant::now(),
+            t0,
             started_at_utc: row.started_at_utc.clone(),
             me_name: (self.deps.me_name)(),
             clock: Mutex::new(Clock::default()),
@@ -290,11 +349,22 @@ impl MeetingService {
             abort: AtomicBool::new(false),
             listener: self.listener.clone(),
             dir: dir.clone(),
+            max_backlog_ms: self.max_backlog_ms.load(Ordering::Relaxed),
         });
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
         let (obs_tx, obs_rx) = crossbeam_channel::unbounded();
-        let me_wav = ContinuousWav::create(&dir.join("me.wav")).map_err(|e| e.to_string())?;
-        let them_wav = ContinuousWav::create(&dir.join("them.wav")).map_err(|e| e.to_string())?;
+        let wavs = ContinuousWav::create(&dir.join("me.wav")).and_then(|a| Ok((a, ContinuousWav::create(&dir.join("them.wav"))?)));
+        let (me_wav, them_wav) = match wavs {
+            Ok(w) => w,
+            Err(e) => {
+                // Nothing was recorded: don't leave a "recording" row behind.
+                tracing::warn!(error = %e, "cannot create the meeting recordings");
+                mic.stop();
+                teams.stop();
+                let _ = self.deps.store.meeting_delete(&row.id, &self.deps.meetings_dir);
+                return Err("Wren couldn't create the meeting recording files.".into());
+            }
+        };
         let pipeline = {
             let shared = shared.clone();
             let store = self.deps.store.clone();
@@ -311,9 +381,10 @@ impl MeetingService {
             let store = self.deps.store.clone();
             let transcriber = self.deps.transcriber.clone();
             let bias = self.deps.bias_terms.clone();
+            let permit = self.asr_permit.clone();
             std::thread::Builder::new()
                 .name("wren-meeting-asr".into())
-                .spawn(move || worker(shared, store, transcriber, bias))
+                .spawn(move || worker(shared, store, transcriber, bias, permit))
                 .map_err(|e| e.to_string())?
         };
         let watcher_stop = Arc::new(AtomicBool::new(false));
@@ -326,7 +397,7 @@ impl MeetingService {
         }
         tracing::info!(meeting = %row.id, mode = ?mode, "meeting started");
         shared.emit(MeetingEvent::Status { active: Some(shared.snapshot()) });
-        *running = Some(Running { shared, ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
+        *self.running.lock() = Some(Running { shared, ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
         Ok(row)
     }
 
@@ -387,13 +458,24 @@ impl MeetingService {
     /// Stop: finish the audio, wait up to `drain_timeout` for queued clips, save the rest as
     /// "[not transcribed]", mark the meeting ended. Returns its id.
     pub fn stop(&self) -> Option<String> {
-        self.stop_within(self.deps.drain_timeout)
+        self.stop_inner(self.deps.drain_timeout, true)
     }
 
-    /// `stop` with a custom wait for queued clips (quitting waits less).
+    /// `stop` with a custom wait for queued clips.
     pub fn stop_within(&self, drain: Duration) -> Option<String> {
+        self.stop_inner(drain, true)
+    }
+
+    /// Stop because Wren is quitting: short wait, and no enhanced-notes request (it would be killed
+    /// mid-stream and paid for nothing). The notes can be written after the next launch.
+    pub fn stop_for_quit(&self, drain: Duration) -> Option<String> {
+        self.stop_inner(drain, false)
+    }
+
+    fn stop_inner(&self, drain: Duration, run_hook: bool) -> Option<String> {
         let mut r = self.running.lock().take()?;
         let s = r.shared.clone();
+        *self.stopping.lock() = Some(s.id.clone());
         let elapsed = s.elapsed_ms();
         r.watcher_stop.store(true, Ordering::Relaxed);
         let _ = r.ctl.send(Ctl::Stop);
@@ -429,17 +511,19 @@ impl MeetingService {
         if let Some(w) = r.worker.take() {
             if w.is_finished() {
                 let _ = w.join();
+                let _ = std::fs::remove_dir_all(s.dir.join("segments"));
             }
-            // Otherwise it's inside a slow transcription; it discards its result (abort) and exits.
+            // Otherwise it's inside a slow transcription: it discards its result (abort), deletes its
+            // own clip and exits; the 24 h sweep removes the folder.
         }
-        let _ = std::fs::remove_dir_all(s.dir.join("segments"));
         if let Err(e) = self.deps.store.meeting_set_status(&s.id, MeetingStatus::Ended, Some(chrono::Utc::now()), elapsed) {
             tracing::warn!(error = %e, "could not mark the meeting ended");
         }
         tracing::info!(meeting = %s.id, elapsed_ms = elapsed, "meeting stopped");
+        *self.stopping.lock() = None;
         s.emit(MeetingEvent::Status { active: None });
         let hook = self.on_stopped.read().clone();
-        if let Some(h) = hook {
+        if let (true, Some(h)) = (run_hook, hook) {
             h(s.id.clone());
         }
         Some(s.id.clone())
@@ -485,9 +569,28 @@ impl Pipeline {
         if q.closed {
             return;
         }
-        let seq = q.jobs.back().map_or(0, |j| j.seq + 1) + q.in_flight.map_or(0, |f| f.0 + 1);
+        let seq = q.next_seq;
+        q.next_seq += 1;
         q.jobs.push_back(Job { seq, source, start_ms: seg.start_ms, end_ms: seg.end_ms, samples: seg.samples, queued_at: Instant::now() });
+        // Memory bound: when transcription falls far behind, the oldest waiting clips become gaps.
+        let mut dropped = Vec::new();
+        while q.jobs.iter().map(|j| j.end_ms - j.start_ms).sum::<u64>() > self.shared.max_backlog_ms && q.jobs.len() > 1 {
+            if let Some(j) = q.jobs.pop_front() {
+                dropped.push((j.source, j.start_ms, j.end_ms));
+            }
+        }
         self.shared.queue_cv.notify_all();
+        drop(q);
+        if !dropped.is_empty() {
+            tracing::warn!(meeting = %self.shared.id, clips = dropped.len(), "transcription fell too far behind; oldest clips saved as gaps");
+        }
+        for (src, a, b) in dropped {
+            let speaker = (src == Source::Me).then(|| self.shared.me_name.clone());
+            let seg = NewSegment { meeting_id: self.shared.id.clone(), source: src, speaker, confidence: 0.0, muted: false, start_ms: a, end_ms: b, text: NOT_TRANSCRIBED.into() };
+            if let Ok(row) = self.store.segment_insert(&seg) {
+                self.shared.emit(MeetingEvent::Segment { segment: row });
+            }
+        }
     }
 
     fn set_speaking(&self, source: Source, on: bool) {
@@ -532,9 +635,9 @@ impl Pipeline {
 
     fn observation(&mut self, o: TeamsObservation) {
         let s = &self.shared;
-        let (before, title_before) = {
+        let (before, title_before, me_before) = {
             let t = s.timeline.lock();
-            (t.participants(), t.latest_title())
+            (t.participants(), t.latest_title(), t.self_name())
         };
         let (after, title, me) = {
             let mut t = s.timeline.lock();
@@ -542,8 +645,10 @@ impl Pipeline {
             (t.participants(), t.latest_title(), t.self_name())
         };
         s.has_observations.store(true, Ordering::Relaxed);
-        if after != before {
+        if after != before || me != me_before {
             let _ = self.store.meeting_update(&s.id, None, None, Some(&after), me.as_deref());
+        }
+        if after != before {
             s.emit(MeetingEvent::Participants { meeting_id: s.id.clone(), names: after });
         }
         if title != title_before {
@@ -639,7 +744,13 @@ fn next_job(s: &Shared, q: &mut Queue) -> Option<Job> {
     pick.and_then(|i| q.jobs.remove(i))
 }
 
-fn worker(s: Arc<Shared>, store: Arc<Store>, transcriber: Arc<dyn Transcriber>, bias: Arc<dyn Fn() -> Vec<String> + Send + Sync>) {
+fn worker(
+    s: Arc<Shared>,
+    store: Arc<Store>,
+    transcriber: Arc<dyn Transcriber>,
+    bias: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    permit: Arc<Mutex<()>>,
+) {
     loop {
         let job = {
             let mut q = s.queue.lock();
@@ -654,15 +765,14 @@ fn worker(s: Arc<Shared>, store: Arc<Store>, transcriber: Arc<dyn Transcriber>, 
                 s.queue_cv.wait_for(&mut q, Duration::from_millis(100));
             }
         };
-        let row = process(&s, &store, transcriber.as_ref(), &bias, &job);
+        let row = process(&s, &store, transcriber.as_ref(), &bias, &job, &permit);
+        // The clip stays "in flight" until its row is saved, so Stop (and the notes it triggers)
+        // never runs between transcription and the write.
         let mut q = s.queue.lock();
         if s.abort.load(Ordering::SeqCst) || q.in_flight.map(|f| f.0) != Some(job.seq) {
             // Stop already saved this clip as "[not transcribed]".
             return;
         }
-        q.in_flight = None;
-        s.queue_cv.notify_all();
-        drop(q);
         if let Some(seg) = row {
             match store.segment_insert(&seg) {
                 Ok(row) => {
@@ -678,11 +788,20 @@ fn worker(s: Arc<Shared>, store: Arc<Store>, transcriber: Arc<dyn Transcriber>, 
                 Err(e) => tracing::warn!(error = %e, "could not save a meeting segment"),
             }
         }
+        q.in_flight = None;
+        s.queue_cv.notify_all();
     }
 }
 
 /// Transcribe and label one clip; `None` when it's dropped (silence, dictation, bleed-through).
-fn process(s: &Shared, store: &Store, transcriber: &dyn Transcriber, bias: &Arc<dyn Fn() -> Vec<String> + Send + Sync>, j: &Job) -> Option<NewSegment> {
+fn process(
+    s: &Shared,
+    store: &Store,
+    transcriber: &dyn Transcriber,
+    bias: &Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    j: &Job,
+    permit: &Mutex<()>,
+) -> Option<NewSegment> {
     let _ = store;
     if j.source == Source::Me && s.gate.lock().blocks(j.start_ms, j.end_ms) {
         return None;
@@ -693,11 +812,17 @@ fn process(s: &Shared, store: &Store, transcriber: &dyn Transcriber, bias: &Arc<
     let clip_ms = j.end_ms - j.start_ms;
     let text = match write_clip(&clip, &j.samples) {
         Ok(()) => {
-            let first = transcriber.transcribe(&clip, clip_ms, &terms);
-            let r = first.or_else(|e| {
-                tracing::warn!(error = %e, "meeting clip transcription failed; retrying once");
-                transcriber.transcribe(&clip, clip_ms, &terms)
-            });
+            let r = {
+                let _permit = permit.lock();
+                let first = transcriber.transcribe(&clip, clip_ms, &terms);
+                first.or_else(|e| {
+                    if s.abort.load(Ordering::SeqCst) {
+                        return Err(e);
+                    }
+                    tracing::warn!(error = %e, "meeting clip transcription failed; retrying once");
+                    transcriber.transcribe(&clip, clip_ms, &terms)
+                })
+            };
             let _ = std::fs::remove_file(&clip);
             match r {
                 Ok(t) => t.trim().to_string(),

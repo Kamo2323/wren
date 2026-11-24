@@ -127,6 +127,8 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
         }),
         me_name: Arc::new(move || meeting_name(&a3)),
         drain_timeout: DRAIN_TIMEOUT,
+        // 20 minutes of audio waiting at most (~77 MB of samples).
+        max_backlog_ms: 20 * 60_000,
     };
     let svc = Arc::new(MeetingService::new(deps));
     let app_ev = app.clone();

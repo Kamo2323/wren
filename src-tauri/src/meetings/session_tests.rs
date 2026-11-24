@@ -140,6 +140,7 @@ fn rig_with(delay_ms: u64, drain: Duration) -> Rig {
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".to_string()),
         drain_timeout: drain,
+        max_backlog_ms: 600_000,
     };
     let svc = MeetingService::new(deps);
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -362,4 +363,142 @@ impl Rig {
     fn svc_dir(&self, id: &str) -> PathBuf {
         self.svc.meeting_dir(id)
     }
+}
+
+// ---------------- council round 1 ----------------
+
+struct SlowStart(Manual, Duration);
+impl AudioSource for SlowStart {
+    fn start(
+        &mut self,
+        tx: crossbeam_channel::Sender<AudioBlock>,
+        _mode: crossbeam_channel::Sender<CaptureMode>,
+    ) -> anyhow::Result<CaptureMode> {
+        std::thread::sleep(self.1);
+        *self.0.tx.lock() = Some(tx);
+        Ok(CaptureMode::TeamsOnly)
+    }
+    fn stop(&mut self) {
+        self.0.tx.lock().take();
+    }
+}
+
+#[test]
+fn many_queued_clips_keep_sequence_numbers_small() {
+    // Sequence numbers used to add the last two together (Fibonacci) and overflowed after ~90 clips.
+    let r = rig_with(15, Duration::from_secs(30));
+    let m = r.svc.start(None).unwrap();
+    for i in 0..120u64 {
+        r.me.utter(i * 1_500, 450, 0.10);
+    }
+    wait_for("120 clips", 20_000, || r.store.segments(&m.id).unwrap().len() == 120);
+    r.svc.stop();
+}
+
+#[test]
+fn quitting_stop_skips_the_notes_hook() {
+    let r = rig();
+    let fired = Arc::new(AtomicUsize::new(0));
+    let f = fired.clone();
+    r.svc.set_on_stopped(Arc::new(move |_| {
+        f.fetch_add(1, Ordering::SeqCst);
+    }));
+    r.svc.start(None).unwrap();
+    r.svc.stop_for_quit(Duration::from_millis(200));
+    assert_eq!(fired.load(Ordering::SeqCst), 0, "no paid request on quit");
+    r.svc.start(None).unwrap();
+    r.svc.stop();
+    assert_eq!(fired.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn slow_capture_start_does_not_block_dictation_notices() {
+    let dir = std::env::temp_dir().join(format!("wren-meet-slow-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(Store::open(&dir.join("wren.db")).unwrap());
+    let (me, them) = (Manual::default(), Manual::default());
+    let deps = Deps {
+        store,
+        transcriber: FakeTranscriber::new(10),
+        meetings_dir: dir.join("meetings"),
+        make_sources: Arc::new(move || {
+            (
+                Box::new(ManualSource(me.clone(), CaptureMode::TeamsOnly)) as Box<dyn AudioSource>,
+                Box::new(SlowStart(them.clone(), Duration::from_millis(1_500))) as Box<dyn AudioSource>,
+            )
+        }),
+        make_teams_reader: None,
+        bias_terms: Arc::new(Vec::new),
+        me_name: Arc::new(|| "Maximilian".to_string()),
+        drain_timeout: Duration::from_secs(5),
+        max_backlog_ms: 600_000,
+    };
+    let svc = Arc::new(MeetingService::new(deps));
+    let s2 = svc.clone();
+    let starting = std::thread::spawn(move || s2.start(None).unwrap());
+    std::thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    svc.dictation_began(Instant::now());
+    assert!(t.elapsed() < Duration::from_millis(200), "dictation waited {} ms on a starting meeting", t.elapsed().as_millis());
+    starting.join().unwrap();
+    assert!(svc.start(None).is_err(), "still one meeting at a time");
+    svc.stop();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn backlog_is_capped_and_marked_not_transcribed() {
+    let mut r = rig_with(2_000, Duration::from_millis(100));
+    r.svc.set_max_backlog_ms(60_000);
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 200_000, 0.10); // ten 20 s clips behind a 2 s-per-clip transcriber
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(r.svc.backlog_ms_for_test() <= 60_000 + 20_000, "{}", r.svc.backlog_ms_for_test());
+    let dropped = r.store.segments(&m.id).unwrap().into_iter().filter(|s| s.text == NOT_TRANSCRIBED).count();
+    assert!(dropped >= 5, "oldest clips saved as gaps, not silently lost ({dropped})");
+    r.svc.stop();
+    let _ = &mut r;
+}
+
+#[test]
+fn failed_start_leaves_no_recording_row() {
+    let r = rig();
+    // A file where the meetings folder should be: the WAVs can't be created.
+    let blocker = r.svc.meeting_dir("x").parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+    std::fs::write(&blocker, b"not a folder").unwrap();
+    assert!(r.svc.start(None).is_err());
+    let rows = r.store.meeting_list().unwrap();
+    assert!(rows.iter().all(|m| m.status != MeetingStatus::Recording), "{rows:?}");
+    assert!(r.svc.active().is_none());
+}
+
+#[test]
+fn own_teams_name_saved_even_when_roster_unchanged() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    let mut o = obs(0, &[], None);
+    o.self_name = None;
+    o.roster = vec!["Sarah Jones".into()];
+    r.svc.observe(o);
+    let mut o = obs(250, &[], None);
+    o.roster = vec!["Sarah Jones".into()]; // same people, but now Teams shows the user's own tile
+    r.svc.observe(o);
+    wait_for("self name", 2_000, || r.store.meeting_get(&m.id).unwrap().unwrap().teams_self_name.is_some());
+    r.svc.stop();
+}
+
+#[test]
+fn meeting_counts_as_busy_while_stop_drains() {
+    let r = rig_with(700, Duration::from_secs(3));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 800, 0.10);
+    std::thread::sleep(Duration::from_millis(100));
+    let svc = Arc::new(r.svc);
+    let s2 = svc.clone();
+    let stopping = std::thread::spawn(move || s2.stop());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(svc.is_busy(&m.id), "delete must wait while stop drains");
+    stopping.join().unwrap();
+    assert!(!svc.is_busy(&m.id));
 }

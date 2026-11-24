@@ -30,6 +30,11 @@ pub const LOW_CONFIDENCE: f32 = 0.6;
 pub const TEAMS_LAG_MS: u64 = 900;
 /// One observation never counts for longer than this (the watcher may stall).
 const MAX_OBSERVATION_MS: u64 = 1_000;
+/// Privacy first: a clip with at least this much time muted in Teams counts as muted (left out of notes).
+const MUTED_MIN_MS: u64 = 500;
+/// Observations are kept for this long (attribution only looks seconds back); bounds memory.
+const KEEP_OBSERVATIONS_MS: u64 = 600_000;
+const PRUNE_ABOVE: usize = 4_000;
 
 /// `"Sarah Jones (You)"` → `"Sarah Jones"`; also `(Me)`. Case is kept.
 pub fn strip_self_suffix(name: &str) -> &str {
@@ -78,6 +83,20 @@ impl SpeakerTimeline {
         }
         let pos = self.obs.partition_point(|x| x.at_ms <= o.at_ms);
         self.obs.insert(pos, o.clone());
+        if self.obs.len() > PRUNE_ABOVE {
+            let latest = self.obs.last().map_or(0, |x| x.at_ms);
+            let cut = self.obs.partition_point(|x| x.at_ms + KEEP_OBSERVATIONS_MS < latest);
+            self.obs.drain(..cut);
+        }
+    }
+
+    /// Observations held (tests).
+    pub fn len(&self) -> usize {
+        self.obs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.obs.is_empty()
     }
 
     /// `[from, to)` of observation `i`.
@@ -125,7 +144,9 @@ impl SpeakerTimeline {
         Attribution { name: Some(name), confidence: confidence.min(1.0) }
     }
 
-    /// Whether the user was muted in Teams for most of `[start_ms, end_ms)`; `None` if never observed.
+    /// Whether the user was muted in Teams during `[start_ms, end_ms)` — for at least `MUTED_MIN_MS` or
+    /// most of it (a private aside inside a longer clip keeps the clip out of the notes); `None` if never
+    /// observed.
     pub fn muted_during(&self, start_ms: u64, end_ms: u64) -> Option<bool> {
         if end_ms <= start_ms {
             return None;
@@ -139,7 +160,7 @@ impl SpeakerTimeline {
                 }
             }
         }
-        (known > 0).then(|| muted * 2 > end_ms - start_ms)
+        (known > 0).then(|| muted >= MUTED_MIN_MS || muted * 2 > end_ms - start_ms)
     }
 
     /// Everyone seen in the roster or speaking, minus the user, in first-seen order.
@@ -273,6 +294,32 @@ mod tests {
         }
         assert_eq!(t.muted_during(1_000, 3_900), Some(true));
         assert_eq!(t.muted_during(0, 900), Some(false));
+    }
+
+    #[test]
+    fn a_short_muted_aside_inside_a_long_clip_counts_as_muted() {
+        let mut t = SpeakerTimeline::default();
+        for (at, m) in [(0, false), (8_000, true)] {
+            let mut o = obs(at, &[]);
+            o.self_muted = Some(m);
+            t.record(&o);
+        }
+        // 8 s unmuted then a 2 s private aside: the whole clip stays out of the notes.
+        let mut o = obs(9_000, &[]);
+        o.self_muted = Some(true);
+        t.record(&o);
+        assert_eq!(t.muted_during(0, 10_000), Some(true));
+    }
+
+    #[test]
+    fn old_observations_are_pruned() {
+        let mut t = SpeakerTimeline::default();
+        for i in 0..30_000u64 {
+            t.record(&obs(i * 250, &["Sarah Jones"]));
+        }
+        assert!(t.len() <= 4_000, "{}", t.len());
+        assert_eq!(t.attribute(30_000 * 250 - 3_000, 30_000 * 250 - 1_000, 0).name.as_deref(), Some("Sarah Jones"));
+        assert_eq!(t.participants(), vec!["Sarah Jones", "Tom Reid"], "participants survive pruning");
     }
 
     #[test]
