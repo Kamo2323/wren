@@ -23,7 +23,9 @@
   (commits 5065cc7 … 14fb0d2); macOS-only fixes + a Mac Teams call running in a T3 thread on the MacBook.
   Maximilian's request: richer note formatting — done (headline box, action table, bold facts).
 - Maximilian: the Mac app matters most (most meetings there); both apps must be bug-free.
-- Next: merge the Mac thread's fixes → council round 2 (weight macOS) → fixes → merge → release → update both apps.
+- Council round 2 (on 627dc87): Opus 7/10, Sol 5/10, Gemini 7/10. Shared/Windows/UI fixes done (4d1434b, 9a0a848);
+  macOS round-2 fixes running in a T3 thread on the MacBook.
+- Next: merge Mac fixes → council round 3 → fixes until all satisfied → merge to main → release → update both apps.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
