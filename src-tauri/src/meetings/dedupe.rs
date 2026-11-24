@@ -111,8 +111,9 @@ impl DictationGate {
         if let Some((_, end @ None)) = self.windows.last_mut() {
             *end = Some(at_ms);
         }
-        // Keep the list short: windows that ended more than ten minutes before this one can't matter.
-        self.windows.retain(|(_, e)| e.is_none_or(|e| e + 600_000 >= at_ms));
+        // Every window is kept for the whole meeting: a clip can wait behind a stalled sidecar for as
+        // long as the backlog allows, and must still be checked against the dictation it overlapped.
+        // (A few bytes per dictation; a long day of meetings holds hundreds at most.)
     }
 
     pub fn blocks(&self, start_ms: u64, end_ms: u64) -> bool {
@@ -210,5 +211,15 @@ mod tests {
         assert!(g.blocks(50_000, 51_000), "dictation still running");
         g.end(52_000);
         assert!(!g.blocks(60_000, 61_000));
+    }
+
+    #[test]
+    fn gate_keeps_old_windows_for_a_late_clip() {
+        let mut g = DictationGate::default();
+        g.begin(10_000);
+        g.end(12_000);
+        g.begin(1_500_000); // 25 minutes later, while that clip still waits behind a stalled sidecar
+        g.end(1_502_000);
+        assert!(g.blocks(10_500, 11_500));
     }
 }

@@ -415,3 +415,17 @@ export function errorText(e: unknown): string {
   if (e instanceof Error) return e.message;
   return "Something went wrong.";
 }
+
+/** Saves My notes edits still waiting to be written (set by the open meeting page; quit awaits it). */
+let notesFlush: (() => Promise<void>) | null = null;
+
+export function setNotesFlush(f: (() => Promise<void>) | null) {
+  notesFlush = f;
+}
+
+/** Write any pending My notes edit, waiting at most `maxMs` (quit must not hang on a failing save). */
+export async function flushPendingNotes(maxMs = 2_000): Promise<void> {
+  const f = notesFlush;
+  if (!f) return;
+  await Promise.race([f().catch(() => {}), new Promise<void>((r) => setTimeout(r, maxMs))]);
+}

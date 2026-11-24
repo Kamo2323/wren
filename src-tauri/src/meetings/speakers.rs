@@ -36,6 +36,10 @@ const MUTED_MIN_MS: u64 = 500;
 /// (20 min), so a late clip still finds its mute state and speaker. Bounds memory (~7k entries).
 const KEEP_OBSERVATIONS_MS: u64 = 25 * 60_000;
 const PRUNE_ABOVE: usize = 7_000;
+/// Privacy: audio this close before the first read that showed the mute state counts as muted — the
+/// first reads after Start can take a moment, and the user may already be muted. Further back (notes
+/// started long before the call was joined) the state stays unknown.
+const UNKNOWN_BEFORE_FIRST_MUTE_READ_MS: u64 = 30_000;
 
 /// `"Sarah Jones (You)"` → `"Sarah Jones"`; also `(Me)`. Case is kept.
 pub fn strip_self_suffix(name: &str) -> &str {
@@ -57,6 +61,8 @@ pub struct SpeakerTimeline {
     obs: Vec<TeamsObservation>,
     /// Earliest time still covered after pruning (`None`: nothing pruned yet).
     covered_from: Option<u64>,
+    /// Time of the earliest read that showed the user's mute state.
+    mute_known_from: Option<u64>,
     self_name: Option<String>,
     participants: Vec<String>,
     title: Option<String>,
@@ -84,6 +90,9 @@ impl SpeakerTimeline {
                 self.participants.push(clean.to_string());
             }
         }
+        if o.self_muted.is_some() && self.mute_known_from.is_none_or(|k| o.at_ms < k) {
+            self.mute_known_from = Some(o.at_ms);
+        }
         let pos = self.obs.partition_point(|x| x.at_ms <= o.at_ms);
         self.obs.insert(pos, o.clone());
         if self.obs.len() > PRUNE_ABOVE {
@@ -103,6 +112,11 @@ impl SpeakerTimeline {
 
     pub fn is_empty(&self) -> bool {
         self.obs.is_empty()
+    }
+
+    /// Time of the latest read held (how far the Teams watcher has seen).
+    pub fn latest_at(&self) -> Option<u64> {
+        self.obs.last().map(|o| o.at_ms)
     }
 
     /// `[from, to)` of observation `i`.
@@ -159,6 +173,10 @@ impl SpeakerTimeline {
         }
         // Privacy: the mute state of a clip older than the kept history is unknown — count it as muted.
         if self.covered_from.is_some_and(|c| start_ms < c) {
+            return Some(true);
+        }
+        // Before the first read that showed the mute state (the moments after Start): fail closed.
+        if self.mute_known_from.is_some_and(|k| start_ms < k && end_ms + UNKNOWN_BEFORE_FIRST_MUTE_READ_MS > k) {
             return Some(true);
         }
         let (mut known, mut muted) = (0u64, 0u64);
@@ -371,5 +389,25 @@ mod tests {
         t.record(&o);
         t.record(&obs(250, &[]));
         assert_eq!(t.latest_title().as_deref(), Some("Weekly sync"));
+    }
+
+    fn muted_obs(at: u64, m: bool) -> TeamsObservation {
+        TeamsObservation { self_muted: Some(m), ..obs(at, &[]) }
+    }
+
+    #[test]
+    fn clip_before_the_first_mute_read_counts_as_muted() {
+        let mut t = SpeakerTimeline::default();
+        span(&mut t, 0, 900, &[]); // reads that couldn't see the mute button
+        t.record(&muted_obs(1_000, false));
+        assert_eq!(t.muted_during(0, 900), Some(true), "state unknown at the time: fail closed");
+        assert_eq!(t.muted_during(1_000, 1_900), Some(false));
+    }
+
+    #[test]
+    fn long_before_the_first_mute_read_stays_unknown() {
+        let mut t = SpeakerTimeline::default();
+        t.record(&muted_obs(600_000, false));
+        assert_eq!(t.muted_during(0, 2_000), None, "a call joined ten minutes into the notes");
     }
 }

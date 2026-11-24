@@ -12,6 +12,7 @@ import {
   meetingGet,
   meetingUpdate,
   onMeetingEvent,
+  setNotesFlush,
   onNoteEvent,
   type ActiveMeeting,
   type Length,
@@ -67,6 +68,16 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
     [id, onNotesSaved],
   );
 
+  const beforeStop = useCallback(() => {
+    flushNotes.current?.();
+    return notesChain.current;
+  }, []);
+  // Quit (the "Stop and quit" dialog) saves a pending edit first, like Stop does.
+  useEffect(() => {
+    setNotesFlush(beforeStop);
+    return () => setNotesFlush(null);
+  }, [beforeStop]);
+
   const reload = useCallback(async () => {
     const d = await meetingGet(id).catch(() => null);
     if (!d) return setMissing(true);
@@ -75,19 +86,8 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
   }, [id]);
 
   useEffect(() => {
-    void (async () => {
-      const [d, a, gen] = await Promise.all([reload(), meetingActive().catch(() => null), meetingGenerating(id).catch(() => [])]);
-      const live = a && a.id === id ? a : null;
-      setActive(live);
-      wasLive.current = !!live;
-      if (live) setSpeaking({ me: live.speakingMe, them: live.speakingThem });
-      setWriting(gen.filter((l) => !settled.current.has(l)));
-      setTab((t) => t ?? (live ? "transcript" : "enhanced"));
-      void d;
-    })();
-    void getSettings().then((s) => setMeName(s.meetingName?.trim() || "Me")).catch(() => {});
-    void claudeKeyStatus().then((k) => setHasKey(k.saved)).catch(() => {});
-    return subscribe([
+    let alive = true;
+    const listeners = [
       onMeetingEvent((e) => {
         switch (e.kind) {
           case "segment":
@@ -158,7 +158,27 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
           if (e.kind === "no_key") setHasKey(false);
         }
       }),
-    ]);
+    ];
+    const off = subscribe(listeners);
+    void (async () => {
+      // Listen first, then ask what is being written: a run that starts or ends in between is never
+      // missed, and the answer is merged with what the events already said (never replaces it).
+      await Promise.all(listeners).catch(() => {});
+      const [, a, gen] = await Promise.all([reload(), meetingActive().catch(() => null), meetingGenerating(id).catch(() => [])]);
+      if (!alive) return;
+      const live = a && a.id === id ? a : null;
+      setActive(live);
+      wasLive.current = !!live;
+      if (live) setSpeaking({ me: live.speakingMe, them: live.speakingThem });
+      setWriting((w) => [...w, ...gen.filter((l) => !w.includes(l))].filter((l) => !settled.current.has(l)));
+      setTab((t) => t ?? (live ? "transcript" : "enhanced"));
+    })();
+    void getSettings().then((s) => setMeName(s.meetingName?.trim() || "Me")).catch(() => {});
+    void claudeKeyStatus().then((k) => setHasKey(k.saved)).catch(() => {});
+    return () => {
+      alive = false;
+      off();
+    };
   }, [id, reload]);
 
   const generate = useCallback(
@@ -167,14 +187,18 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       setWriting((w) => (w.includes(len) ? w : [...w, len]));
       try {
         const r = await meetingEnhance(id, len, regenerate);
-        // "running": one is already being written — keep showing it. "exists": nothing was sent.
-        if (r === "exists") setWriting((w) => w.filter((x) => x !== len));
+        // "running": one is already being written — keep showing it. "exists": nothing was sent; the
+        // notes were written meanwhile (e.g. the automatic Medium), so load them.
+        if (r === "exists") {
+          setWriting((w) => w.filter((x) => x !== len));
+          void reload();
+        }
       } catch (e) {
         setWriting((w) => w.filter((x) => x !== len));
         toast.show(errorText(e), { tone: "danger" });
       }
     },
-    [id, toast],
+    [id, toast, reload],
   );
 
   if (missing) {
@@ -198,10 +222,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         meName={meName}
         onBack={onBack}
         onChanged={(m) => setDetail((d) => (d ? { ...d, meeting: m } : d))}
-        beforeStop={() => {
-          flushNotes.current?.();
-          return notesChain.current;
-        }}
+        beforeStop={beforeStop}
       />
       <div className="meeting-tabs">
         <Tabs<TabId>

@@ -1,7 +1,7 @@
 // Shown when Quit is chosen while a meeting records (spec §5.5).
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/Button";
-import { meetingStopAndQuit } from "../../lib/meetings";
+import { flushPendingNotes, meetingStopAndQuit } from "../../lib/meetings";
 
 export function QuitConfirm({ onClose }: { onClose: () => void }) {
   const keepRef = useRef<HTMLButtonElement>(null);
@@ -30,11 +30,14 @@ export function QuitConfirm({ onClose }: { onClose: () => void }) {
             disabled={stopping}
             onClick={() => {
               setStopping(true);
-              // Wren quits once the meeting is saved; the dialog only closes if that fails.
-              void meetingStopAndQuit().catch(() => {
-                setStopping(false);
-                onClose();
-              });
+              // My notes' last edit is saved first; Wren quits once the meeting is saved, and the
+              // dialog only closes if that fails.
+              void flushPendingNotes()
+                .then(() => meetingStopAndQuit())
+                .catch(() => {
+                  setStopping(false);
+                  onClose();
+                });
             }}
           >
             {stopping ? "Stopping…" : "Stop and quit"}

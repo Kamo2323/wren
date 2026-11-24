@@ -28,6 +28,8 @@ const PAD_AFTER_MS: u64 = 300;
 const RECHECK: Duration = Duration::from_secs(5);
 /// Longest Stop waits for the capture thread.
 const STOP_JOIN: Duration = Duration::from_secs(2);
+/// Most packets read in one wake (~10 ms each): a stall's whole backlog, with a bound.
+const MAX_PACKETS_PER_WAKE: usize = 2_000;
 
 /// Which target to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,24 @@ pub fn process_list() -> Vec<(u32, u32, String)> {
 
 pub fn teams_pid() -> Option<u32> {
     teams_roots(&process_list()).into_iter().next()
+}
+
+/// Read every packet Windows has queued, not just one (`GetBuffer` returns a single ~10 ms packet). After
+/// the thread stalls, the whole backlog is then in hand before it is placed: its end is "now", so the
+/// silence inserted before it is only the time really missing, and no audio lands late. `false`: the
+/// capture failed (device change, Teams quitting).
+fn read_queued(capture: &AudioCaptureClient, bytes: &mut VecDeque<u8>) -> bool {
+    for _ in 0..MAX_PACKETS_PER_WAKE {
+        if capture.read_from_device_to_deque(bytes).is_err() {
+            return false;
+        }
+        match capture.get_next_packet_size() {
+            Ok(Some(n)) if n > 0 => continue,
+            Ok(_) => return true,
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 struct Client {
@@ -151,7 +171,7 @@ impl AudioSource for TeamsLoopback {
                 match &client {
                     Some(c) => {
                         let _ = c.event.wait_for_event(TICK.as_millis() as u32);
-                        if c.capture.read_from_device_to_deque(&mut bytes).is_err() {
+                        if !read_queued(&c.capture, &mut bytes) {
                             // Device change, Teams quitting: reconnect now rather than at the next recheck.
                             tracing::warn!("Teams audio capture stopped; reconnecting");
                             client = None;

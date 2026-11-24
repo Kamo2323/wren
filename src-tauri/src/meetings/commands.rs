@@ -39,6 +39,8 @@ pub fn ask_before_quit(app: &AppHandle) {
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// When quitting, wait less.
 const QUIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// The automatic notes after Stop wait this long, so a last edit to My notes is in them.
+const AUTO_NOTES_DELAY: Duration = Duration::from_millis(1_500);
 /// Playing a line plays its stretch plus this much after it.
 const CLIP_TAIL_MS: u64 = 500;
 /// Wait this long for the speech engine to be ready before giving up on a clip.
@@ -160,7 +162,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
     let app_stop = app.clone();
     svc.set_on_stopped(Arc::new(move |id: String| {
         if crate::meetings::claude::KeyStore::system().get().is_some() {
-            spawn_enhance(&app_stop, id, Length::Medium);
+            spawn_enhance(&app_stop, id, Length::Medium, AUTO_NOTES_DELAY);
         }
     }));
     svc
@@ -185,7 +187,7 @@ impl Drop for Generating {
 }
 
 /// Start writing a note in the background; false if one for this meeting and length is already running.
-pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
+pub fn spawn_enhance(app: &AppHandle, id: String, len: Length, delay: Duration) -> bool {
     {
         let mut g = GENERATING.lock();
         if g.iter().any(|(i, l)| *i == id && *l == len) {
@@ -195,9 +197,11 @@ pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
     }
     let guard = Generating(id.clone(), len);
     let _ = app.emit(NOTE_EVENT, crate::meetings::enhance::NoteEvent::Started { meeting_id: id.clone(), length: len });
-    let app = app.clone();
+    let (app, app_err, id_err) = (app.clone(), app.clone(), id.clone());
     let spawned = std::thread::Builder::new().name("wren-notes".into()).spawn(move || {
         let _guard = guard;
+        // After Stop: a moment for the last edit to My notes (saved on a short delay) to land first.
+        std::thread::sleep(delay);
         let state = app.state::<AppState>();
         let (model, me) = (claude_model(&app), meeting_name(&app));
         let _ = crate::meetings::enhance::generate(
@@ -212,6 +216,13 @@ pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
             },
         );
     });
+    if let Err(e) = &spawned {
+        // Nothing will run: say so, or "Writing…" would stay up.
+        let _ = app_err.emit(
+            NOTE_EVENT,
+            crate::meetings::enhance::NoteEvent::Error { meeting_id: id_err, length: len, kind: "api".into(), message: format!("Wren couldn't start writing the notes: {e}") },
+        );
+    }
     spawned.is_ok()
 }
 
@@ -413,7 +424,7 @@ pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, l
     if !regenerate && state.store.notes(&id).map_err(|e| e.to_string())?.iter().any(|n| n.length == length) {
         return Ok("exists".into());
     }
-    Ok(if spawn_enhance(&app, id, length) { "started" } else { "running" }.into())
+    Ok(if spawn_enhance(&app, id, length, Duration::ZERO) { "started" } else { "running" }.into())
 }
 
 /// Lengths being written for a meeting right now (so a reopened page shows "Writing…").

@@ -614,3 +614,112 @@ fn dictation_while_the_meeting_is_starting_stays_out() {
     assert_eq!(segs.len(), 1, "{segs:?}");
     assert_eq!(segs[0].text, "the rollout moves to thursday");
 }
+
+// ---------------- council round 3 ----------------
+
+/// A Teams reader that takes `read` per snapshot and never sees a meeting window; flags its drop.
+struct SlowReader(Duration, Arc<AtomicBool>);
+impl crate::meetings::teams::TeamsReader for SlowReader {
+    fn snapshot(&mut self) -> Option<(crate::meetings::teams::snapshot::UiNode, String)> {
+        std::thread::sleep(self.0);
+        None
+    }
+}
+impl Drop for SlowReader {
+    fn drop(&mut self) {
+        self.1.store(true, Ordering::SeqCst);
+    }
+}
+
+fn rig_with_reader(read: Duration, dropped: Arc<AtomicBool>) -> Rig {
+    let mut r = rig();
+    r.svc.deps.make_teams_reader = Some(Arc::new(move || {
+        let dropped = dropped.clone();
+        Box::new(move || Some(Box::new(SlowReader(read, dropped)) as Box<dyn crate::meetings::teams::TeamsReader>))
+            as crate::meetings::teams::ReaderFactory
+    }));
+    r
+}
+
+#[test]
+fn words_before_the_first_teams_mute_read_count_as_muted() {
+    let r = rig_with_reader(Duration::from_millis(800), Arc::new(AtomicBool::new(false)));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 1_000, 0.10); // spoken before Wren has read Teams once
+    std::thread::sleep(Duration::from_millis(300));
+    r.svc.observe(obs(900, &[], Some(true))); // the first read that shows the mute state: muted
+    wait_for("one segment", 5_000, || r.store.segments(&m.id).unwrap().len() == 1);
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert!(segs[0].muted, "unknown mute state before the first read fails closed: {segs:?}");
+}
+
+#[test]
+fn stop_waits_for_the_teams_reader_to_finish() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let r = rig_with_reader(Duration::from_millis(600), dropped.clone());
+    r.svc.start(None).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    r.svc.stop();
+    assert!(dropped.load(Ordering::SeqCst), "the old reader is gone before a new meeting can start");
+}
+
+#[test]
+fn quitting_while_a_meeting_is_starting_saves_it() {
+    let dir = std::env::temp_dir().join(format!("wren-meet-qstart-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(Store::open(&dir.join("wren.db")).unwrap());
+    let (me, them) = (Manual::default(), Manual::default());
+    let deps = Deps {
+        store: store.clone(),
+        transcriber: FakeTranscriber::new(10),
+        meetings_dir: dir.join("meetings"),
+        make_sources: Arc::new(move || {
+            (
+                Box::new(ManualSource(me.clone(), CaptureMode::TeamsOnly)) as Box<dyn AudioSource>,
+                Box::new(SlowStart(them.clone(), Duration::from_millis(600))) as Box<dyn AudioSource>,
+            )
+        }),
+        make_teams_reader: None,
+        bias_terms: Arc::new(Vec::new),
+        me_name: Arc::new(|| "Maximilian".to_string()),
+        drain_timeout: Duration::from_secs(5),
+        max_backlog_ms: 600_000,
+    };
+    let svc = Arc::new(MeetingService::new(deps));
+    let s2 = svc.clone();
+    let starting = std::thread::spawn(move || s2.start(None).unwrap());
+    std::thread::sleep(Duration::from_millis(100));
+    svc.stop_for_quit(Duration::from_secs(1));
+    let m = starting.join().unwrap();
+    assert!(svc.active().is_none(), "quit stopped the meeting that was starting");
+    assert_eq!(store.meeting_get(&m.id).unwrap().unwrap().status, MeetingStatus::Ended);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn quitting_cuts_a_long_stop_short_and_still_saves() {
+    let r = rig_with(1_500, Duration::from_secs(60));
+    let fired = Arc::new(AtomicUsize::new(0));
+    let f = fired.clone();
+    r.svc.set_on_stopped(Arc::new(move |_| {
+        f.fetch_add(1, Ordering::SeqCst);
+    }));
+    let m = r.svc.start(None).unwrap();
+    for i in 0..6u64 {
+        r.me.utter(i * 3_000, 1_000, 0.10);
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let svc = Arc::new(r.svc);
+    let s2 = svc.clone();
+    let stopping = std::thread::spawn(move || s2.stop());
+    std::thread::sleep(Duration::from_millis(100));
+    let t = Instant::now();
+    svc.stop_for_quit(Duration::from_millis(300));
+    assert!(t.elapsed() < Duration::from_secs(4), "quit waited {} ms", t.elapsed().as_millis());
+    let row = r.store.meeting_get(&m.id).unwrap().unwrap();
+    assert_eq!(row.status, MeetingStatus::Ended);
+    assert!(r.store.segments(&m.id).unwrap().iter().any(|s| s.text == NOT_TRANSCRIBED));
+    stopping.join().unwrap();
+    assert_eq!(fired.load(Ordering::SeqCst), 0, "no paid notes request while quitting");
+}

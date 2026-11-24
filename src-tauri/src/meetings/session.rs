@@ -43,6 +43,12 @@ const THEM_WAIT_FOR_TEAMS: Duration = Duration::from_millis(1_500);
 const RECENT_THEM_MS: u64 = 30_000;
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 const TEAMS_POLL: Duration = Duration::from_millis(250);
+/// Longest a Me clip waits for the Teams watcher to read past its end, so its mute state is known.
+const ME_WAIT_FOR_TEAMS: Duration = Duration::from_secs(3);
+/// Longest Stop waits for the Teams watcher to finish its current read and release the reader.
+const WATCHER_JOIN: Duration = Duration::from_secs(2);
+/// Longest quit waits for a meeting that is still opening its audio.
+const QUIT_WAITS_FOR_START: Duration = Duration::from_secs(15);
 
 /// Turns a clip into text (the dictation engine in the app; a fake in tests).
 pub trait Transcriber: Send + Sync {
@@ -147,9 +153,17 @@ struct Shared {
     listener: Arc<RwLock<Option<Listener>>>,
     dir: PathBuf,
     max_backlog_ms: u64,
+    /// The Teams watcher thread (`None`: no reader) and its stop flag.
+    watcher: Mutex<Option<JoinHandle<()>>>,
+    watcher_stop: Arc<AtomicBool>,
 }
 
 impl Shared {
+    /// True while the Teams watcher is still reading (a Me clip may wait for it).
+    fn teams_watching(&self) -> bool {
+        !self.watcher_stop.load(Ordering::Relaxed) && self.watcher.lock().as_ref().is_some_and(|h| !h.is_finished())
+    }
+
     fn now_ms(&self) -> u64 {
         self.t0.elapsed().as_millis() as u64
     }
@@ -217,6 +231,9 @@ pub struct MeetingService {
     /// still starting when the hotkey goes down seeds its gate from them.
     dictation: Mutex<VecDeque<(Instant, Option<Instant>)>>,
     max_backlog_ms: AtomicU64,
+    /// Set when Wren quits: a Stop still saving cuts its wait for queued clips short (to this deadline)
+    /// and writes no notes; no new meeting starts.
+    quitting: Mutex<Option<Instant>>,
     /// One meeting transcription at a time across this service's meetings: a stopping meeting's slow
     /// clip and the next meeting's first clip never both queue on the sidecar ahead of a dictation.
     asr_permit: Arc<Mutex<()>>,
@@ -256,6 +273,7 @@ impl MeetingService {
             stopped_cv: Condvar::new(),
             dictation: Mutex::new(VecDeque::new()),
             max_backlog_ms: AtomicU64::new(max),
+            quitting: Mutex::new(None),
             asr_permit: Arc::new(Mutex::new(())),
             listener: Arc::new(RwLock::new(None)),
             on_stopped: RwLock::new(None),
@@ -302,11 +320,18 @@ impl MeetingService {
     /// Start recording a new meeting. Fails if one is already running. Opening the audio happens
     /// outside the `running` lock: dictation's start/stop notices take that lock and must not wait.
     pub fn start(&self, title: Option<String>) -> Result<MeetingRow, String> {
-        if self.stopping.lock().is_some() {
-            return Err("The last meeting is still being saved. Try again in a moment.".into());
+        if self.quitting.lock().is_some() {
+            return Err("Wren is quitting.".into());
         }
-        if self.running.lock().is_some() || self.starting.swap(true, Ordering::SeqCst) {
-            return Err("A meeting is already being recorded.".into());
+        {
+            // `stop` takes the meeting and marks it stopping in one step under `running`: check both there.
+            let running = self.running.lock();
+            if self.stopping.lock().is_some() {
+                return Err("The last meeting is still being saved. Try again in a moment.".into());
+            }
+            if running.is_some() || self.starting.swap(true, Ordering::SeqCst) {
+                return Err("A meeting is already being recorded.".into());
+            }
         }
         struct Starting<'a>(&'a AtomicBool);
         impl Drop for Starting<'_> {
@@ -350,6 +375,7 @@ impl MeetingService {
         }
         let dir = self.meeting_dir(&row.id);
         let _ = std::fs::create_dir_all(dir.join("segments"));
+        let watcher_stop = Arc::new(AtomicBool::new(false));
         let shared = Arc::new(Shared {
             id: row.id.clone(),
             t0,
@@ -373,6 +399,8 @@ impl MeetingService {
             listener: self.listener.clone(),
             dir: dir.clone(),
             max_backlog_ms: self.max_backlog_ms.load(Ordering::Relaxed),
+            watcher: Mutex::new(None),
+            watcher_stop: watcher_stop.clone(),
         });
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
         let (obs_tx, obs_rx) = crossbeam_channel::unbounded();
@@ -388,6 +416,22 @@ impl MeetingService {
                 return Err("Wren couldn't create the meeting recording files.".into());
             }
         };
+        // Lock order: dictation → running. Held from seeding the gate until the meeting is published, so
+        // the worker never sees a clip before the gate holds every dictation since `t0`, and a dictation
+        // starting or ending in between is never lost.
+        let dl = self.dictation.lock();
+        {
+            let mut gate = shared.gate.lock();
+            for &(b, e) in dl.iter() {
+                if e.is_some_and(|e| e < t0) {
+                    continue;
+                }
+                gate.begin(b.saturating_duration_since(t0).as_millis() as u64);
+                if let Some(e) = e {
+                    gate.end(e.saturating_duration_since(t0).as_millis() as u64);
+                }
+            }
+        }
         let pipeline = {
             let shared = shared.clone();
             let store = self.deps.store.clone();
@@ -410,34 +454,19 @@ impl MeetingService {
                 .spawn(move || worker(shared, store, transcriber, bias, permit))
                 .map_err(|e| e.to_string())?
         };
-        let watcher_stop = Arc::new(AtomicBool::new(false));
         if let Some(make) = &self.deps.make_teams_reader {
             let s = shared.clone();
             let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || s.now_ms());
-            if let Err(e) = spawn_watcher(make(), TEAMS_POLL, clock, obs_tx.clone(), watcher_stop.clone()) {
-                tracing::warn!(error = %e, "cannot start the Teams window watcher");
+            match spawn_watcher(make(), TEAMS_POLL, clock, obs_tx.clone(), watcher_stop.clone()) {
+                Ok(h) => *shared.watcher.lock() = Some(h),
+                Err(e) => tracing::warn!(error = %e, "cannot start the Teams window watcher"),
             }
         }
         tracing::info!(meeting = %row.id, mode = ?mode, "meeting started");
+        *self.running.lock() =
+            Some(Running { shared: shared.clone(), ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
+        drop(dl);
         shared.emit(MeetingEvent::Status { active: Some(shared.snapshot()) });
-        {
-            // Dictation that began while the audio was opening: carry it into the gate. Held across
-            // publishing so a dictation ending in between is never lost (lock order: dictation → running).
-            let dl = self.dictation.lock();
-            {
-                let mut gate = shared.gate.lock();
-                for &(b, e) in dl.iter() {
-                    if e.is_some_and(|e| e < t0) {
-                        continue;
-                    }
-                    gate.begin(b.saturating_duration_since(t0).as_millis() as u64);
-                    if let Some(e) = e {
-                        gate.end(e.saturating_duration_since(t0).as_millis() as u64);
-                    }
-                }
-            }
-            *self.running.lock() = Some(Running { shared, ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
-        }
         Ok(row)
     }
 
@@ -524,6 +553,28 @@ impl MeetingService {
     }
 
     fn stop_inner(&self, drain: Duration, run_hook: bool) -> Option<String> {
+        struct ClearQuit<'a>(&'a Mutex<Option<Instant>>);
+        impl Drop for ClearQuit<'_> {
+            fn drop(&mut self) {
+                *self.0.lock() = None;
+            }
+        }
+        // Wren exits once this returns; cleared anyway so a cancelled exit (and tests) carry on normally.
+        let _clear_quit = (!run_hook).then(|| ClearQuit(&self.quitting));
+        if !run_hook {
+            // Quitting: a Stop still saving shortens its wait to ours, no new meeting starts, and a
+            // meeting still opening its audio is waited for and then saved like any other.
+            {
+                let mut q = self.quitting.lock();
+                if q.is_none() {
+                    *q = Some(Instant::now() + drain);
+                }
+            }
+            let until = Instant::now() + QUIT_WAITS_FOR_START;
+            while self.starting.load(Ordering::SeqCst) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         let taken = {
             let mut running = self.running.lock();
             let r = running.take();
@@ -561,8 +612,13 @@ impl MeetingService {
         let deadline = Instant::now() + drain;
         {
             let mut q = s.queue.lock();
-            while (!q.jobs.is_empty() || q.in_flight.is_some()) && Instant::now() < deadline {
-                s.queue_cv.wait_until(&mut q, deadline);
+            loop {
+                // Quit (from another thread) may shorten the wait.
+                let until = self.quitting.lock().map_or(deadline, |d| d.min(deadline));
+                if (q.jobs.is_empty() && q.in_flight.is_none()) || Instant::now() >= until {
+                    break;
+                }
+                s.queue_cv.wait_until(&mut q, until.min(Instant::now() + Duration::from_millis(100)));
             }
             q.closed = true;
             s.abort.store(true, Ordering::SeqCst);
@@ -597,14 +653,29 @@ impl MeetingService {
             // Otherwise it's inside a slow transcription: it discards its result (abort), deletes its
             // own clip and exits; the 24 h sweep removes the folder.
         }
+        // The Teams reader is released before a new meeting may start: on macOS its cleanup switches
+        // Teams' accessibility back off, which must never land under the next meeting's reader.
+        let watcher = s.watcher.lock().take();
+        if let Some(w) = watcher {
+            let until = Instant::now() + WATCHER_JOIN;
+            while !w.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if w.is_finished() {
+                let _ = w.join();
+            } else {
+                tracing::warn!(meeting = %s.id, "Teams window read still running after stop; leaving it to finish");
+            }
+        }
         if let Err(e) = self.deps.store.meeting_set_status(&s.id, MeetingStatus::Ended, Some(chrono::Utc::now()), elapsed) {
             tracing::warn!(error = %e, "could not mark the meeting ended");
         }
         tracing::info!(meeting = %s.id, elapsed_ms = elapsed, "meeting stopped");
+        let quitting = self.quitting.lock().is_some(); // read before quit can see this stop finish
         drop(stopping_guard); // saved: a new meeting may start, quit may proceed
         s.emit(MeetingEvent::Status { active: None });
         let hook = self.on_stopped.read().clone();
-        if let (true, Some(h)) = (run_hook, hook) {
+        if let (true, false, Some(h)) = (run_hook, quitting, hook) {
             h(s.id.clone());
         }
         Some(s.id.clone())
@@ -860,7 +931,12 @@ fn next_job(s: &Shared, q: &mut Queue) -> Option<Job> {
             t.source == Source::Them && t.start_ms < j.end_ms && j.start_ms < t.end_ms && !starts_after(t.start_ms, j.start_ms)
         });
         let waiting = them_live && them_pos < j.end_ms + 100 && j.queued_at.elapsed() < ME_WAIT_FOR_THEM;
-        if overlapping_them || waiting {
+        // And for Teams to be read past its end, so whether the user was muted is known (privacy).
+        let unread = !q.closed
+            && j.queued_at.elapsed() < ME_WAIT_FOR_TEAMS
+            && s.timeline.lock().latest_at().is_none_or(|t| t < j.end_ms)
+            && s.teams_watching();
+        if overlapping_them || waiting || unread {
             continue;
         }
         pick = Some(i);

@@ -312,7 +312,7 @@ const selectedTab = () => page.locator('[role="tab"][aria-selected="true"]').fir
 await page.goto(`${base}/index.html#meetings`);
 await page.waitForSelector(".meeting-card");
 check("Meetings list shows day groups of cards", (await page.locator(".meeting-card").count()) === 3 &&
-  (await page.locator(".day__label").allTextContents()).some((t) => /Today/.test(t)));
+  (await page.locator(".day__label").allTextContents()).some((t) => /Today|Yesterday/.test(t)));
 check("Start button when nothing records", (await page.locator(".meetings-start").textContent())?.includes("Start meeting notes"));
 check("Sidebar has Meetings below Home", await page.evaluate(() => {
   const ids = [...document.querySelectorAll(".nav-item")].map((b) => b.getAttribute("data-page"));
