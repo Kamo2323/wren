@@ -635,7 +635,7 @@ impl SessionLoop {
             tracing::info!(elapsed, "quitting during a recording; saving it");
             self.stop(Intent::SaveQuiet);
         } else {
-            self.discard();
+            self.discard("quit");
         }
     }
 
@@ -659,13 +659,13 @@ impl SessionLoop {
         match ev {
             HotkeyEvent::HoldStart => self.begin(Mode::Hold),
             HotkeyEvent::HandsFreeStart => self.begin(Mode::HandsFree),
-            HotkeyEvent::Tap => self.discard(),
+            HotkeyEvent::Tap => self.discard("tap"),
             HotkeyEvent::HoldEnd { .. } | HotkeyEvent::HandsFreeStop => self.stop(Intent::Paste),
             HotkeyEvent::Cancel { held_ms } => {
                 if held_ms >= CANCEL_SAVE_AFTER_MS {
                     self.stop(Intent::SaveQuiet);
                 } else {
-                    self.discard();
+                    self.discard("cancel");
                 }
             }
         }
@@ -675,14 +675,14 @@ impl SessionLoop {
         match msg {
             Msg::Discard => {
                 if self.active.is_some() {
-                    self.discard();
+                    self.discard("popup_discard");
                     self.env.hotkey(HotkeyCmd::ForceIdle);
                 }
             }
             Msg::SetPaused(paused) => {
                 tracing::info!(paused, "dictation paused from the tray");
                 if paused {
-                    self.discard();
+                    self.discard("paused");
                 }
                 self.env.hotkey(HotkeyCmd::SetPaused(paused));
             }
@@ -829,7 +829,7 @@ impl SessionLoop {
 
     /// Drop the recording and its audio. Takes down only this recording's popup: an earlier
     /// dictation's notice still on screen stays (a tap or Ctrl+Win+→ must not hide it).
-    fn discard(&mut self) {
+    fn discard(&mut self, reason: &'static str) {
         let Some(a) = self.active.take() else { return };
         let t = Instant::now();
         if let Some(rec) = self.env.recorder() {
@@ -838,7 +838,7 @@ impl SessionLoop {
         let stop_ms = ms(t.elapsed());
         self.shared.hold_recording.store(false, Ordering::SeqCst);
         self.popup.recording_ended();
-        tracing::info!(id = %a.id, stop_ms, "recording discarded");
+        tracing::info!(id = %a.id, stop_ms, reason, "recording discarded");
     }
 
     /// Stop the recording and hand it to the finisher.

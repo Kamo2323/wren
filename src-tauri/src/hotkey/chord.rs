@@ -184,6 +184,10 @@ impl ChordMachine {
         matches!(self.mode, Mode::Held { .. } | Mode::HandsFree { .. })
     }
 
+    pub fn is_awaiting_double(&self) -> bool {
+        matches!(self.mode, Mode::AwaitDouble { .. })
+    }
+
     fn chord_slot(&mut self, vk: u16) -> &mut bool {
         if vk == VK_CHORD_CTRL { &mut self.ctrl } else { &mut self.win }
     }

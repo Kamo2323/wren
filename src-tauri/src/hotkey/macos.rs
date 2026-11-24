@@ -68,6 +68,33 @@ const MOD_OPTION_VK: u16 = 0x2002;
 const MOD_COMMAND_VK: u16 = 0x2003;
 const MOD_RCTRL_VK: u16 = 0x2004;
 
+// Hardware virtual keycodes for our own chord keys (Left Control = 59, Fn = 63, Apple Silicon
+// Globe = 179). Their state is tracked via `FlagsChanged`, so any KeyDown/KeyUp macOS or a
+// keyboard driver emits for these must never be treated as a cancelling "other" key.
+const K_VK_LEFT_CONTROL: u16 = 59;
+const K_VK_FUNCTION: u16 = 63;
+const K_VK_GLOBE: u16 = 179;
+
+fn is_ignored_key_event_code(keycode: u16) -> bool {
+    matches!(keycode, K_VK_LEFT_CONTROL | K_VK_FUNCTION | K_VK_GLOBE)
+}
+
+/// Privacy-safe category label for diagnostics when an unexpected non-chord key cancels a hold
+/// or clears a pending double-tap window. Never logs regular character keycodes.
+fn other_vk_category(vk: u16) -> String {
+    match vk {
+        MOD_SHIFT_VK => "shift".into(),
+        MOD_OPTION_VK => "option".into(),
+        MOD_COMMAND_VK => "command".into(),
+        MOD_RCTRL_VK => "right_control".into(),
+        code if code >= OTHER_KEY_BASE && code < MOD_SHIFT_VK => {
+            let raw = code & 0x0FFF;
+            if raw >= 128 { format!("ext_key_{raw}") } else { "regular_key".into() }
+        }
+        _ => "unknown".into(),
+    }
+}
+
 type CGEventTapCallBack = unsafe extern "C" fn(
     proxy: CGEventTapProxy,
     event_type: u32,
@@ -191,16 +218,13 @@ struct ModState {
 
 impl ModState {
     fn from_flags(flags: CGEventFlags) -> Self {
-        let right_ctrl = (flags & MASK_RIGHT_CONTROL) != 0;
-        let left_dev = (flags & MASK_LEFT_CONTROL) != 0;
-        // Real macOS CGEventFlags carry device-specific left/right control bits; when both
-        // controls are held and right control releases, keeping left_ctrl true via MASK_LEFT_CONTROL
-        // avoids synthesising a fake Left Control Down on Right Control release.
-        let left_ctrl = if left_dev || right_ctrl {
-            left_dev
-        } else {
-            (flags & MASK_CONTROL) != 0
-        };
+        let ctrl_any = (flags & MASK_CONTROL) != 0;
+        let right_ctrl = ctrl_any && (flags & MASK_RIGHT_CONTROL) != 0;
+        let left_dev = ctrl_any && (flags & MASK_LEFT_CONTROL) != 0;
+        // Real macOS CGEventFlags carry device-specific left/right control bits; only consult
+        // them while MASK_CONTROL is active, and keep left_ctrl true via MASK_LEFT_CONTROL when
+        // both controls are held so releasing Right Control never synthesises a fake Left Control Down.
+        let left_ctrl = if left_dev || right_ctrl { left_dev } else { ctrl_any };
         Self {
             left_ctrl,
             fn_key: (flags & MASK_SECONDARY_FN) != 0,
@@ -347,6 +371,7 @@ impl Shared {
 
 enum Control {
     Event { ev: KeyEvent, mods: ModState },
+    IgnoredChordKeyDown(u16),
     ForceIdle,
     Interrupt,
     Resume,
@@ -416,6 +441,12 @@ unsafe extern "C" fn event_tap_callback(
                 return event;
             }
             let keycode = unsafe { CGEventGetIntegerValueField(event, K_CG_KEYBOARD_EVENT_KEYCODE) } as u16;
+            if is_ignored_key_event_code(keycode) {
+                if event_type == K_CG_EVENT_KEY_DOWN {
+                    let _ = ctx.ctrl_tx.try_send(Control::IgnoredChordKeyDown(keycode));
+                }
+                return event;
+            }
             let vk = OTHER_KEY_BASE | (keycode & 0x0FFF);
             let dir = if event_type == K_CG_EVENT_KEY_DOWN { KeyDir::Down } else { KeyDir::Up };
             let mods = *ctx.mods.lock();
@@ -768,7 +799,11 @@ fn run_machine(shared: Arc<Shared>, ctrl_rx: crossbeam_channel::Receiver<Control
             Control::Resume | Control::Reinstall => {
                 machine.force_idle();
             }
+            Control::IgnoredChordKeyDown(keycode) => {
+                tracing::info!(keycode, "ignored macOS KeyDown for chord/globe key");
+            }
             Control::Resync => {
+                tracing::warn!("macOS hotkey event tap disabled; resyncing modifier state");
                 let now = shared.now_ms();
                 let s = current_mod_state();
                 machine.prune_other_keys(|vk| is_other_key_still_down(vk, s));
@@ -779,6 +814,7 @@ fn run_machine(shared: Arc<Shared>, ctrl_rx: crossbeam_channel::Receiver<Control
                 if shared.paused.load(Ordering::Relaxed) {
                     continue;
                 }
+                let was_awaiting_double = machine.is_awaiting_double();
                 let mut out = Vec::new();
                 if ev.dir == KeyDir::Down && (ev.vk == VK_CHORD_CTRL || ev.vk == VK_CHORD_WIN) {
                     // Use the callback-time `ModState` snapshot (not a live query) so quick taps
@@ -793,6 +829,24 @@ fn run_machine(shared: Arc<Shared>, ctrl_rx: crossbeam_channel::Receiver<Control
                     out.extend(machine.sync_key(partner, partner_down, ev.t_ms));
                 }
                 out.extend(machine.on_key(ev));
+                if ev.dir == KeyDir::Down && ev.vk != VK_CHORD_CTRL && ev.vk != VK_CHORD_WIN {
+                    let cancelled = out.iter().find_map(|o| match o {
+                        ChordOutput::Cancel { held_ms } => Some(*held_ms),
+                        _ => None,
+                    });
+                    if let Some(held_ms) = cancelled {
+                        tracing::info!(
+                            category = %other_vk_category(ev.vk),
+                            held_ms,
+                            "macOS chord cancelled by another key"
+                        );
+                    } else if was_awaiting_double && !machine.is_awaiting_double() {
+                        tracing::info!(
+                            category = %other_vk_category(ev.vk),
+                            "macOS double-tap window cleared by another key"
+                        );
+                    }
+                }
                 emit(out);
             }
         }
@@ -956,5 +1010,71 @@ mod tests {
             out.extend(m.on_key(ev));
         }
         assert!(out.is_empty(), "Cmd + Fn + Control must never start recording: {out:?}");
+    }
+
+    #[test]
+    fn ignored_chord_and_globe_keycodes_do_not_break_double_tap() {
+        assert!(is_ignored_key_event_code(K_VK_LEFT_CONTROL));
+        assert!(is_ignored_key_event_code(K_VK_FUNCTION));
+        assert!(is_ignored_key_event_code(K_VK_GLOBE));
+        assert!(!is_ignored_key_event_code(123)); // Left arrow must still cancel for window tiling
+        assert!(!is_ignored_key_event_code(0));   // 'A' must still cancel
+
+        // Stray device-specific right-control bit without MASK_CONTROL must not trigger right_ctrl.
+        let stray = ModState::from_flags(MASK_SECONDARY_FN | MASK_RIGHT_CONTROL);
+        assert!(stray.fn_key);
+        assert!(!stray.right_ctrl);
+        assert!(!stray.left_ctrl);
+    }
+
+    #[test]
+    fn double_tap_starts_hands_free_across_release_orders() {
+        let step = |m: &mut ChordMachine, prev: &mut ModState, flags: u64, t: u64| -> Vec<ChordOutput> {
+            let next = ModState::from_flags(flags);
+            let evs = prev.diff_events(next, t, false);
+            *prev = next;
+            let mut out = Vec::new();
+            for ev in evs {
+                if ev.dir == KeyDir::Down && (ev.vk == VK_CHORD_CTRL || ev.vk == VK_CHORD_WIN) {
+                    let (partner, partner_down) = if ev.vk == VK_CHORD_CTRL {
+                        (VK_CHORD_WIN, next.fn_key)
+                    } else {
+                        (VK_CHORD_CTRL, next.left_ctrl)
+                    };
+                    out.extend(m.sync_key(partner, partner_down, ev.t_ms));
+                }
+                out.extend(m.on_key(ev));
+            }
+            out
+        };
+
+        let fn_only = MASK_SECONDARY_FN;
+        let ctrl_only = MASK_CONTROL | MASK_LEFT_CONTROL;
+        let both = fn_only | ctrl_only;
+
+        // Order 1: Fn↓ Ctrl↓ Ctrl↑ Fn↑  (180ms gap)  Fn↓ Ctrl↓
+        let mut m = ChordMachine::new();
+        let mut prev = ModState::default();
+        assert!(step(&mut m, &mut prev, fn_only, 0).is_empty());
+        assert!(step(&mut m, &mut prev, both, 10).contains(&ChordOutput::HoldStart));
+        assert_eq!(step(&mut m, &mut prev, fn_only, 60), vec![ChordOutput::Tap]);
+        assert!(step(&mut m, &mut prev, 0, 70).is_empty());
+        assert!(step(&mut m, &mut prev, fn_only, 240).is_empty());
+        assert!(step(&mut m, &mut prev, both, 250).contains(&ChordOutput::HandsFreeStart));
+
+        // Order 2: Simultaneous press & release, then simultaneous press
+        let mut m = ChordMachine::new();
+        let mut prev = ModState::default();
+        assert!(step(&mut m, &mut prev, both, 0).contains(&ChordOutput::HoldStart));
+        assert_eq!(step(&mut m, &mut prev, 0, 50), vec![ChordOutput::Tap]);
+        assert!(step(&mut m, &mut prev, both, 220).contains(&ChordOutput::HandsFreeStart));
+
+        // Order 3: Keep Fn held and double-tap Control
+        let mut m = ChordMachine::new();
+        let mut prev = ModState::default();
+        assert!(step(&mut m, &mut prev, fn_only, 0).is_empty());
+        assert!(step(&mut m, &mut prev, both, 10).contains(&ChordOutput::HoldStart));
+        assert_eq!(step(&mut m, &mut prev, fn_only, 60), vec![ChordOutput::Tap]);
+        assert!(step(&mut m, &mut prev, both, 200).contains(&ChordOutput::HandsFreeStart));
     }
 }
