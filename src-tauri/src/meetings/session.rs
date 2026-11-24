@@ -80,7 +80,7 @@ pub struct ActiveMeeting {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum MeetingEvent {
     Segment { segment: SegmentRow },
     Speaking { meeting_id: String, source: Source, on: bool },

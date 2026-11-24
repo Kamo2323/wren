@@ -3,6 +3,17 @@ import { useId } from "react";
 
 export {
   AppWindow,
+  Bold,
+  Heading2,
+  List,
+  ListChecks,
+  ArrowDown,
+  AudioLines,
+  ChevronLeft,
+  KeyRound,
+  NotebookPen,
+  Square,
+  Users,
   ArrowLeftRight,
   ArrowRight,
   Ban,

@@ -34,6 +34,10 @@ import { ToastProvider, useToast } from "./components/Toast";
 import { AccessibilityBanner, OthersBanner } from "./components/Banner";
 import { Moon, Sun } from "./components/Icon";
 import Home from "./pages/Home";
+import Meetings from "./pages/Meetings";
+import { QuitConfirm } from "./pages/meeting/QuitConfirm";
+import { inTauri } from "./lib/api";
+import { meetingActive, onConfirmQuit, onMeetingEvent } from "./lib/meetings";
 import History from "./pages/History";
 import Dictionary from "./pages/Dictionary";
 import Stats from "./pages/Stats";
@@ -44,6 +48,7 @@ const SETTLE_MS = 1400;
 
 const TITLES: Record<PageId, string> = {
   home: "Home",
+  meetings: "Meetings",
   history: "History",
   dictionary: "Dictionary",
   stats: "Stats",
@@ -76,7 +81,25 @@ function AppShell() {
   const [accessibilityOk, setAccessibilityOk] = useState(true);
   const [accessibilityDismissed, setAccessibilityDismissed] = useState(false);
   const [settled, setSettled] = useState(false);
-  const [settingsFocus, setSettingsFocus] = useState<{ group: "engine" | "updates"; at: number } | null>(null);
+  const [settingsFocus, setSettingsFocus] = useState<{ group: "engine" | "updates" | "meetings"; at: number } | null>(null);
+  const [meetingLive, setMeetingLive] = useState(false);
+  const [confirmQuit, setConfirmQuit] = useState(false);
+
+  useEffect(() => {
+    void meetingActive().then((a) => setMeetingLive(!!a)).catch(() => {});
+    const offMock = () => setConfirmQuit(true);
+    if (!inTauri) window.addEventListener("wren-mock-confirm-quit", offMock);
+    const off = subscribe([
+      onMeetingEvent((e) => {
+        if (e.kind === "status") setMeetingLive(!!e.active);
+      }),
+      onConfirmQuit(() => setConfirmQuit(true)),
+    ]);
+    return () => {
+      off();
+      window.removeEventListener("wren-mock-confirm-quit", offMock);
+    };
+  }, []);
   const updateRef = useRef<UpdateStatus>(update);
   updateRef.current = update;
   const settingsRef = useRef<SettingsData | null>(null);
@@ -204,6 +227,11 @@ function AppShell() {
     setPage(p);
   }, []);
 
+  const openMeetingSettings = useCallback(() => {
+    setPage("settings");
+    setSettingsFocus({ group: "meetings", at: Date.now() });
+  }, []);
+
   const openEngine = useCallback(() => {
     setPage("settings");
     setSettingsFocus({ group: "engine", at: Date.now() });
@@ -222,7 +250,9 @@ function AppShell() {
         onOpenEngine={openEngine}
         update={update}
         onInstallUpdate={() => void installUpdate()}
+        meetingLive={meetingLive}
       />
+      {confirmQuit && <QuitConfirm onClose={() => setConfirmQuit(false)} />}
       <main className="panel" ref={panelRef}>
         {showAccessibilityBanner && (
           <AccessibilityBanner
@@ -272,6 +302,7 @@ function AppShell() {
             {page === "home" && (
               <Home typingWpm={typingWpm} theme={resolvedTheme} onOpenHistory={() => select("history")} />
             )}
+            {page === "meetings" && <Meetings onOpenSettings={openMeetingSettings} />}
             {page === "history" && <History />}
             {page === "dictionary" && <Dictionary />}
             {page === "stats" && <Stats typingWpm={typingWpm} />}

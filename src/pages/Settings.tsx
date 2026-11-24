@@ -15,6 +15,15 @@ import {
   setAudioDevice,
   watcherStatus,
 } from "../lib/api";
+import {
+  claudeKeyRemove,
+  claudeKeySave,
+  claudeKeyStatus,
+  claudeSpendMonth,
+  errorText,
+  openSystemAudioSettings,
+  systemAudioPermission,
+} from "../lib/meetings";
 import { formatBytes, formatNumber, joinNames, retentionLabel, whenLabel } from "../lib/format";
 import { useConstants } from "../lib/useConstants";
 import { useMicLevel } from "../lib/useMicLevel";
@@ -40,6 +49,7 @@ import {
   Sun,
   Trash2,
   TriangleAlert,
+  Users,
   WandSparkles,
   WrenTile,
 } from "../components/Icon";
@@ -52,6 +62,7 @@ const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "dictation", label: "Dictation" },
   { id: "learning", label: "Learning" },
   { id: "ai", label: "AI clean-up" },
+  { id: "meetings", label: "Meeting notes" },
   { id: "engine", label: "Speech engine" },
   { id: "history", label: "History" },
   { id: "updates", label: "Updates" },
@@ -379,6 +390,158 @@ function WatcherSection({ settings, update }: { settings: SettingsData; update: 
           )}
         </div>
       </SetRow>
+    </Group>
+  );
+}
+
+function MeetingNotesSection({
+  settings,
+  update,
+  isMac,
+}: {
+  settings: SettingsData;
+  update: (patch: Partial<SettingsData>) => Promise<void>;
+  isMac: boolean;
+}) {
+  const toast = useToast();
+  const [name, setName] = useState(settings.meetingName ?? "Maximilian");
+  const [keySaved, setKeySaved] = useState<boolean | null>(null);
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [spend, setSpend] = useState<{ usd: number; notes: number } | null>(null);
+  const [perm, setPerm] = useState<string | null>(null);
+
+  useEffect(() => {
+    void claudeKeyStatus()
+      .then((k) => setKeySaved(k.saved))
+      .catch(() => setKeySaved(false));
+    void claudeSpendMonth().then(setSpend).catch(() => {});
+    if (isMac) void systemAudioPermission().then(setPerm).catch(() => {});
+  }, [isMac]);
+
+  async function saveKey() {
+    setSaving(true);
+    setKeyError(null);
+    try {
+      await claudeKeySave(key.trim());
+      setKey("");
+      setKeySaved(true);
+      toast.show("Claude API key saved");
+    } catch (e) {
+      setKeyError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function forgetKey() {
+    try {
+      await claudeKeyRemove();
+      setKeySaved(false);
+    } catch (e) {
+      toast.show(errorText(e));
+    }
+  }
+
+  const model = settings.claudeModel === "claude-sonnet-5-5" ? "claude-sonnet-5-5" : "claude-opus-5-5";
+  return (
+    <Group id="meetings" title="Meeting notes" icon={<Users size={15} strokeWidth={2} />} tone="teal">
+      <SetRow
+        title="Your name in meetings"
+        desc="Shown on your own lines in the transcript and used in the notes."
+        htmlFor="meeting-name"
+        control={
+          <input
+            id="meeting-name"
+            className="input"
+            value={name}
+            maxLength={60}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => {
+              const n = name.trim();
+              if (!n) return setName(settings.meetingName);
+              if (n !== settings.meetingName) void update({ meetingName: n });
+            }}
+          />
+        }
+      />
+      <SetRow
+        title="Claude API key"
+        desc={
+          <>
+            Enhanced notes are written by Claude and billed to the Anthropic organisation the key belongs to (your API credits).
+            The key is kept in {isMac ? "the macOS Keychain" : "Windows Credential Manager"}, never in Wren's files.
+          </>
+        }
+      >
+        <div className="setrow__foot">
+          {keySaved ? (
+            <div className="key-row">
+              <span className="key-saved">
+                <Status tone="ok">Key saved</Status>
+              </span>
+              <Button size="sm" variant="ghost" icon={<Trash2 size={13} strokeWidth={2.2} />} onClick={() => void forgetKey()}>
+                Forget key
+              </Button>
+            </div>
+          ) : (
+            <form
+              className="key-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (key.trim()) void saveKey();
+              }}
+            >
+              <input
+                id="claude-key"
+                className="input key-input"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="sk-ant-…"
+                aria-label="Claude API key"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+              />
+              <Button type="submit" size="sm" variant="primary" disabled={saving || !key.trim()}>
+                {saving ? "Checking…" : "Save key"}
+              </Button>
+            </form>
+          )}
+          {keyError && <Status tone="bad">{keyError}</Status>}
+        </div>
+      </SetRow>
+      <SetRow
+        title="Model"
+        desc="Opus writes the best notes. Sonnet costs about half as much."
+        htmlFor="claude-model"
+        control={
+          <select id="claude-model" className="select" value={model} onChange={(e) => void update({ claudeModel: e.target.value })}>
+            <option value="claude-opus-5-5">Claude Opus 5.5</option>
+            <option value="claude-sonnet-5-5">Claude Sonnet 5.5</option>
+          </select>
+        }
+      />
+      <SetRow
+        title="This month"
+        desc={spend ? `~$${spend.usd.toFixed(2)} across ${spend.notes} notes (estimated from list prices).` : "Checking…"}
+      />
+      {isMac && (
+        <SetRow
+          title="System audio recording"
+          desc="macOS needs this permission so Wren can hear the other people in your Teams calls."
+          control={
+            perm === "granted" ? (
+              <Status tone="ok">Allowed</Status>
+            ) : (
+              <Button size="sm" variant="primary" onClick={() => void openSystemAudioSettings()}>
+                Open System Settings
+              </Button>
+            )
+          }
+        />
+      )}
     </Group>
   );
 }
@@ -734,7 +897,7 @@ export default function Settings({
   engine: EngineStatus;
   others: string[];
   onSaved: (s: SettingsData) => void;
-  focus?: { group: "engine" | "updates"; at: number } | null;
+  focus?: { group: "engine" | "updates" | "meetings"; at: number } | null;
   update: UpdateStatus;
   onCheckUpdate: () => Promise<void>;
   onInstallUpdate: () => Promise<void>;
@@ -864,6 +1027,7 @@ export default function Settings({
 
             <WatcherSection settings={settings} update={update} />
             <AiSection settings={settings} update={update} isMac={isMac} />
+            <MeetingNotesSection settings={settings} update={update} isMac={isMac} />
             <EngineSection engine={engine} settings={settings} isMac={isMac} />
             <HistorySection />
 

@@ -1,11 +1,12 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { EngineStatus, UpdateStatus } from "../lib/types";
-import { BookA, ChartColumn, Download, History, House, RotateCw, Settings, WrenTile } from "./Icon";
+import { BookA, ChartColumn, Download, History, House, RotateCw, Settings, Users, WrenTile } from "./Icon";
 
-export type PageId = "home" | "history" | "dictionary" | "stats" | "settings";
+export type PageId = "home" | "meetings" | "history" | "dictionary" | "stats" | "settings";
 
 const MAIN: Array<{ id: PageId; label: string; icon: ReactNode }> = [
   { id: "home", label: "Home", icon: <House size={18} strokeWidth={1.9} /> },
+  { id: "meetings", label: "Meetings", icon: <Users size={18} strokeWidth={1.9} /> },
   { id: "history", label: "History", icon: <History size={18} strokeWidth={1.9} /> },
   { id: "dictionary", label: "Dictionary", icon: <BookA size={18} strokeWidth={1.9} /> },
   { id: "stats", label: "Stats", icon: <ChartColumn size={18} strokeWidth={1.9} /> },
@@ -17,12 +18,14 @@ function NavItem({
   icon,
   active,
   onSelect,
+  live,
 }: {
   id: PageId;
   label: string;
   icon: ReactNode;
   active: boolean;
   onSelect: (p: PageId) => void;
+  live?: boolean;
 }) {
   return (
     <button
@@ -34,6 +37,7 @@ function NavItem({
     >
       <span className="nav-item__icon">{icon}</span>
       {label}
+      {live && <span className="nav-item__live" title="Recording meeting notes" aria-label="Recording" />}
     </button>
   );
 }
@@ -125,6 +129,7 @@ export function Sidebar({
   onOpenEngine,
   update,
   onInstallUpdate,
+  meetingLive = false,
 }: {
   page: PageId;
   onSelect: (p: PageId) => void;
@@ -132,6 +137,8 @@ export function Sidebar({
   onOpenEngine: () => void;
   update: UpdateStatus;
   onInstallUpdate: () => void;
+  /** A meeting is recording: a red dot on the Meetings item. */
+  meetingLive?: boolean;
 }) {
   const status = engineWords(engine);
   const actionable = status.tone === "warn" || status.tone === "bad";
@@ -143,7 +150,7 @@ export function Sidebar({
       </div>
       <nav className="sidebar__nav" aria-label="Pages">
         {MAIN.map((item) => (
-          <NavItem key={item.id} {...item} active={page === item.id} onSelect={onSelect} />
+          <NavItem key={item.id} {...item} active={page === item.id} onSelect={onSelect} live={item.id === "meetings" && meetingLive} />
         ))}
       </nav>
       <div className="sidebar__foot">

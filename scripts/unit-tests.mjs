@@ -7,6 +7,7 @@ import { copyTextWith } from "../src/lib/copy.ts";
 import { appName, computeTimeSavedMs, formatBytes } from "../src/lib/format.ts";
 import { normalizeThemePreference, resolveTheme, toSettingsTheme } from "../src/lib/theme.ts";
 import { dismissMsFor } from "../src/popup/dismiss.ts";
+import { assignColours, speakerColour, groupRuns, formatElapsed, displayName, captureNote, footerLabel } from "../src/lib/meetingText.ts";
 import { buildManifest, computeVersion, stampCargoVersion } from "./ci-release-meta.mjs";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -207,6 +208,62 @@ test("ci-release-meta computes versions, stamps Cargo.toml, and builds multi-pla
     manifest.platforms["darwin-aarch64"].url,
     "https://github.com/Kamo2323/wren/releases/download/v0.1.7/Wren_0.1.7_aarch64.app.tar.gz",
   );
+});
+
+// ---------- meetings (plan Task 11) ----------
+const seg = (id, source, speaker, startMs, text, extra = {}) => ({
+  id, meetingId: "m", source, speaker, confidence: 0.9, renamed: false, muted: false, startMs, endMs: startMs + 2000, text, ...extra,
+});
+test("speakerColour is stable and in range", () => {
+  assert.equal(speakerColour("Sarah Jones"), speakerColour("Sarah Jones"));
+  for (const n of ["a", "Tom Reid", "Speaker", ""]) {
+    const c = speakerColour(n);
+    assert.ok(c >= 0 && c < 6, `${n} → ${c}`);
+  }
+  assert.notEqual(new Set(["Sarah Jones", "Tom Reid", "Ana", "Bo", "Cy", "Di"].map(speakerColour)).size, 1);
+});
+test("groupRuns merges consecutive lines of one speaker", () => {
+  const runs = groupRuns([
+    seg(1, "them", "Sarah", 0, "a"),
+    seg(2, "them", "Sarah", 3000, "b"),
+    seg(3, "me", "Max", 6000, "c"),
+    seg(4, "them", "Sarah", 9000, "d"),
+    seg(5, "them", "Sarah", 200000, "e"),
+  ]);
+  assert.deepEqual(runs.map((r) => r.lines.map((l) => l.id)), [[1, 2], [3], [4], [5]], "a long gap starts a new run");
+});
+test("groupRuns keeps unnamed Them lines apart from named ones", () => {
+  const runs = groupRuns([seg(1, "them", null, 0, "a"), seg(2, "them", "Tom", 1000, "b"), seg(3, "them", null, 2000, "c")]);
+  assert.equal(runs.length, 3);
+});
+test("assignColours gives distinct colours in speaking order, Me first", () => {
+  const m = assignColours(["Sarah Jones", "Maximilian", "Tom Reid", "Sarah Jones", "Ana"], "Maximilian");
+  assert.equal(m.get("Maximilian"), 0);
+  assert.equal(m.get("Sarah Jones"), 1);
+  assert.equal(m.get("Tom Reid"), 2);
+  assert.equal(m.get("Ana"), 3);
+  assert.equal(new Set(m.values()).size, 4);
+});
+test("formatElapsed", () => {
+  assert.equal(formatElapsed(0), "00:00");
+  assert.equal(formatElapsed(65_400), "01:05");
+  assert.equal(formatElapsed(3_725_000), "1:02:05");
+});
+test("displayName falls back by source", () => {
+  assert.equal(displayName(seg(1, "them", null, 0, "x"), "Maximilian"), "Speaker");
+  assert.equal(displayName(seg(1, "me", null, 0, "x"), "Maximilian"), "Maximilian");
+  assert.equal(displayName(seg(1, "them", "Sarah", 0, "x"), "Maximilian"), "Sarah");
+});
+test("captureNote copy per mode", () => {
+  assert.equal(captureNote("teams_only"), "Teams only");
+  assert.equal(captureNote("all_sound"), "Capturing all computer sound");
+  assert.equal(captureNote("mic_only"), "Teams isn't open — only your mic is being recorded");
+});
+test("footerLabel", () => {
+  const note = { model: "claude-opus-5-5", inputTokens: 1200, outputTokens: 800, cacheReadTokens: 0, cacheWriteTokens: 16200, costUsd: 0.1134, createdAtUtc: "2026-11-24T14:32:00.000Z" };
+  const f = footerLabel(note, (iso) => new Date(iso).toISOString().slice(11, 16));
+  assert.equal(f, "Claude Opus 5.5 · 18.2k tokens · ~$0.11 · 14:32");
+  assert.ok(footerLabel({ ...note, model: "claude-sonnet-5-5" }, () => "x").startsWith("Claude Sonnet 5.5"));
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

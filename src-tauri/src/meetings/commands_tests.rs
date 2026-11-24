@@ -62,6 +62,27 @@ fn meeting_detail_serialises_camel_case_and_hides_teams_name() {
 }
 
 #[test]
+fn meeting_events_serialise_camel_case_fields() {
+    use crate::meetings::session::MeetingEvent;
+    use crate::meetings::Source;
+    let v = serde_json::to_value(MeetingEvent::Speaking { meeting_id: "m".into(), source: Source::Them, on: true }).unwrap();
+    assert_eq!(v["kind"], "speaking");
+    assert_eq!(v["meetingId"], "m");
+    assert_eq!(v["source"], "them");
+    let v = serde_json::to_value(MeetingEvent::Title { meeting_id: "m".into(), title: "T".into() }).unwrap();
+    assert_eq!(v["meetingId"], "m");
+    let v = serde_json::to_value(crate::meetings::enhance::NoteEvent::Delta {
+        meeting_id: "m".into(),
+        length: crate::meetings::Length::Short,
+        text: "x".into(),
+    })
+    .unwrap();
+    assert_eq!(v["event"], "delta");
+    assert_eq!(v["meetingId"], "m");
+    assert_eq!(v["length"], "short");
+}
+
+#[test]
 fn recording_dot_paints_bottom_right_red_and_keeps_rest() {
     let (w, h) = (32u32, 32u32);
     let mut rgba = vec![10u8; (w * h * 4) as usize];
