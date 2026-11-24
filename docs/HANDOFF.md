@@ -8,7 +8,16 @@
   Windows Teams process-loopback capture via the `wasapi` crate, recorder service, commands/tray/quit guard).
 - Task 6 (macOS tap + AX reader) is delegated to a T3 thread on the MacBook; on macOS the Teams source is a
   `Silence` placeholder until that work is merged into `meetings/commands.rs::make_sources`.
-- Next: Task 9 (Claude client) → 10 (enhanced notes) → 11 (UI) → 12–15.
+- Done since: Tasks 9 (Claude client), 10 (enhanced notes), 11 (UI + Settings), 13 (Windows live).
+- Windows live (`WREN_LIVE=1 cargo test --test meeting_live -- --ignored --nocapture`): 3/3 clips via system audio,
+  dictation p50 219 → 224 ms with a meeting running, WAVs aligned, Medium note via Opus 5.5 in 8.3 s (~$0.02).
+- Installed on this PC: local build `rel-20261124-210444-b3c728e4` (v0.1.0 + Meetings). Don't click the sidebar
+  Update pill until the Meetings release ships (it would install CI v0.1.3, which has no Meetings).
+- Claude API key is saved in Windows Credential Manager (service "Wren", account "anthropic-api-key").
+- Task 12 (macOS build + live) is running in a T3 thread on the MacBook.
+- Waiting on Maximilian: Task 14 — a real Teams call with ≥ 1 other person on each machine, while
+  `scripts/teams-call-probe.ps1` captures accessibility dumps (Windows; the Mac thread does the same there).
+- Then Task 15: regular council review → fixes → merge → release → update both installed apps.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
