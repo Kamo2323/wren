@@ -42,6 +42,7 @@ unsafe extern "C" {
     fn CFArrayGetValueAtIndex(array: CFArrayRef, idx: isize) -> CFTypeRef;
     fn CFBooleanGetTypeID() -> usize;
     fn CFBooleanGetValue(b: CFTypeRef) -> u8;
+    fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> u8;
 }
 
 /// Cross-process AX calls give up after this long (Teams can hang while busy).
@@ -288,17 +289,36 @@ impl AxTeamsReader {
         std::thread::sleep(HYDRATE_WAIT);
     }
 
-    /// `(window, title)` for each of the app's windows; the guard keeps the array alive.
-    fn windows(app: &CfGuard) -> (Option<CfGuard>, Vec<(CFTypeRef, String)>) {
-        let Some(arr) = copy_attr(app.as_ptr(), "AXWindows") else { return (None, Vec::new()) };
-        let wins = array_items(arr.as_ptr())
+    /// `(window, title)` for each of the app's windows; the guards keep the elements alive.
+    ///
+    /// `AXWindows` lists only windows on the current Space, so it comes back empty while Teams sits on
+    /// another Space (e.g. Wren or any app is full screen). `AXFocusedWindow` / `AXMainWindow` still
+    /// answer then, so fall back to those (focused first: during a call that's usually the meeting).
+    fn windows(app: &CfGuard) -> (Vec<CfGuard>, Vec<(CFTypeRef, String)>) {
+        let mut keep = Vec::new();
+        let mut ptrs: Vec<CFTypeRef> = Vec::new();
+        if let Some(arr) = copy_attr(app.as_ptr(), "AXWindows") {
+            ptrs = array_items(arr.as_ptr());
+            keep.push(arr);
+        }
+        if ptrs.is_empty() {
+            for attr in ["AXFocusedWindow", "AXMainWindow"] {
+                if let Some(w) = copy_attr(app.as_ptr(), attr) {
+                    if !ptrs.iter().any(|p| unsafe { CFEqual(*p, w.as_ptr()) } != 0) {
+                        ptrs.push(w.as_ptr());
+                        keep.push(w);
+                    }
+                }
+            }
+        }
+        let wins = ptrs
             .into_iter()
             .map(|w| {
                 let title = copy_attr(w, "AXTitle").and_then(|t| cf_to_string(t.as_ptr())).unwrap_or_default();
                 (w, title)
             })
             .collect();
-        (Some(arr), wins)
+        (keep, wins)
     }
 }
 
