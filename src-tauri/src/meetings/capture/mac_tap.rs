@@ -1414,6 +1414,13 @@ mod tests {
                 conn.pump(raw, out);
             }
         };
+        // A freshly built binary's first tap can take a moment to start delivering: measure from then.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while conn.tap.as_ref().unwrap().callbacks() < 20 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        conn.pump(&mut raw, &mut out);
+        out.clear();
         run(&mut conn, &mut raw, &mut out, 2_000);
         let before = out.split_off(0);
         // What a Bluetooth headset switching to hands-free looks like to the IO proc.
