@@ -1,6 +1,6 @@
 # Wren Meetings — design
 
-Date: 2026-11-24. Status: draft for Maximilian's approval.
+Date: 2026-11-24. Status: approved by Maximilian (2026-11-24).
 Research behind it: `docs/research/granola-teardown.md`, `docs/research/notion-meeting-notes-teardown.md`.
 
 ## 1. Intent
@@ -30,6 +30,8 @@ Maximilian sits in Microsoft Teams meetings on his work account. He wants Wren t
 - Calendar integration, sharing integrations (Slack/email/Notion export), "chat with this meeting".
 - Cloud transcription. Voice-based speaker diarization models.
 - A new floating window during meetings (the tray shows recording state instead; see §6.4).
+- Any "this meeting is being transcribed" notice to other participants (Maximilian, 2026-11-24: he handles
+  that himself).
 
 **Anti-goals (would count as failure even if it "works")**
 - Dictation gets slower or less reliable because a meeting is running.
@@ -109,6 +111,10 @@ Maximilian sits in Microsoft Teams meetings on his work account. He wants Wren t
   name to a "Them" line, (b) leaves it out of the participant chips (he's shown once, as his meeting name),
   and (c) tells Claude that name is an alias of his meeting name so action items aimed at him land on him.
   The Teams name is stored per meeting, not shown in the UI. (Claude's call.)
+- **Muted in Teams (Maximilian, 2026-11-24):** the watcher also reads his own mute state from Teams (the
+  mic button / his roster entry). "Me" segments spoken while muted are stored with a `muted` flag, shown
+  greyed with a "muted" tag in the transcript, and **left out of the enhanced-notes prompt**. If the mute
+  state can't be read on an OS, all "Me" lines count as unmuted and this is reported, not hidden.
 - **Them** lines get a name from Teams' **active speaker** indicator:
   - A watcher reads the Teams meeting window through UI Automation (Windows, existing
     `Win32_UI_Accessibility`) / the AX API (macOS, alongside `watcher/ax_macos.rs`) every ~250 ms and records
@@ -164,7 +170,7 @@ Maximilian sits in Microsoft Teams meetings on his work account. He wants Wren t
   - `meetings` — id, title, started/ended times, duration, status (`recording | paused | ended |
     interrupted`), my-notes document, capture mode (Teams-only / all sound), audio_deleted_at.
   - `meeting_segments` — meeting id, source (`me|them`), speaker name, confidence, manual-rename flag,
-    start/end ms, text.
+    start/end ms, text, muted flag.
   - `meeting_notes` — meeting id, length (`short|medium|long`), markdown, model, input/output/cached tokens,
     estimated cost, created at, "stale" flag.
 - Audio (`me.wav`, `them.wav`, temp segment WAVs) is deleted **24 h after the meeting ends**, by the
