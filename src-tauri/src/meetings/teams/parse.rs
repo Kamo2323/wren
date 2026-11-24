@@ -257,7 +257,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs tests/fixtures/teams/mac_idle.json: run `teams_probe --any` on the Mac with Teams open (plan Task 6)"]
     fn mac_idle_window_has_no_speakers() {
         // Real dump of the Mac's Teams main window (not in a call), captured with `teams_probe --any`.
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/teams/mac_idle.json");
