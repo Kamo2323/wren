@@ -17,7 +17,10 @@ const TILE_STATES: &[&str] = &[
     "organizer", "organiser", "presenter", "attendee", "guest", "external", "hand raised", "pinned",
     "spotlighted", "computer audio muted", "computer audio unmuted", "telephone muted",
     "telephone unmuted", "sharing", "screen sharing", "in the lobby", "mic muted", "mic unmuted",
+    "video is on", "video is off",
 ];
+/// First part of the user's own video tile label (seen live: "Myself video, <Name>, Unmuted, video is on, …").
+const SELF_TILE_PREFIX: &str = "myself video";
 /// Tile states that mean "this person is talking".
 const SPEAKING_STATES: &[&str] = &["active speaker", "speaking"];
 /// Suffix of a help/name text meaning the named person is talking ("Tom Reid is speaking").
@@ -53,19 +56,28 @@ pub fn clean_title(raw: &str) -> Option<String> {
     Some(t.to_string())
 }
 
-/// `"Sarah Jones, Active speaker, Unmuted"` → `("Sarah Jones", ["active speaker", "unmuted"])`.
-fn tile_label(label: &str) -> Option<(String, Vec<String>)> {
-    let mut parts = label.split(',').map(str::trim);
-    let name = parts.next()?.trim();
-    let states: Vec<String> = parts.map(str::to_ascii_lowercase).collect();
-    if name.is_empty() || name.len() > 80 || name.contains('|') {
+/// A participant label: `"Sarah Jones, Active speaker, Unmuted, Has context menu"` →
+/// `("Sarah Jones", ["active speaker", "unmuted", …], false)`; the user's own tile
+/// (`"Myself video, Max, Unmuted, …"`) → `("Max", …, true)`. At least one known participant state is
+/// required; unknown states ("fill frame", "has context menu") are kept but don't count.
+fn tile_label(label: &str) -> Option<(String, Vec<String>, bool)> {
+    let mut parts: Vec<&str> = label.split(',').map(str::trim).collect();
+    let mine = parts.first().is_some_and(|p| p.eq_ignore_ascii_case(SELF_TILE_PREFIX));
+    if mine {
+        parts.remove(0);
+    }
+    let (name, rest) = parts.split_first()?;
+    let name = name.trim();
+    let states: Vec<String> = rest.iter().map(|s| s.to_ascii_lowercase()).collect();
+    if name.is_empty() || name.len() > 80 || name.contains('|') || TILE_STATES.contains(&name.to_ascii_lowercase().as_str()) {
         return None;
     }
+    let self_marked = strip_self_suffix(name).len() != name.len();
     if states.is_empty() {
         // A bare name counts only when Teams marks it as the user ("Max (You)").
-        return (strip_self_suffix(name).len() != name.len()).then(|| (name.to_string(), states));
+        return self_marked.then(|| (name.to_string(), states, false));
     }
-    states.iter().all(|s| TILE_STATES.contains(&s.as_str())).then(|| (name.to_string(), states))
+    states.iter().any(|s| TILE_STATES.contains(&s.as_str())).then(|| (name.to_string(), states, mine))
 }
 
 fn push_unique(v: &mut Vec<String>, s: &str) {
@@ -103,11 +115,22 @@ pub fn parse(root: &UiNode, window_title: &str) -> TeamsObservation {
         return TeamsObservation::default();
     }
     let mut o = TeamsObservation { title: clean_title(window_title), ..Default::default() };
+    let mut own_tile_muted = None;
     for n in root.walk() {
-        if let Some((name, states)) = tile_label(&n.name) {
-            push_unique(&mut o.roster, &name);
-            if states.iter().any(|s| SPEAKING_STATES.contains(&s.as_str())) {
-                push_unique(&mut o.speaking, &name);
+        if let Some((name, states, mine)) = tile_label(&n.name) {
+            if mine {
+                o.self_name = Some(name.clone());
+                push_unique(&mut o.roster, &format!("{name} (You)"));
+                if states.iter().any(|s| s == "muted" || s == "mic muted") {
+                    own_tile_muted = Some(true);
+                } else if states.iter().any(|s| s == "unmuted" || s == "mic unmuted") {
+                    own_tile_muted = Some(false);
+                }
+            } else {
+                push_unique(&mut o.roster, &name);
+                if states.iter().any(|s| SPEAKING_STATES.contains(&s.as_str())) {
+                    push_unique(&mut o.speaking, &name);
+                }
             }
         }
         for text in [&n.help, &n.name] {
@@ -122,11 +145,16 @@ pub fn parse(root: &UiNode, window_title: &str) -> TeamsObservation {
             o.self_muted = mic_muted(n);
         }
     }
-    o.self_name = o
-        .roster
-        .iter()
-        .find(|r| strip_self_suffix(r).len() != r.trim().len())
-        .map(|r| strip_self_suffix(r).to_string());
+    if o.self_name.is_none() {
+        o.self_name = o
+            .roster
+            .iter()
+            .find(|r| strip_self_suffix(r).len() != r.trim().len())
+            .map(|r| strip_self_suffix(r).to_string());
+    }
+    if o.self_muted.is_none() {
+        o.self_muted = own_tile_muted;
+    }
     o
 }
 
@@ -240,6 +268,37 @@ mod tests {
         let o = parse(&main, "Chat | Sarah Jones | Microsoft Teams");
         assert!(!is_meeting_window(&main));
         assert!(o.speaking.is_empty() && o.roster.is_empty() && o.self_muted.is_none() && o.title.is_none());
+    }
+
+    #[test]
+    fn real_call_window_reads_self_mute_and_title() {
+        // Real dump from a Teams call on this PC (only the user in the call), name redacted.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/teams/win_call_self.json");
+        let dump: crate::meetings::teams::snapshot::Dump = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(is_meeting_window(&dump.tree));
+        let o = parse(&dump.tree, &dump.title);
+        assert_eq!(o.self_name.as_deref(), Some("Alex Example"));
+        assert_eq!(o.self_muted, Some(false));
+        assert_eq!(o.title.as_deref(), Some("Meeting with Alex Example"));
+        assert!(o.speaking.is_empty());
+    }
+
+    #[test]
+    fn myself_video_tile_and_extra_states() {
+        let t = meeting(
+            "Unmute mic",
+            &[
+                "Myself video, Max Teams, Muted, video is on, Fill frame, Has context menu",
+                "Sarah Jones, Unmuted, video is off, Has context menu",
+                "Tom Reid, Speaking, Unmuted, video is on, Has context menu",
+                "Fill frame, Has context menu",
+            ],
+        );
+        let o = parse(&t, "x");
+        assert_eq!(o.self_name.as_deref(), Some("Max Teams"));
+        assert_eq!(o.self_muted, Some(true));
+        assert_eq!(o.roster, vec!["Max Teams (You)", "Sarah Jones", "Tom Reid"]);
+        assert_eq!(o.speaking, vec!["Tom Reid".to_string()]);
     }
 
     #[test]
