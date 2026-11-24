@@ -31,8 +31,10 @@
   packet, notes flush on quit, auto notes wait 1.5 s). Verified: lib 396 passed, 0 warnings, 106 page checks,
   live Windows 3/3, p50 229→227 ms. macOS round-3 fixes running in a T3 thread on the MacBook (2026-11-25).
 - Page check "day groups" was time-of-day flaky after midnight: it now accepts Today or Yesterday.
-- Mac round-3 fixes merged (8af40b6), Windows re-verified; council round 4 running at 8af40b6. After it: send
-  Maximilian the summary and WAIT for his next steps (his request), no automatic fixing.
+- Mac round-3 fixes merged (8af40b6), Windows re-verified. Council round 4 (at 8af40b6): Opus 8/10, Sol 5/10,
+  Gemini 8/10. All three flag one shared privacy hole: a Me clip can be saved unmuted when the first Teams reads
+  can't see the mute state (empty reads satisfy the wait; saved rows are never corrected). Other findings are in the
+  ledger ("Council R4 …"). WAITING for Maximilian's direction before any fixes (his request, 2026-11-25).
 - Then: fixes he approves → merge to main →
   release → update both apps.
 
