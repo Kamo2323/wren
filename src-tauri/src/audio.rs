@@ -510,7 +510,7 @@ impl<'a> Sink<'a> {
 }
 
 /// Mono audio at the source rate in, 16 kHz out, one resampler step at a time.
-struct Resampler16k {
+pub(crate) struct Resampler16k {
     input_len: usize,
     /// `None` when the source is already 16 kHz.
     stage: Option<Stage>,
@@ -528,7 +528,7 @@ struct Stage {
 }
 
 impl Resampler16k {
-    fn new(rate: u32) -> Result<Self> {
+    pub(crate) fn new(rate: u32) -> Result<Self> {
         let target = ENGINE_SAMPLE_RATE as usize;
         let stage = if rate as usize == target {
             None
@@ -546,7 +546,7 @@ impl Resampler16k {
         Ok(Self { input_len: 0, stage })
     }
 
-    fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
         self.input_len += samples.len();
         let Some(stage) = self.stage.as_mut() else {
             out.extend_from_slice(samples);
@@ -562,7 +562,7 @@ impl Resampler16k {
     }
 
     /// Flush the tail so the output is exactly as long as the input (at 16 kHz).
-    fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
         let Some(stage) = self.stage.as_mut() else {
             return Ok(());
         };
