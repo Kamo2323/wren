@@ -45,8 +45,19 @@ unsafe extern "C" {
     fn CFEqual(a: CFTypeRef, b: CFTypeRef) -> u8;
 }
 
-/// Cross-process AX calls give up after this long (Teams can hang while busy).
+/// Cross-process AX calls give up after this long (Teams can hang while busy). The timeout belongs
+/// to each element ref (the app's doesn't carry over to windows or children copied from it), so
+/// [`limit`] is applied to every element this reader messages. The system-wide element's timeout is
+/// process-global and owned by the dictation watcher, so it is left alone.
 const AX_TIMEOUT_SECS: f32 = 0.4;
+
+/// Cap how long AX calls on `el` may block (a stalled Teams renderer would otherwise hold the
+/// watcher for the 6 s default). Local to this process: no IPC.
+fn limit(el: CFTypeRef) {
+    if !el.is_null() {
+        unsafe { AXUIElementSetMessagingTimeout(el, AX_TIMEOUT_SECS) };
+    }
+}
 /// A window tree smaller than this hasn't been built yet: wake Chromium's accessibility.
 const HYDRATE_BELOW: usize = 20;
 /// How long Chromium takes to build its tree after being woken.
@@ -215,6 +226,7 @@ impl AxTeamsReader {
     }
 
     fn attrs_of(&self, el: CFTypeRef) -> Option<(AxAttrs, CfGuard)> {
+        limit(el);
         let mut values: CFArrayRef = std::ptr::null();
         let list = Retained::as_ptr(&self.attrs) as CFArrayRef;
         let err = unsafe { AXUIElementCopyMultipleAttributeValues(el, list, 0, &mut values) };
@@ -288,11 +300,13 @@ impl AxTeamsReader {
         let mut ptrs: Vec<CFTypeRef> = Vec::new();
         if let Some(arr) = copy_attr(app.as_ptr(), "AXWindows") {
             ptrs = array_items(arr.as_ptr());
+            ptrs.iter().for_each(|w| limit(*w));
             keep.push(arr);
         }
         if ptrs.is_empty() {
             for attr in ["AXFocusedWindow", "AXMainWindow"] {
                 if let Some(w) = copy_attr(app.as_ptr(), attr) {
+                    limit(w.as_ptr());
                     if !ptrs.iter().any(|p| unsafe { CFEqual(*p, w.as_ptr()) } != 0) {
                         ptrs.push(w.as_ptr());
                         keep.push(w);
@@ -318,7 +332,7 @@ impl TeamsReader for AxTeamsReader {
         }
         for pid in self.app_pids() {
             let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) }) else { continue };
-            unsafe { AXUIElementSetMessagingTimeout(app.as_ptr(), AX_TIMEOUT_SECS) };
+            limit(app.as_ptr());
             let (mut _keep, mut wins) = Self::windows(&app);
             if wins.is_empty() && !self.hydrated.contains(&pid) {
                 self.hydrate(pid, &app);
