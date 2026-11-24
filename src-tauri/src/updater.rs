@@ -1176,12 +1176,30 @@ if [ -d "$TARGET_APP" ]; then
 fi
 
 if mv "$NEW_APP" "$TARGET_APP"; then
-  xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+  /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+  if [ "$NO_RELAUNCH" != "1" ] && [ -x /usr/bin/codesign ] && [ -x /usr/bin/security ]; then
+    SIGN_ID=""
+    if [ -d "$BACKUP_APP" ]; then
+      PREV_AUTH="$(/usr/bin/codesign -dvv "$BACKUP_APP" 2>&1 | /usr/bin/sed -n 's/^Authority=//p' | /usr/bin/head -n 1 || true)"
+      if [ -n "$PREV_AUTH" ] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "\"$PREV_AUTH\""; then
+        SIGN_ID="$PREV_AUTH"
+      fi
+    fi
+    if [ -z "$SIGN_ID" ]; then
+      SIGN_ID="$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -E '"(Developer ID Application|Apple Development):' | /usr/bin/head -n 1 | /usr/bin/sed -E 's/.*"([^"]+)".*/\1/' || true)"
+    fi
+    if [ -n "$SIGN_ID" ]; then
+      log "Preserving local code-signing identity: $SIGN_ID"
+      if ! /usr/bin/codesign --force --deep --sign "$SIGN_ID" "$TARGET_APP" 2>>"$LOG_PATH"; then
+        log "Local re-sign failed; keeping archive signature"
+      fi
+    fi
+  fi
   rm -rf "$BACKUP_APP" "$STAGE_DIR" "$ARCHIVE_PATH"
   log "Installer finished with exit code 0"
   if [ "$NO_RELAUNCH" != "1" ]; then
     log "Relaunching $TARGET_APP"
-    open -n "$TARGET_APP" 2>/dev/null || true
+    /usr/bin/open -n "$TARGET_APP" 2>/dev/null || true
   fi
 else
   log "Failed to swap new bundle into place; rolling back"
@@ -1698,5 +1716,18 @@ mod tests {
             .block_on(check_remote(&cfg, || Some("ghp_test_secret".to_string())))
             .unwrap();
         assert!(matches!(result, CheckResult::UpToDate));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_apply_script_is_valid_sh_and_preserves_signing_identity() {
+        let body = macos_apply_script_body();
+        assert!(body.contains("/usr/bin/codesign --force --deep --sign"));
+        assert!(body.contains("Preserving local code-signing identity"));
+        let tmp = std::env::temp_dir().join(format!("wren-apply-syntax-{}.sh", std::process::id()));
+        std::fs::write(&tmp, &body).unwrap();
+        let status = std::process::Command::new("/bin/sh").args(["-n"]).arg(&tmp).status().unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(status.success(), "apply-update.sh failed `/bin/sh -n` syntax check");
     }
 }
