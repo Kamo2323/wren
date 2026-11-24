@@ -31,6 +31,9 @@ const MIC_BUTTON_IDS: &[&str] = &["microphone-button", "mic-button", "microphone
 const NON_MEETING_TITLES: &[&str] =
     &["", "meeting", "microsoft teams", "calendar", "chat", "activity", "teams", "calls", "meet now"];
 const TEAMS_SUFFIX: &str = "Microsoft Teams";
+/// Title parts naming a Teams window layout rather than the meeting: the Mac's call window, while
+/// another app is in front, is titled "Meeting compact view | Meeting with Sarah Jones".
+const VIEW_TITLE_PARTS: &[&str] = &["meeting compact view", "compact view"];
 
 // ---- parser ----
 
@@ -38,9 +41,14 @@ pub fn is_meeting_window(root: &UiNode) -> bool {
     root.walk().iter().any(|n| MEETING_MARKERS.iter().any(|m| n.automation_id.eq_ignore_ascii_case(m)))
 }
 
-/// `"Weekly sync | Microsoft Teams"` → `Some("Weekly sync")`; Teams' own page names → `None`.
+/// `"Weekly sync | Microsoft Teams"` → `Some("Weekly sync")`, `"Meeting compact view | Weekly sync"`
+/// (macOS) → `Some("Weekly sync")`; Teams' own page names → `None`.
 pub fn clean_title(raw: &str) -> Option<String> {
-    let parts: Vec<&str> = raw.split(" | ").map(str::trim).collect();
+    let parts: Vec<&str> = raw
+        .split(" | ")
+        .map(str::trim)
+        .filter(|p| !VIEW_TITLE_PARTS.contains(&p.to_ascii_lowercase().as_str()))
+        .collect();
     let parts: &[&str] = match parts.split_last() {
         Some((last, rest)) if last.eq_ignore_ascii_case(TEAMS_SUFFIX) => rest,
         _ => &parts,
@@ -253,6 +261,11 @@ mod tests {
         assert_eq!(clean_title("Meeting | Microsoft Teams"), None, "generic");
         assert_eq!(clean_title("Meeting in \"General\" | Microsoft Teams"), None, "channel boilerplate");
         assert_eq!(clean_title("Chat | Sarah Jones | Microsoft Teams"), None, "not a meeting window title");
+        // macOS: the call window while another app is in front.
+        assert_eq!(clean_title("Meeting compact view | Meeting with Sarah Jones").as_deref(), Some("Meeting with Sarah Jones"));
+        assert_eq!(clean_title("Meeting compact view | Weekly sync").as_deref(), Some("Weekly sync"));
+        assert_eq!(clean_title("Meeting compact view"), None);
+        assert_eq!(clean_title("Meeting compact view | Meeting"), None, "generic");
         let o = parse(&meeting("Mute mic", &[]), "Weekly sync | Microsoft Teams");
         assert_eq!(o.title.as_deref(), Some("Weekly sync"));
     }
@@ -279,6 +292,20 @@ mod tests {
         let o = parse(&dump.tree, &dump.title);
         assert_eq!(o.self_name.as_deref(), Some("Alex Example"));
         assert_eq!(o.self_muted, Some(false));
+        assert_eq!(o.title.as_deref(), Some("Meeting with Alex Example"));
+        assert!(o.speaking.is_empty());
+    }
+
+    #[test]
+    fn mac_real_call_window_reads_self_mute_and_title() {
+        // Real dump from a Teams call on the Mac (only the user in the call, muted, Wren in front so
+        // Teams shows its compact view), name redacted.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/teams/mac_call_self.json");
+        let dump: crate::meetings::teams::snapshot::Dump = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(is_meeting_window(&dump.tree));
+        let o = parse(&dump.tree, &dump.title);
+        assert_eq!(o.self_name.as_deref(), Some("Alex Example"));
+        assert_eq!(o.self_muted, Some(true));
         assert_eq!(o.title.as_deref(), Some("Meeting with Alex Example"));
         assert!(o.speaking.is_empty());
     }
