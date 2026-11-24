@@ -9,6 +9,7 @@ pub mod dictionary;
 pub mod engine;
 pub mod hotkey;
 pub mod logging;
+pub mod meetings;
 pub mod paste;
 pub mod paths;
 pub mod pipeline;
@@ -68,6 +69,10 @@ fn sweep_store(store: &Store, paths: &Paths) {
             "retention sweep"
         ),
         Err(err) => tracing::warn!(error = %err, "retention sweep failed"),
+    }
+    match store.meeting_sweep(chrono::Utc::now(), &paths.meetings_dir()) {
+        Ok(n) => tracing::info!(meetings_audio_deleted = n, "meeting retention sweep"),
+        Err(err) => tracing::warn!(error = %err, "meeting retention sweep failed"),
     }
 }
 
@@ -205,6 +210,15 @@ pub fn run() {
             // The database is opened here, after the plugins' setup, so a second launch (which
             // the single-instance plugin ends before this point) never opens, migrates or sweeps it.
             let store = open_store(&paths);
+            // A meeting still `recording`/`paused` in the database means Wren quit or crashed mid-meeting
+            // (meetings spec §5.5): it becomes `interrupted`, keeping everything transcribed so far.
+            if store.unavailable_reason().is_none() {
+                match store.mark_interrupted() {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(meetings = n, "meetings interrupted by the last shutdown"),
+                    Err(err) => tracing::warn!(error = %err, "could not mark interrupted meetings"),
+                }
+            }
             let updates_dir = paths.updates_dir();
             let logs_dir = paths.logs_dir();
             app.manage(AppState {

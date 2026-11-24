@@ -77,6 +77,13 @@ impl Paths {
     pub fn audio_dir(&self) -> PathBuf {
         self.local.join("audio")
     }
+    /// One folder per meeting, holding its audio (meetings spec §5.5).
+    pub fn meetings_dir(&self) -> PathBuf {
+        self.local.join("meetings")
+    }
+    pub fn meeting_dir(&self, id: &str) -> PathBuf {
+        self.meetings_dir().join(id)
+    }
     /// Root of the read-only engine files: `WREN_RUNTIME_ROOT` if set, else the local root.
     fn engine_root(&self) -> PathBuf {
         runtime_root_override().unwrap_or_else(|| self.local.clone())
@@ -111,6 +118,7 @@ impl Paths {
             self.roaming.clone(),
             self.db_dir(),
             self.audio_dir(),
+            self.meetings_dir(),
             self.models_dir(),
             self.runtime_dir(),
             self.logs_dir(),

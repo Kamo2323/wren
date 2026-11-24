@@ -3,6 +3,7 @@
 
 pub mod schema;
 pub mod stats;
+mod meetings;
 
 use crate::constants::{
     DB_BUSY_TIMEOUT_MS, LEARN_PROMOTE_SIGHTINGS, LEARN_SHORT_FROM_MAX_CHARS, ORPHAN_AUDIO_MIN_AGE_MS,
@@ -960,3 +961,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "meetings_tests.rs"]
+mod meetings_tests;

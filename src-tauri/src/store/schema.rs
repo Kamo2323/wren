@@ -70,6 +70,53 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (local_date, hour)
     );
     "#,
+    // v2 — meetings (docs/superpowers/specs/2026-11-24-meetings-design.md §5.5).
+    r#"
+    CREATE TABLE meetings (
+        id                TEXT PRIMARY KEY,
+        title             TEXT NOT NULL,
+        title_edited      INTEGER NOT NULL DEFAULT 0,
+        started_at_utc    TEXT NOT NULL,
+        ended_at_utc      TEXT,
+        duration_ms       INTEGER NOT NULL DEFAULT 0,
+        status            TEXT NOT NULL CHECK (status IN ('recording', 'paused', 'ended', 'interrupted')),
+        capture_mode      TEXT NOT NULL CHECK (capture_mode IN ('teams_only', 'all_sound', 'mic_only')),
+        my_notes          TEXT NOT NULL DEFAULT '',
+        participants_json TEXT NOT NULL DEFAULT '[]',
+        teams_self_name   TEXT,
+        audio_deleted_at  TEXT
+    );
+    CREATE INDEX idx_meetings_started ON meetings (started_at_utc);
+
+    CREATE TABLE meeting_segments (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        meeting_id  TEXT NOT NULL,
+        source      TEXT NOT NULL CHECK (source IN ('me', 'them')),
+        speaker     TEXT,
+        confidence  REAL NOT NULL DEFAULT 0,
+        renamed     INTEGER NOT NULL DEFAULT 0,
+        muted       INTEGER NOT NULL DEFAULT 0,
+        start_ms    INTEGER NOT NULL,
+        end_ms      INTEGER NOT NULL,
+        text        TEXT NOT NULL
+    );
+    CREATE INDEX idx_meeting_segments_meeting ON meeting_segments (meeting_id, start_ms);
+
+    CREATE TABLE meeting_notes (
+        meeting_id         TEXT NOT NULL,
+        length             TEXT NOT NULL CHECK (length IN ('short', 'medium', 'long')),
+        markdown           TEXT NOT NULL,
+        model              TEXT NOT NULL,
+        input_tokens       INTEGER NOT NULL DEFAULT 0,
+        output_tokens      INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd           REAL NOT NULL DEFAULT 0,
+        created_at_utc     TEXT NOT NULL,
+        stale              INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (meeting_id, length)
+    );
+    "#,
 ];
 
 /// Latest schema version this build knows.
@@ -128,7 +175,15 @@ mod tests {
         assert_eq!(user_version(&conn).unwrap(), latest_version());
         assert_eq!(
             tables(&conn),
-            ["correction_events", "dictionary_entries", "hourly_totals", "transcriptions"]
+            [
+                "correction_events",
+                "dictionary_entries",
+                "hourly_totals",
+                "meeting_notes",
+                "meeting_segments",
+                "meetings",
+                "transcriptions"
+            ]
         );
         // Running again is a no-op.
         assert_eq!(migrate(&mut conn).unwrap(), Migrated::UpToDate);
