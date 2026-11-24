@@ -127,3 +127,6 @@ pub struct NoteRow {
     pub created_at_utc: String,
     pub stale: bool,
 }
+
+pub mod dedupe;
+pub mod segmenter;
