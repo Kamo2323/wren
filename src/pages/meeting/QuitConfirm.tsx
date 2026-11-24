@@ -30,7 +30,11 @@ export function QuitConfirm({ onClose }: { onClose: () => void }) {
             disabled={stopping}
             onClick={() => {
               setStopping(true);
-              void meetingStopAndQuit().finally(onClose);
+              // Wren quits once the meeting is saved; the dialog only closes if that fails.
+              void meetingStopAndQuit().catch(() => {
+                setStopping(false);
+                onClose();
+              });
             }}
           >
             {stopping ? "Stopping…" : "Stop and quit"}

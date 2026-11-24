@@ -10,6 +10,7 @@ import {
   meetingEnhance,
   meetingGenerating,
   meetingGet,
+  meetingUpdate,
   onMeetingEvent,
   onNoteEvent,
   type ActiveMeeting,
@@ -40,8 +41,12 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
   const [writing, setWriting] = useState<Length[]>([]);
   const [errors, setErrors] = useState<Partial<Record<Length, NoteError>>>({});
   const wasLive = useRef(false);
-  /** Set by My notes while it is open: saves any pending edit (awaited before Stop writes the notes). */
-  const flushNotes = useRef<(() => Promise<void>) | null>(null);
+  /** Set by My notes while it is open: pushes any pending edit into the save queue. */
+  const flushNotes = useRef<(() => void) | null>(null);
+  /** One ordered save queue for the whole meeting (survives the tab closing and reopening). */
+  const notesChain = useRef<Promise<void>>(Promise.resolve());
+  /** Lengths whose run already finished or failed: a late "still generating" answer can't revive them. */
+  const settled = useRef(new Set<Length>());
 
   /** My notes saved: keep the latest text here (so reopening the tab never loads an old copy) and mark
    *  written notes as changed, like the store does. */
@@ -52,6 +57,15 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         : d,
     );
   }, []);
+  const saveNotes = useCallback(
+    (json: string): Promise<void> => {
+      onNotesSaved(json);
+      const p = notesChain.current.then(() => meetingUpdate(id, { myNotes: json }));
+      notesChain.current = p.catch(() => {});
+      return p;
+    },
+    [id, onNotesSaved],
+  );
 
   const reload = useCallback(async () => {
     const d = await meetingGet(id).catch(() => null);
@@ -67,7 +81,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       setActive(live);
       wasLive.current = !!live;
       if (live) setSpeaking({ me: live.speakingMe, them: live.speakingThem });
-      setWriting(gen);
+      setWriting(gen.filter((l) => !settled.current.has(l)));
       setTab((t) => t ?? (live ? "transcript" : "enhanced"));
       void d;
     })();
@@ -101,9 +115,6 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
               // Just stopped: reload (status, duration) and show the notes being written.
               setSpeaking({ me: false, them: false });
               void reload();
-              void meetingGenerating(id)
-                .then((gen) => gen.length && setWriting((w) => [...new Set([...w, ...gen])]))
-                .catch(() => {});
               setTab("enhanced");
             }
             wasLive.current = !!live;
@@ -120,6 +131,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       onNoteEvent((e) => {
         if (e.event === "started") {
           if (e.meetingId !== id) return;
+          settled.current.delete(e.length);
           setErrors((x) => ({ ...x, [e.length]: undefined }));
           setWriting((w) => (w.includes(e.length) ? w : [...w, e.length]));
           return;
@@ -127,6 +139,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         if (e.event === "done") {
           if (e.note.meetingId !== id) return;
           const len = e.note.length;
+          settled.current.add(len);
           setDetail((d) => (d ? { ...d, notes: [...d.notes.filter((n) => n.length !== len), e.note] } : d));
           setStreams((s) => ({ ...s, [len]: undefined }));
           setWriting((w) => w.filter((x) => x !== len));
@@ -138,6 +151,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
           setWriting((w) => (w.includes(e.length) ? w : [...w, e.length]));
           setStreams((s) => ({ ...s, [e.length]: (s[e.length] ?? "") + e.text }));
         } else {
+          settled.current.add(e.length);
           setStreams((s) => ({ ...s, [e.length]: undefined }));
           setWriting((w) => w.filter((x) => x !== e.length));
           setErrors((x) => ({ ...x, [e.length]: { kind: e.kind as NoteErrorKind, message: e.message } }));
@@ -152,8 +166,9 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       setErrors((x) => ({ ...x, [len]: undefined }));
       setWriting((w) => (w.includes(len) ? w : [...w, len]));
       try {
-        const started = await meetingEnhance(id, len, regenerate);
-        if (!started) setWriting((w) => w.filter((x) => x !== len));
+        const r = await meetingEnhance(id, len, regenerate);
+        // "running": one is already being written — keep showing it. "exists": nothing was sent.
+        if (r === "exists") setWriting((w) => w.filter((x) => x !== len));
       } catch (e) {
         setWriting((w) => w.filter((x) => x !== len));
         toast.show(errorText(e), { tone: "danger" });
@@ -183,7 +198,10 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         meName={meName}
         onBack={onBack}
         onChanged={(m) => setDetail((d) => (d ? { ...d, meeting: m } : d))}
-        beforeStop={() => flushNotes.current?.() ?? Promise.resolve()}
+        beforeStop={() => {
+          flushNotes.current?.();
+          return notesChain.current;
+        }}
       />
       <div className="meeting-tabs">
         <Tabs<TabId>
@@ -200,7 +218,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       </div>
       <div className="meeting-panel" role="tabpanel" id={`meeting-panel-${tab}`} aria-labelledby={`meeting-tab-${tab}`}>
         {tab === "notes" && (
-          <NotesTab meetingId={id} initial={detail.meeting.myNotes} onSaved={onNotesSaved} flushRef={flushNotes} />
+          <NotesTab initial={detail.meeting.myNotes} save={saveNotes} flushRef={flushNotes} />
         )}
         {tab === "transcript" && (
           <TranscriptTab

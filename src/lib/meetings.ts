@@ -108,6 +108,8 @@ The team agreed to move the rollout to **Thursday**, provided QA signs off by **
 
 > "As long as QA signs off, Thursday works." — Maximilian
 
+<img src="https://example.com/tracker.png" alt=""><video src="https://example.com/v.mp4"></video>
+
 ## Open questions
 None.`;
 
@@ -369,12 +371,15 @@ export const meetingDelete = (id: string): Promise<void> => {
 export const meetingAudioClip = (id: string, source: Source, startMs: number, endMs: number): Promise<string | null> =>
   inTauri ? call("meeting_audio_clip", { id, source, startMs, endMs }) : later(null);
 
-export const meetingEnhance = (id: string, length: Length, regenerate: boolean): Promise<boolean> => {
+/** "started", "running" (already being written) or "exists" (kept; nothing sent). */
+export type EnhanceStart = "started" | "running" | "exists";
+
+export const meetingEnhance = (id: string, length: Length, regenerate: boolean): Promise<EnhanceStart> => {
   if (inTauri) return call("meeting_enhance", { id, length, regenerate });
   const m = find(id);
-  if (!regenerate && m?.notes.some((n) => n.length === length)) return later(false);
+  if (!regenerate && m?.notes.some((n) => n.length === length)) return later("exists" as const);
   mockEnhance(id, length);
-  return later(true, 10);
+  return later("started" as const, 10);
 };
 
 export const meetingGenerating = (id: string): Promise<Length[]> => (inTauri ? call("meeting_generating", { id }) : later([]));

@@ -4,7 +4,6 @@ import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import TaskList from "@tiptap/extension-task-list";
 import TaskItem from "@tiptap/extension-task-item";
-import { meetingUpdate } from "../../lib/meetings";
 import { Bold, Heading2, List, ListChecks } from "../../components/Icon";
 import type { ReactNode } from "react";
 
@@ -20,37 +19,32 @@ function parse(doc: string): object | string {
 }
 
 export function NotesTab({
-  meetingId,
   initial,
-  onSaved,
+  save,
   flushRef,
 }: {
-  meetingId: string;
-  /** The latest saved notes (the parent keeps it current via `onSaved`). */
+  /** The latest notes (the meeting view keeps it current). */
   initial: string;
-  onSaved: (json: string) => void;
-  /** The parent calls this before Stop so the automatic notes include the last edit. */
-  flushRef: MutableRefObject<(() => Promise<void>) | null>;
+  /** Queue a save on the meeting's single, ordered save queue. */
+  save: (json: string) => Promise<void>;
+  /** The meeting view calls this before Stop so the automatic notes include the last edit. */
+  flushRef: MutableRefObject<(() => void) | null>;
 }) {
   const pending = useRef<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Saves run one after another, in order, so an older save can never land after a newer one. */
-  const chain = useRef<Promise<void>>(Promise.resolve());
+  const alive = useRef(true);
   const [saved, setSaved] = useState<"idle" | "saving" | "saved" | "failed">("idle");
 
-  const flush = (): Promise<void> => {
+  const flush = () => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const json = pending.current;
     pending.current = null;
-    if (json === null) return chain.current;
+    if (json === null) return;
     setSaved("saving");
-    onSaved(json);
-    chain.current = chain.current
-      .then(() => meetingUpdate(meetingId, { myNotes: json }))
-      .then(() => setSaved("saved"))
-      .catch(() => setSaved("failed"));
-    return chain.current;
+    void save(json)
+      .then(() => alive.current && setSaved("saved"))
+      .catch(() => alive.current && setSaved("failed"));
   };
 
   const editor = useEditor({
@@ -60,7 +54,7 @@ export function NotesTab({
     onUpdate: ({ editor }) => {
       pending.current = editor.isEmpty ? "" : JSON.stringify(editor.getJSON());
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
+      timer.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
     },
   });
   const state = useEditorState({
@@ -76,10 +70,12 @@ export function NotesTab({
 
   // Save on leaving the tab or the page; let the parent flush before Stop.
   useEffect(() => {
+    alive.current = true;
     flushRef.current = flush;
     return () => {
+      alive.current = false;
+      flush(); // queued on the meeting's save queue, so it still lands (in order) after the tab closes
       flushRef.current = null;
-      void flush();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

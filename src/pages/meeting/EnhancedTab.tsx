@@ -1,7 +1,7 @@
 // Enhanced notes: Short / Medium / Long written by Claude. Streams while writing; a note is only kept once
 // it finished. Errors say what to do; "Notes changed" offers a rewrite after edits (spec §5.4, §6.3).
 import { useMemo, useState, type MouseEvent } from "react";
-import { marked } from "marked";
+import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Length, NoteErrorKind, NoteRow } from "../../lib/meetings";
 import { footerLabel } from "../../lib/meetingText";
@@ -21,10 +21,20 @@ const LENGTHS: Array<{ id: Length; label: string }> = [
   { id: "long", label: "Long" },
 ];
 
-/** Markdown → sanitised HTML (raw HTML in the model's output is never rendered). */
+/** Markdown parser for notes: raw HTML in the model's output is dropped, never rendered. */
+const notesMarked = new Marked({ gfm: true, breaks: false, renderer: { html: () => "" } });
+
+/** Only the tags note formatting needs; nothing that can load a resource. */
+const ALLOWED_TAGS = [
+  "p", "h1", "h2", "h3", "h4", "ul", "ol", "li", "strong", "em", "del", "code", "pre", "blockquote",
+  "table", "thead", "tbody", "tr", "th", "td", "a", "hr", "br", "input",
+];
+const ALLOWED_ATTR = ["href", "type", "checked", "disabled", "align"];
+
+/** Markdown → sanitised HTML. */
 function toHtml(md: string): string {
-  const html = marked.parse(md, { async: false, gfm: true, breaks: false }) as string;
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, FORBID_TAGS: ["style", "img", "iframe", "form"] });
+  const html = notesMarked.parse(md, { async: false }) as string;
+  return DOMPurify.sanitize(html, { ALLOWED_TAGS, ALLOWED_ATTR, ALLOW_DATA_ATTR: false });
 }
 
 /** Links never navigate Wren's own window: web links open in the browser, anything else is ignored. */

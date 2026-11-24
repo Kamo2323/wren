@@ -80,8 +80,13 @@ function MeetingList({ onOpen }: { onOpen: (id: string) => void }) {
 
   useEffect(() => {
     load();
-    if (constants.platform === "macos") void systemAudioPermission().then(setPerm).catch(() => {});
-    return subscribe(
+    // Re-check the macOS permission when Wren comes back to the front (after System Settings).
+    const checkPerm = () => {
+      if (constants.platform === "macos") void systemAudioPermission().then(setPerm).catch(() => {});
+    };
+    checkPerm();
+    window.addEventListener("focus", checkPerm);
+    const off = subscribe(
       onMeetingEvent((e) => {
         if (e.kind === "status") {
           setActive(e.active);
@@ -89,6 +94,10 @@ function MeetingList({ onOpen }: { onOpen: (id: string) => void }) {
         } else if (e.kind === "title" || e.kind === "participants") load();
       }),
     );
+    return () => {
+      off();
+      window.removeEventListener("focus", checkPerm);
+    };
   }, [load, constants.platform]);
 
   const groups = useMemo(() => {

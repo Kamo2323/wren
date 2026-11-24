@@ -281,7 +281,9 @@ export function TranscriptTab({
   const play = useCallback(async (s: SegmentRow) => {
     const mine = ++playSeq.current;
     audio.current?.pause();
-    if (playingRef.current === s.id) return setPlaying(null);
+    const wasThis = playingRef.current === s.id;
+    setPlaying(null);
+    if (wasThis) return;
     try {
       const url = await meetingAudioClip(meeting.id, s.source, s.startMs, s.endMs);
       if (mine !== playSeq.current) return;
@@ -293,6 +295,7 @@ export function TranscriptTab({
       a.onended = () => setPlaying((p) => (p === s.id ? null : p));
       await a.play();
     } catch (e) {
+      if (mine !== playSeq.current) return;
       setPlaying(null);
       toast.show(errorText(e), { tone: "danger" });
     }

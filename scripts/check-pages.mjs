@@ -326,6 +326,7 @@ check("ended meeting opens on the Enhanced tab", (await selectedTab())?.startsWi
 await page.waitForSelector(".md h2");
 check("enhanced notes render markdown headings", (await page.locator(".md h2").first().textContent()) === "Summary");
 check("notes open with an 'In short' headline box", (await page.locator(".md > blockquote:first-child").textContent())?.includes("In short"));
+check("raw HTML in notes is never rendered (no remote loads)", (await page.locator(".md img, .md video, .md [src]").count()) === 0);
 check("action items render as a table", (await page.locator(".md table th").allTextContents()).join("|").includes("Owner"));
 const urlBefore = page.url();
 await page.locator(".md a").first().click();

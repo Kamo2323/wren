@@ -417,7 +417,11 @@ function MeetingNotesSection({
       .then((k) => setKeySaved(k.saved))
       .catch(() => setKeySaved(false));
     void claudeSpendMonth().then(setSpend).catch(() => {});
-    if (isMac) void systemAudioPermission().then(setPerm).catch(() => {});
+    if (!isMac) return;
+    const checkPerm = () => void systemAudioPermission().then(setPerm).catch(() => {});
+    checkPerm();
+    window.addEventListener("focus", checkPerm);
+    return () => window.removeEventListener("focus", checkPerm);
   }, [isMac]);
 
   async function saveKey() {
