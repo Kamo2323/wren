@@ -4,7 +4,7 @@
 use crate::meetings::capture::mic::MicSource;
 use crate::meetings::capture::AudioSource;
 use crate::meetings::session::{ActiveMeeting, Deps, MeetingEvent, MeetingService, SourcePair, Transcriber};
-use crate::meetings::{MeetingRow, MeetingStatus, NoteRow, SegmentRow, Source};
+use crate::meetings::{Length, MeetingRow, MeetingStatus, NoteRow, SegmentRow, Source};
 use crate::session::app::AppEnv;
 use crate::store::{Store, StoreResult};
 use crate::AppState;
@@ -16,6 +16,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Every meeting event, payload [`MeetingEvent`] (tagged by `kind`).
 pub const EVENT: &str = "meeting://event";
+/// Enhanced-notes progress, payload [`crate::meetings::enhance::NoteEvent`] (tagged by `event`).
+pub const NOTE_EVENT: &str = "meeting://note";
+/// Notes being written now, as (meeting id, length): one run per pair at a time.
+static GENERATING: parking_lot::Mutex<Vec<(String, Length)>> = parking_lot::Mutex::new(Vec::new());
 /// Quit was chosen while a meeting records: the page asks "Stop meeting notes and quit?".
 pub const EVENT_CONFIRM_QUIT: &str = "meeting://confirm-quit";
 /// Stop waits this long for queued clips before marking the rest "[not transcribed]".
@@ -121,10 +125,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
         bias_terms: Arc::new(move || {
             a2.state::<AppState>().store.bias_terms(crate::constants::BIAS_TERMS_MAX).unwrap_or_default()
         }),
-        me_name: Arc::new(move || {
-            let n = a3.state::<AppState>().settings.read().meeting_name.trim().to_string();
-            if n.is_empty() { "Me".to_string() } else { n }
-        }),
+        me_name: Arc::new(move || meeting_name(&a3)),
         drain_timeout: DRAIN_TIMEOUT,
     };
     let svc = Arc::new(MeetingService::new(deps));
@@ -136,7 +137,53 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
         let _ = app_ev.emit(EVENT, e);
     }));
     crate::meetings::register_service(&svc);
+    // Spec §5.4: Medium notes start on their own when a meeting stops (if a key is saved).
+    let app_stop = app.clone();
+    svc.set_on_stopped(Arc::new(move |id: String| {
+        if crate::meetings::claude::KeyStore::system().get().is_some() {
+            spawn_enhance(&app_stop, id, Length::Medium);
+        }
+    }));
     svc
+}
+
+fn meeting_name(app: &AppHandle) -> String {
+    let n = app.state::<AppState>().settings.read().meeting_name.trim().to_string();
+    if n.is_empty() { "Me".to_string() } else { n }
+}
+
+fn claude_model(app: &AppHandle) -> String {
+    let m = app.state::<AppState>().settings.read().claude_model.clone();
+    if m == "claude-sonnet-5-5" { m } else { crate::meetings::claude::DEFAULT_MODEL.to_string() }
+}
+
+/// Start writing a note in the background; false if one for this meeting and length is already running.
+pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
+    {
+        let mut g = GENERATING.lock();
+        if g.iter().any(|(i, l)| *i == id && *l == len) {
+            return false;
+        }
+        g.push((id.clone(), len));
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new().name("wren-notes".into()).spawn(move || {
+        let state = app.state::<AppState>();
+        let (model, me) = (claude_model(&app), meeting_name(&app));
+        let _ = crate::meetings::enhance::generate(
+            &state.store,
+            &crate::meetings::enhance::ClaudeWriter,
+            &model,
+            &me,
+            &id,
+            len,
+            &mut |e| {
+                let _ = app.emit(NOTE_EVENT, e);
+            },
+        );
+        GENERATING.lock().retain(|(i, l)| !(*i == id && *l == len));
+    });
+    spawned.is_ok()
 }
 
 /// Paint a red "recording" dot into the bottom-right of an RGBA icon.
@@ -291,6 +338,22 @@ pub fn system_audio_permission() -> String {
 pub fn open_system_audio_settings() {
     #[cfg(target_os = "macos")]
     crate::meetings::capture::mac_tap::open_system_audio_settings();
+}
+
+/// Write (or rewrite) the notes of one length. Without `regenerate`, an existing note is kept and
+/// nothing is sent. Returns whether a run started.
+#[tauri::command]
+pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, length: Length, regenerate: bool) -> Result<bool, String> {
+    if !regenerate && state.store.notes(&id).map_err(|e| e.to_string())?.iter().any(|n| n.length == length) {
+        return Ok(false);
+    }
+    Ok(spawn_enhance(&app, id, length))
+}
+
+/// Lengths being written for a meeting right now (so a reopened page shows "Writing…").
+#[tauri::command]
+pub fn meeting_generating(id: String) -> Vec<Length> {
+    GENERATING.lock().iter().filter(|(i, _)| *i == id).map(|(_, l)| *l).collect()
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -155,3 +155,4 @@ pub fn dictation_hook(began: bool, at: std::time::Instant) {
 }
 pub mod commands;
 pub mod claude;
+pub mod enhance;

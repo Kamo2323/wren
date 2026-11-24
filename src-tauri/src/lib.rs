@@ -354,6 +354,8 @@ pub fn run() {
             meetings::commands::meeting_audio_clip,
             meetings::commands::system_audio_permission,
             meetings::commands::open_system_audio_settings,
+            meetings::commands::meeting_enhance,
+            meetings::commands::meeting_generating,
             meetings::commands::claude_key_status,
             meetings::commands::claude_key_save,
             meetings::commands::claude_key_remove,
