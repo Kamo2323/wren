@@ -1,9 +1,11 @@
 //! macOS reader for the Teams meeting window (plan Task 6), the counterpart of `uia.rs`: finds the
 //! running Teams app(s) and copies the meeting window's Accessibility (AX) tree into a [`UiNode`].
 //! Read-only except for setting `AXManualAccessibility` / `AXEnhancedUserInterface` on the Teams app
-//! element when its tree comes back empty (Chromium/Electron only build the tree when asked); both are
-//! cleared again on the processes Wren set them on when the reader is dropped (the meeting's watcher
-//! stopped), so Teams doesn't keep paying for its accessibility tree after the meeting.
+//! element until the call window's tree can be read (Chromium/Electron only build the tree when asked);
+//! both are cleared again on the processes Wren set them on when the last reader is dropped (the
+//! meeting's watcher stopped), so Teams doesn't keep paying for its accessibility tree after the
+//! meeting. Readers are counted process-wide ([`Registry`]): an old meeting's reader that goes late
+//! never switches accessibility off under a newer meeting's reader.
 //!
 //! Needs the Accessibility permission (the same one dictation uses). Names and titles read here are
 //! never logged.
@@ -61,22 +63,26 @@ fn limit(el: CFTypeRef) {
         unsafe { AXUIElementSetMessagingTimeout(el, AX_TIMEOUT_SECS) };
     }
 }
-/// A window tree smaller than this hasn't been built yet: wake Chromium's accessibility.
-const HYDRATE_BELOW: usize = 20;
 /// How long Chromium takes to build its tree after being woken.
 const HYDRATE_WAIT: Duration = Duration::from_millis(600);
 /// The attributes that make Chromium/Electron build their accessibility tree.
 const WAKE_ATTRS: [&str; 2] = ["AXManualAccessibility", "AXEnhancedUserInterface"];
+/// Reads in a row without a readable call window, after it had been read, before waking again (one
+/// slow or timed-out read is not a lost tree; at the 250 ms poll this is about a second).
+const REWAKE_AFTER_MISSES: u32 = 4;
 
-/// Waking one Teams process: retried with backoff until a usable tree has been seen.
+/// Waking one Teams process: retried with backoff until the call window's tree (the one with
+/// `hangup-button`) can be read. Teams' chat/main window having a tree says nothing about the separate
+/// call window, so only the call window counts. When it can't be read any more (it closed, or its
+/// tree went empty) the wake starts over, with the same backoff.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Wake {
     attempts: u32,
     next: Option<Instant>,
-    /// A usable tree (a meeting window, or a window of at least [`HYDRATE_BELOW`] nodes) was seen.
+    /// The call window's tree was read on the latest reads.
     done: bool,
-    /// Executable path when Wren first set the attributes (to clear them on the same process only).
-    exe: Option<String>,
+    /// Reads in a row without a readable call window since `done`.
+    misses: u32,
 }
 
 impl Wake {
@@ -88,16 +94,65 @@ impl Wake {
         self.attempts += 1;
         self.next = Some(now + wake_backoff(self.attempts));
     }
+
+    /// One read of this process's windows: whether a call window's tree was readable in it.
+    fn read(&mut self, call_window: bool) {
+        if call_window {
+            self.done = true;
+            self.misses = 0;
+        } else if self.done {
+            self.misses += 1;
+            if self.misses >= REWAKE_AFTER_MISSES {
+                // Wake again: due as soon as the backoff since the last attempt has passed.
+                self.done = false;
+                self.misses = 0;
+            }
+        }
+    }
 }
 
-/// Wait after the `attempts`-th wake that didn't yield a usable tree: 2 s, 4 s, 8 s … at most 60 s.
+/// Wait after the `attempts`-th wake that didn't yield a readable call window: 2 s, 4 s, 8 s … at most 60 s.
 fn wake_backoff(attempts: u32) -> Duration {
     Duration::from_secs((2u64 << attempts.saturating_sub(1).min(5)).min(60))
 }
 
-/// Whether a window tree shows the app's accessibility is built.
-fn usable(tree: &UiNode) -> bool {
-    tree.count() >= HYDRATE_BELOW || is_meeting_window(tree)
+/// Process-wide: the live readers, and the Teams processes Wren switched accessibility on for (pid →
+/// executable path then, so it is cleared on the same process only). Only the last reader to go
+/// clears them; a reader created meanwhile keeps them (and re-applies them itself if they are lost).
+#[derive(Debug, Default)]
+struct Registry {
+    live: usize,
+    woken: HashMap<i32, String>,
+}
+
+impl Registry {
+    fn join(&mut self) {
+        self.live += 1;
+    }
+
+    fn woke(&mut self, pid: i32, exe: Option<String>) {
+        if let Some(exe) = exe {
+            self.woken.entry(pid).or_insert(exe);
+        }
+    }
+
+    /// A reader went; the processes to clear (only when it was the last one).
+    fn leave(&mut self) -> Vec<(i32, String)> {
+        self.live = self.live.saturating_sub(1);
+        if self.live > 0 {
+            return Vec::new();
+        }
+        self.woken.drain().collect()
+    }
+}
+
+/// Held while a reader joins, wakes Teams or clears the attributes, so a late clear and a new
+/// reader's wake can't interleave.
+static REGISTRY: std::sync::Mutex<Option<Registry>> = std::sync::Mutex::new(None);
+
+fn registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
+    let mut g = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(Registry::default))
 }
 /// Look for Teams processes again at most this often while the ones found still have windows (a
 /// full process scan is a few hundred libproc calls; the watcher polls several times a second).
@@ -239,7 +294,7 @@ fn ax_bool(v: CFTypeRef) -> bool {
 pub struct AxTeamsReader {
     /// The attribute names as one CFArray (an NSArray, toll-free bridged).
     attrs: Retained<NSArray<NSString>>,
-    /// Per Teams pid: waking its accessibility tree (attempts, backoff, done, whether Wren set it).
+    /// Per Teams pid: waking its accessibility tree (attempts, backoff, whether the call window reads).
     wake: HashMap<i32, Wake>,
     /// The Teams pids last found, when, and whether none of them had a window since.
     pids: Vec<i32>,
@@ -262,6 +317,8 @@ impl Default for AxTeamsReader {
 impl AxTeamsReader {
     pub fn new() -> Self {
         let names: Vec<Retained<NSString>> = ATTRS.iter().map(|a| NSString::from_str(a)).collect();
+        // Waits for a previous meeting's reader that is clearing the attributes right now.
+        registry(Registry::join);
         Self {
             attrs: NSArray::from_retained_slice(&names),
             wake: HashMap::new(),
@@ -341,27 +398,33 @@ impl AxTeamsReader {
         self.copy(win, 0, &mut count, Instant::now() + self.budget)
     }
 
-    /// Whether `pid` should be woken now (no usable tree seen yet, backoff passed).
+    /// Whether `pid` should be woken now (call window not readable, backoff passed).
     fn wake_due(&self, pid: i32) -> bool {
         self.wake.get(&pid).is_none_or(|w| w.due(Instant::now()))
     }
 
-    /// Ask Chromium to build its accessibility tree. Not "done" until a usable tree is seen: retried
-    /// with backoff ([`wake_backoff`]) while the tree stays empty.
+    /// Ask Chromium to build its accessibility tree. Not "done" until the call window reads: retried
+    /// with backoff ([`wake_backoff`]) while it doesn't.
     fn hydrate(&mut self, pid: i32, app: &CfGuard) {
-        let w = self.wake.entry(pid).or_default();
-        if w.exe.is_none() {
-            w.exe = crate::meetings::mac_procs::pid_path(pid);
-        }
-        set_wake_attrs(app, true);
+        registry(|r| {
+            if !r.woken.contains_key(&pid) {
+                r.woke(pid, crate::meetings::mac_procs::pid_path(pid));
+            }
+            set_wake_attrs(app, true);
+        });
         std::thread::sleep(HYDRATE_WAIT);
-        if let Some(w) = self.wake.get_mut(&pid) {
-            w.tried(Instant::now());
-        }
+        self.wake.entry(pid).or_default().tried(Instant::now());
     }
 
-    fn saw_usable(&mut self, pid: i32) {
-        self.wake.entry(pid).or_default().done = true;
+    /// The first meeting window among `wins` (or, for the probe's `any_window`, the first window).
+    fn find_meeting(&self, wins: Vec<(CFTypeRef, String)>) -> Option<(UiNode, String)> {
+        for (win, title) in wins {
+            let tree = self.copy_window(win);
+            if self.any_window || is_meeting_window(&tree) {
+                return Some((tree, title));
+            }
+        }
+        None
     }
 
     /// `(window, title)` for each of the app's windows; the guards keep the elements alive.
@@ -414,20 +477,23 @@ fn set_wake_attrs(app: &CfGuard, on: bool) {
 }
 
 impl Drop for AxTeamsReader {
-    /// The meeting's watcher stopped: clear the wake attributes on the Teams processes Wren set them
-    /// on (only while the same executable still runs under that pid), so Teams stops maintaining its
-    /// accessibility tree for us.
+    /// The meeting's watcher stopped. If this was the last reader, clear the wake attributes on the
+    /// Teams processes Wren set them on (only while the same executable still runs under that pid), so
+    /// Teams stops maintaining its accessibility tree for us. A newer meeting's reader still running
+    /// keeps them on. The registry stays locked while clearing, so a reader starting meanwhile wakes
+    /// Teams only after the clear.
     fn drop(&mut self) {
-        for (pid, w) in self.wake.drain() {
-            let Some(exe) = w.exe else { continue };
-            if crate::meetings::mac_procs::pid_path(pid).as_deref() != Some(exe.as_str()) {
-                continue;
+        registry(|r| {
+            for (pid, exe) in r.leave() {
+                if crate::meetings::mac_procs::pid_path(pid).as_deref() != Some(exe.as_str()) {
+                    continue;
+                }
+                if let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) }) {
+                    limit(app.as_ptr());
+                    set_wake_attrs(&app, false);
+                }
             }
-            if let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) }) {
-                limit(app.as_ptr());
-                set_wake_attrs(&app, false);
-            }
-        }
+        });
     }
 }
 
@@ -441,26 +507,28 @@ impl TeamsReader for AxTeamsReader {
         for pid in pids.iter().copied() {
             let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) }) else { continue };
             limit(app.as_ptr());
-            let (mut _keep, mut wins) = Self::windows(&app);
-            if wins.is_empty() && self.wake_due(pid) {
-                self.hydrate(pid, &app);
-                (_keep, wins) = Self::windows(&app);
-            }
-            any_window |= !wins.is_empty();
             // Meeting windows usually aren't titled just "Microsoft Teams"; try likely ones first.
-            wins.sort_by_key(|(_, t)| t.trim().eq_ignore_ascii_case("Microsoft Teams") as u8);
-            for (win, title) in wins {
-                let mut tree = self.copy_window(win);
-                if !usable(&tree) && self.wake_due(pid) {
-                    self.hydrate(pid, &app);
-                    tree = self.copy_window(win);
-                }
-                if usable(&tree) {
-                    self.saw_usable(pid);
-                }
-                if self.any_window || is_meeting_window(&tree) {
-                    return Some((tree, title));
-                }
+            let windows = |app: &CfGuard| {
+                let (keep, mut wins) = Self::windows(app);
+                wins.sort_by_key(|(_, t)| t.trim().eq_ignore_ascii_case("Microsoft Teams") as u8);
+                (keep, wins)
+            };
+            let (mut _keep, wins) = windows(&app);
+            any_window |= !wins.is_empty();
+            let mut found = self.find_meeting(wins);
+            // No readable call window (none open, or its tree isn't built: the chat window having a
+            // tree doesn't mean the call window has one): wake, then read every window again.
+            if found.is_none() && self.wake_due(pid) {
+                self.hydrate(pid, &app);
+                let wins;
+                (_keep, wins) = windows(&app);
+                any_window |= !wins.is_empty();
+                found = self.find_meeting(wins);
+            }
+            let call_window = found.as_ref().is_some_and(|(tree, _)| is_meeting_window(tree));
+            self.wake.entry(pid).or_default().read(call_window);
+            if found.is_some() {
+                return found;
             }
         }
         // Cached pids without windows: Teams may have quit or restarted; look again soon.
@@ -484,8 +552,8 @@ mod tests {
         w.tried(t0);
         assert!(!w.due(t0 + Duration::from_secs(3)));
         assert!(w.due(t0 + Duration::from_secs(4)));
-        w.done = true;
-        assert!(!w.due(t0 + Duration::from_secs(3_600)), "done once a usable tree was seen");
+        w.read(true);
+        assert!(!w.due(t0 + Duration::from_secs(3_600)), "done once the call window was read");
         assert_eq!(wake_backoff(1), Duration::from_secs(2));
         assert_eq!(wake_backoff(3), Duration::from_secs(8));
         assert_eq!(wake_backoff(6), Duration::from_secs(60));
@@ -493,12 +561,60 @@ mod tests {
     }
 
     #[test]
-    fn only_a_real_tree_counts_as_usable() {
-        let leaf = |role: &str| UiNode { role: role.into(), ..Default::default() };
-        let tiny = UiNode { role: "AXWindow".into(), children: vec![leaf("AXGroup")], ..Default::default() };
-        assert!(!usable(&tiny));
-        let big = UiNode { role: "AXWindow".into(), children: (0..HYDRATE_BELOW).map(|_| leaf("AXGroup")).collect(), ..Default::default() };
-        assert!(usable(&big));
+    fn only_the_call_window_ends_the_wake_and_losing_it_wakes_again() {
+        let t0 = Instant::now();
+        let mut w = Wake::default();
+        // The chat/main window has a big tree, but no call window was read: keep waking.
+        w.tried(t0);
+        w.read(false);
+        assert!(w.due(t0 + wake_backoff(1)), "a big chat window is not 'done'");
+        // The call window (hangup-button) read: done.
+        w.read(true);
+        assert!(!w.due(t0 + Duration::from_secs(600)));
+        // One slow read without it is not a lost tree.
+        for _ in 0..REWAKE_AFTER_MISSES - 1 {
+            w.read(false);
+        }
+        assert!(!w.due(t0 + Duration::from_secs(600)));
+        w.read(true);
+        assert_eq!(w.misses, 0, "a read in between starts the count over");
+        // The call window closed or its tree went empty: wake again, on the existing backoff.
+        for _ in 0..REWAKE_AFTER_MISSES {
+            w.read(false);
+        }
+        assert!(!w.done);
+        assert!(w.due(t0 + wake_backoff(1)), "due once the backoff since the last wake has passed");
+        assert!(!w.due(t0), "not before it");
+        w.tried(t0 + wake_backoff(1));
+        assert!(!w.due(t0 + wake_backoff(1) + Duration::from_secs(1)), "and backs off again");
+    }
+
+    #[test]
+    fn only_the_last_reader_clears_and_a_new_one_keeps_the_wake() {
+        let mut r = Registry::default();
+        // Meeting A's reader wakes Teams.
+        r.join();
+        r.woke(500, Some("/Applications/Microsoft Teams.app/Contents/MacOS/MSTeams".into()));
+        // Meeting B starts before A's reader has gone.
+        r.join();
+        r.woke(500, Some("/other".into()));
+        // A's late drop must not switch accessibility off under B.
+        assert!(r.leave().is_empty());
+        assert_eq!(r.live, 1);
+        // B goes last: clear, on the process first woken.
+        assert_eq!(r.leave(), vec![(500, "/Applications/Microsoft Teams.app/Contents/MacOS/MSTeams".to_string())]);
+        assert!(r.woken.is_empty());
+        // A reader that never woke anything clears nothing; an unknown executable isn't recorded.
+        r.join();
+        r.woke(501, None);
+        assert!(r.leave().is_empty());
+        // Never underflows.
+        assert!(r.leave().is_empty());
+        assert_eq!(r.live, 0);
+        // Old reader gone first, then a new one wakes: it is the one to clear later.
+        r.join();
+        r.woke(600, Some("/t".into()));
+        assert_eq!(r.leave(), vec![(600, "/t".to_string())]);
     }
 
     #[test]
@@ -524,7 +640,9 @@ mod tests {
         limit(app.as_ptr());
         reader.hydrate(pid, &app);
         let woken = read();
-        let snap = reader.snapshot().map(|(t, _)| t.count());
+        let snap = reader.snapshot();
+        let call = snap.as_ref().is_some_and(|(t, _)| is_meeting_window(t));
+        let snap = snap.map(|(t, _)| t.count());
         let done = reader.wake.get(&pid).map(|w| w.done);
         drop(reader);
         let after = read();
@@ -532,8 +650,43 @@ mod tests {
         // Chromium accepts AXManualAccessibility but doesn't report it back; AXEnhancedUserInterface reads.
         assert!(woken.iter().all(|v| *v != Some(false)) && woken[1] == Some(true));
         assert!(after.iter().all(|v| *v != Some(true)), "cleared when the watcher's reader drops");
-        if snap.is_some_and(|n| n >= HYDRATE_BELOW) {
-            assert_eq!(done, Some(true));
+        assert_eq!(done, Some(call), "done exactly when the call window was read");
+    }
+
+    #[test]
+    #[ignore = "live: needs Teams and Accessibility permission; join a Teams call while it runs (WREN_AX_SECS, default 30)"]
+    fn live_reader_wakes_the_call_window() {
+        if !crate::hotkey::accessibility_trusted(false) {
+            eprintln!("not trusted for Accessibility; skipped");
+            return;
+        }
+        let secs: u64 = std::env::var("WREN_AX_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+        let mut reader = AxTeamsReader::new();
+        let t0 = Instant::now();
+        let mut last = String::new();
+        while t0.elapsed() < Duration::from_secs(secs) {
+            let snap = reader.snapshot();
+            let wake: Vec<(u32, bool)> = reader.wake.values().map(|w| (w.attempts, w.done)).collect();
+            // Counts and booleans only: names are never printed.
+            let line = match &snap {
+                Some((tree, title)) => {
+                    let o = super::super::parse(tree, title);
+                    format!(
+                        "call window: own tile {}, self muted {:?}, {} speaking, {} in roster, title {}; wake (attempts, done) {wake:?}",
+                        o.self_name.is_some(),
+                        o.self_muted,
+                        o.speaking.len(),
+                        o.roster.len(),
+                        o.title.is_some()
+                    )
+                }
+                None => format!("no call window; wake (attempts, done) {wake:?}"),
+            };
+            if line != last {
+                eprintln!("{:>5.1}s {line}", t0.elapsed().as_secs_f32());
+                last = line;
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 
