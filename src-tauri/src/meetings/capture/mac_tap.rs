@@ -20,10 +20,12 @@
 //! rate changes in a way the in-place handling below didn't catch. Rate changes (AirPods 48 kHz ↔
 //! hands-free 16/24 kHz, sleep/wake) are caught per IO cycle: a timeline jump or a cycle whose
 //! timestamps imply another rate marks a boundary in the ring, and the worker settles the new rate
-//! there before resampling anything after it, so audio is never resampled at the wrong rate. On the all-sound
-//! fallback it retries Teams-only every [`UPGRADE_RETRY`] and switches only if that opens. Mode
-//! changes are reported on `mode_tx`. Wall-clock alignment: when too little arrives, zeros are emitted so
-//! `stream_pos_ms` tracks real time. Audio is never logged.
+//! there before resampling anything after it, so audio is never resampled at the wrong rate; a rate
+//! that can't be told even after [`BOUNDARY_HOLD`] reopens the tap (a bounded number of times). On the
+//! all-sound fallback it retries Teams-only every [`UPGRADE_RETRY`], opening that tap on another thread
+//! while the fallback keeps being drained, and switches only once the new tap delivers. Mode changes
+//! are reported on `mode_tx`. Wall-clock alignment: when too little arrives, zeros are emitted so
+//! `stream_pos_ms` tracks real time (never while audio is held at a boundary). Audio is never logged.
 
 use super::{AudioBlock, AudioSource};
 use crate::audio::Resampler16k;
@@ -76,8 +78,23 @@ const STOP_JOIN: Duration = Duration::from_secs(2);
 const STOPPED: &str = "capture stopped while the tap was opening";
 /// Retries that keep failing log a warning at most this often.
 const QUIET_RETRY_LOGS: Duration = Duration::from_secs(60);
-/// Seconds of audio buffered between the Core Audio IO thread and the worker (it drains every tick).
+/// Seconds of audio buffered between the Core Audio IO thread and the worker (it drains every tick,
+/// and holds back at most [`BOUNDARY_HOLD`] at a format boundary).
 const RING_SECS: usize = 2;
+/// The ring is sized for at least this rate, whatever rate the tap opens at: a tap opened during a
+/// hands-free call (16/24 kHz) can switch to 48 kHz (or a 96 kHz interface) before the worker reaches
+/// the boundary, and must still hold [`RING_SECS`] then. The ring holds mono frames (the IO proc mixes
+/// every channel down before writing), so the channel count doesn't multiply it.
+const RING_MIN_RATE: usize = 96_000;
+
+/// Ring capacity (samples) for a tap that opened at `rate`.
+fn ring_samples(rate: u32) -> usize {
+    (rate as usize).max(RING_MIN_RATE) * RING_SECS
+}
+/// Reopens of the tap because its rate couldn't be settled after a format change: at most this many
+/// per [`RATE_REOPEN_WINDOW`]; past that the rate property decides (with a warning).
+const RATE_REOPENS: u32 = 3;
+const RATE_REOPEN_WINDOW: Duration = Duration::from_secs(60);
 
 /// System Settings › Privacy & Security › Screen & System Audio Recording.
 pub const SYSTEM_AUDIO_SETTINGS_URI: &str =
@@ -210,6 +227,19 @@ impl Ring {
         self.head.store(head.wrapping_add(take), Ordering::Release);
         if take < n {
             self.dropped.fetch_add(n - take, Ordering::Relaxed);
+        }
+    }
+
+    /// Consumer: throw away everything queued so far. A boundary at or after the position discarded up
+    /// to (nothing after it yet, or marked since) is kept: it still applies to what comes next.
+    fn discard(&self) {
+        let head = self.head.load(Ordering::Acquire);
+        let mark = self.mark.load(Ordering::Acquire);
+        self.tail.store(head, Ordering::Release);
+        // How far before `head` the boundary sits; a mark set after `head` was read wraps to huge.
+        let before = head.wrapping_sub(mark.wrapping_sub(1));
+        if mark != 0 && before != 0 && before <= self.buf.len() {
+            let _ = self.mark.compare_exchange(mark, 0, Ordering::AcqRel, Ordering::Relaxed);
         }
     }
 
@@ -412,23 +442,58 @@ enum AtBoundary {
     /// Core Audio's rate property and the IO timestamps disagree (the property hasn't caught up) or
     /// no cycle after the boundary has been measured yet: hold the audio and look again next tick.
     Wait,
+    /// Held for [`BOUNDARY_HOLD`] and the rate still can't be told (the property is unreadable, or it
+    /// and the timestamps still disagree): reopen the tap rather than resample at a guessed rate.
+    Unknown,
 }
 
 /// Decide at a boundary from the rate property (`prop`), the rate the IO timestamps imply since the
-/// boundary (`implied`) and whether the boundary has waited [`BOUNDARY_HOLD`] already (then the
-/// property alone decides).
+/// boundary (`implied`) and whether the boundary has waited [`BOUNDARY_HOLD`] already.
 fn at_boundary(current: u32, prop: Option<u32>, implied: Option<f64>, timed_out: bool) -> AtBoundary {
-    let by_prop = |p: Option<u32>| match p {
+    let by_prop = |p: u32| if p != current { AtBoundary::Retune(p) } else { AtBoundary::Same };
+    match (prop, implied) {
+        (Some(p), Some(i)) if !off_rate(i, p as f64) => by_prop(p),
+        (None, Some(i)) if !off_rate(i, current as f64) => AtBoundary::Same,
+        _ if !timed_out => AtBoundary::Wait,
+        // Nothing measured since the boundary (the source went quiet right after it): the property
+        // is all there is, and nothing it could contradict.
+        (Some(p), None) => by_prop(p),
+        _ => AtBoundary::Unknown,
+    }
+}
+
+/// What to resample at when the rate stayed [`AtBoundary::Unknown`] and the reopen budget is spent:
+/// the property if readable, else the current rate.
+fn fallback_rate(current: u32, prop: Option<u32>) -> AtBoundary {
+    match prop {
         Some(p) if p != current => AtBoundary::Retune(p),
         _ => AtBoundary::Same,
-    };
-    if timed_out {
-        return by_prop(prop);
     }
-    match (prop, implied) {
-        (Some(p), Some(i)) if !off_rate(i, p as f64) => by_prop(Some(p)),
-        (None, Some(i)) if !off_rate(i, current as f64) => AtBoundary::Same,
-        _ => AtBoundary::Wait,
+}
+
+/// Reopens for an unsettled rate: at most [`RATE_REOPENS`] per [`RATE_REOPEN_WINDOW`].
+#[derive(Debug, Clone, Copy, Default)]
+struct ReopenBudget {
+    count: u32,
+    since: Option<Instant>,
+}
+
+impl ReopenBudget {
+    fn fresh(&self, now: Instant) -> bool {
+        self.since.is_none_or(|s| now.saturating_duration_since(s) >= RATE_REOPEN_WINDOW)
+    }
+
+    fn allowed(&self, now: Instant) -> bool {
+        self.fresh(now) || self.count < RATE_REOPENS
+    }
+
+    /// Count one reopen; returns which one this is in the current window (1-based).
+    fn spend(&mut self, now: Instant) -> u32 {
+        if self.fresh(now) {
+            *self = Self { count: 0, since: Some(now) };
+        }
+        self.count += 1;
+        self.count
     }
 }
 
@@ -457,7 +522,7 @@ struct Ctx {
 impl Ctx {
     fn new(rate: u32) -> Self {
         Self {
-            ring: Ring::new(rate as usize * RING_SECS),
+            ring: Ring::new(ring_samples(rate)),
             callbacks: AtomicU64::new(0),
             host_hz: unsafe { objc2_core_audio::AudioGetHostClockFrequency() },
             expected_rate: AtomicU32::new(rate),
@@ -579,10 +644,12 @@ fn is_alive(prop: Option<u32>) -> bool {
 
 /// Silence (16 kHz samples) to emit before a block of `block` samples so the block ends at real time
 /// (`real` samples since the start) when the stream has fallen more than [`PAD_AFTER_MS`] behind;
-/// `block == 0` pads up to now.
-fn silence_before(real: u64, emitted: u64, block: u64) -> usize {
+/// `block == 0` pads up to now. Never while `holding` audio back at a format boundary: that audio is
+/// still coming, and silence for its time would push it late and the stream ahead of real time. Once
+/// it is released it goes through here as one block, padded first only if still behind.
+fn silence_before(real: u64, emitted: u64, block: u64, holding: bool) -> usize {
     let behind = real.saturating_sub(emitted + block);
-    if behind > PAD_AFTER_MS * RATE / 1000 { behind as usize } else { 0 }
+    if !holding && behind > PAD_AFTER_MS * RATE / 1000 { behind as usize } else { 0 }
 }
 
 /// True when a rate known at open time is now known to be different (unreadable is not a change).
@@ -604,6 +671,12 @@ struct Tap {
     objects: Vec<AudioObjectID>,
     exclude: bool,
 }
+
+// SAFETY: a `Tap` owns its Core Audio objects (plain ids, usable from any thread) and its `Ctx`,
+// whose shared fields are atomics; the IO thread only reads it through the pointer handed to Core
+// Audio, which `Drop` stops synchronously before freeing it. Moving the owner to another thread (the
+// Teams-only tap is opened off the worker thread) changes none of that.
+unsafe impl Send for Tap {}
 
 impl Tap {
     /// An unreadable `DeviceIsAlive` (the aggregate was destroyed or invalidated) counts as dead.
@@ -660,6 +733,13 @@ impl Tap {
 
     fn callbacks(&self) -> u64 {
         self.ctx().map_or(0, |c| c.callbacks.load(Ordering::Relaxed))
+    }
+
+    /// Throw away what the IO thread queued so far (another capture already has it).
+    fn discard_queued(&self) {
+        if let Some(c) = self.ctx() {
+            c.ring.discard();
+        }
     }
 
     /// The output device changed under the tap (AirPods 48 kHz ↔ hands-free 16/24 kHz, sleep/wake):
@@ -870,6 +950,8 @@ struct Check {
     stalled: bool,
     /// The tap's / device's sample rate moved since the tap was opened.
     format_changed: bool,
+    /// The rate after a format boundary couldn't be settled (see [`AtBoundary::Unknown`]).
+    rate_unknown: bool,
     /// Teams appeared, quit, restarted or changed its audio processes (see [`Seen::changed_from`]).
     seen_changed: bool,
     teams_running: bool,
@@ -877,6 +959,8 @@ struct Check {
     teams_has_audio: bool,
     /// [`UPGRADE_RETRY`] passed since the last Teams-only attempt.
     upgrade_due: bool,
+    /// A Teams-only tap is already being opened, or is open and waiting to deliver.
+    upgrade_busy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -884,12 +968,13 @@ enum Action {
     Keep,
     /// Tear the capture down and connect again from scratch.
     Reconnect,
-    /// On the all-sound fallback: open a Teams-only tap and switch only if it opens.
+    /// On the all-sound fallback: start opening a Teams-only tap in the background; the fallback
+    /// keeps running and is replaced only once the new tap delivers (see [`Upgrade`]).
     TryTeams,
 }
 
 fn decide(c: &Check) -> Action {
-    if c.seen_changed || (c.has_tap && (c.stalled || c.format_changed)) {
+    if c.seen_changed || (c.has_tap && (c.stalled || c.format_changed || c.rate_unknown)) {
         return Action::Reconnect;
     }
     match c.target {
@@ -897,11 +982,85 @@ fn decide(c: &Check) -> Action {
         Target::AllSound => Action::Keep,
         // Both taps failed (or the tap was lost) while Teams has audio: try again.
         Target::Teams if !c.has_tap && c.teams_running && c.teams_has_audio => Action::Reconnect,
-        Target::Teams if c.mode == CaptureMode::AllSound && c.has_tap && c.teams_has_audio && c.upgrade_due => {
+        Target::Teams
+            if c.mode == CaptureMode::AllSound && c.has_tap && c.teams_has_audio && c.upgrade_due && !c.upgrade_busy =>
+        {
             Action::TryTeams
         }
         Target::Teams => Action::Keep,
     }
+}
+
+/// A capture that can replace the current one once it is known to deliver.
+trait Candidate {
+    fn delivered(&self) -> bool;
+}
+
+impl Candidate for Tap {
+    /// The IO proc has run: the tap is live (a tap on processes that aren't playing never calls back).
+    fn delivered(&self) -> bool {
+        self.callbacks() > 0
+    }
+}
+
+/// The Teams-only retry while on the all-sound fallback. Opening a tap can block inside Core Audio, so
+/// it happens on its own thread; the worker only ever polls ([`Upgrade::poll`] never blocks), so the
+/// fallback's ring keeps being drained and emitted throughout. The new tap replaces the fallback only
+/// once it delivers.
+enum Upgrade<T> {
+    Idle,
+    Opening(crossbeam_channel::Receiver<anyhow::Result<T>>),
+    /// Opened; waiting for its first IO callback.
+    Waiting(T),
+}
+
+/// What one [`Upgrade::poll`] found.
+enum Polled<T> {
+    Nothing,
+    Failed(anyhow::Error),
+    /// Open and delivering: switch to it.
+    Ready(T),
+}
+
+impl<T: Candidate> Upgrade<T> {
+    fn busy(&self) -> bool {
+        !matches!(self, Upgrade::Idle)
+    }
+
+    fn poll(&mut self) -> Polled<T> {
+        use crossbeam_channel::TryRecvError;
+        match std::mem::replace(self, Upgrade::Idle) {
+            Upgrade::Idle => Polled::Nothing,
+            Upgrade::Opening(rx) => match rx.try_recv() {
+                Ok(Ok(t)) => {
+                    *self = Upgrade::Waiting(t);
+                    self.poll()
+                }
+                Ok(Err(e)) => Polled::Failed(e),
+                Err(TryRecvError::Empty) => {
+                    *self = Upgrade::Opening(rx);
+                    Polled::Nothing
+                }
+                Err(TryRecvError::Disconnected) => Polled::Failed(anyhow::anyhow!("the Teams tap opener ended without a result")),
+            },
+            Upgrade::Waiting(t) if t.delivered() => Polled::Ready(t),
+            waiting => {
+                *self = waiting;
+                Polled::Nothing
+            }
+        }
+    }
+}
+
+/// Open a Teams-only tap on `objects` on its own thread. A tap that opens after the worker has gone
+/// is dropped (torn down) by the opener; one that opens after Stop never starts (see [`open_tap`]).
+fn open_in_background(objects: Vec<AudioObjectID>, stop: Arc<AtomicBool>) -> Upgrade<Tap> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    // If the thread can't be spawned, `tx` is dropped with the closure and the poll reports it.
+    let _ = std::thread::Builder::new().name("wren-teams-tap-open".into()).spawn(move || {
+        let _ = tx.send(open_tap(&objects, false, &stop));
+    });
+    Upgrade::Opening(rx)
 }
 
 fn resampler(rate: u32) -> Option<Resampler16k> {
@@ -923,12 +1082,22 @@ struct Conn {
     last_io: Instant,
     /// Stopped at a format boundary (since then): nothing after it is resampled until its rate is known.
     boundary: Option<Instant>,
+    /// The rate after a boundary couldn't be settled ([`AtBoundary::Unknown`]): reopen the tap.
+    rate_unknown: bool,
+    /// Whether an unsettled rate may ask for a reopen (the worker clears it once [`ReopenBudget`] is
+    /// spent; the property then decides).
+    may_reopen: bool,
 }
 
 impl Conn {
     fn new(tap: Option<Tap>, mode: CaptureMode) -> Self {
         let resampler = tap.as_ref().and_then(|t| resampler(t.rate));
-        Self { tap, mode, resampler, callbacks: 0, last_io: Instant::now(), boundary: None }
+        Self { tap, mode, resampler, callbacks: 0, last_io: Instant::now(), boundary: None, rate_unknown: false, may_reopen: true }
+    }
+
+    /// Audio is held back at a format boundary (it will still be emitted): no wall-clock padding.
+    fn holding(&self) -> bool {
+        self.boundary.is_some()
     }
 
     /// Move what the IO thread delivered through the resampler into `out`. At a format boundary the
@@ -944,8 +1113,27 @@ impl Conn {
         // Each pass ends at a boundary or at the end of what has arrived; a few is plenty per tick.
         for _ in 0..4 {
             if let Some(since) = self.boundary {
-                match at_boundary(t.rate, t.rate_now(), t.implied_rate(), since.elapsed() >= BOUNDARY_HOLD) {
-                    AtBoundary::Wait => return,
+                let (prop, implied) = (t.rate_now(), t.implied_rate());
+                let decided = match at_boundary(t.rate, prop, implied, since.elapsed() >= BOUNDARY_HOLD) {
+                    AtBoundary::Unknown if self.may_reopen => {
+                        // Held; the worker reopens the tap (and drops what is held: never resampled
+                        // at a guessed rate).
+                        self.rate_unknown = true;
+                        return;
+                    }
+                    AtBoundary::Unknown => {
+                        tracing::warn!(
+                            rate = t.rate,
+                            prop = ?prop,
+                            implied = ?implied.map(|r| r.round() as u32),
+                            "Teams audio rate still unclear after reopening the tap; going by the device's rate"
+                        );
+                        fallback_rate(t.rate, prop)
+                    }
+                    d => d,
+                };
+                match decided {
+                    AtBoundary::Wait | AtBoundary::Unknown => return,
                     AtBoundary::Same => t.settle(t.rate),
                     AtBoundary::Retune(rate) => {
                         tracing::info!(
@@ -1037,29 +1225,59 @@ impl AudioSource for TeamsTap {
             let mut last_health = Instant::now();
             let mut last_upgrade = Instant::now();
             let mut last_loud = Instant::now();
+            let mut upgrade: Upgrade<Tap> = Upgrade::Idle;
+            let mut rate_reopens = ReopenBudget::default();
             let send = |samples: Vec<f32>, emitted: &mut u64| {
                 let pos = *emitted * 1000 / RATE;
                 *emitted += samples.len() as u64;
                 tx.send(AudioBlock { samples, stream_pos_ms: pos }).is_ok()
             };
             // Audio that arrives after a stall (slow open, reconnect) keeps its real time: the gap
-            // before it is filled with silence first, as in `mic.rs`.
-            let emit = |samples: Vec<f32>, emitted: &mut u64| {
+            // before it is filled with silence first, as in `mic.rs`. Not while audio is held at a
+            // format boundary (`holding`): it is still to come and fills that time itself.
+            let emit = |samples: Vec<f32>, emitted: &mut u64, holding: bool| {
                 let real = started.elapsed().as_millis() as u64 * RATE / 1000;
-                let gap = silence_before(real, *emitted, samples.len() as u64);
+                let gap = silence_before(real, *emitted, samples.len() as u64, holding);
                 (gap == 0 || send(vec![0.0; gap], emitted)) && send(samples, emitted)
             };
             'run: while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(TICK);
+                conn.may_reopen = rate_reopens.allowed(Instant::now());
                 conn.pump(&mut raw, &mut out);
-                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted) {
+                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, conn.holding()) {
                     break 'run;
                 }
                 // Keep up with real time when nothing (or too little) arrives.
                 let real = started.elapsed().as_millis() as u64 * RATE / 1000;
-                let gap = silence_before(real, emitted, 0);
+                let gap = silence_before(real, emitted, 0, conn.holding());
                 if gap > 0 && !send(vec![0.0; gap], &mut emitted) {
                     break 'run;
+                }
+
+                // The Teams-only retry: never blocks this loop, switches once the new tap delivers
+                // (and not while the fallback holds audio at a boundary: that would drop it).
+                let polled = if conn.holding() { Polled::Nothing } else { upgrade.poll() };
+                match polled {
+                    Polled::Nothing => {}
+                    Polled::Failed(e) => {
+                        last_upgrade = Instant::now();
+                        if !stop.load(Ordering::SeqCst) {
+                            tracing::debug!(error = %e, "Teams tap still failing; staying on all sound");
+                        }
+                    }
+                    Polled::Ready(t) if target == Target::Teams && conn.mode == CaptureMode::AllSound => {
+                        tracing::info!("Teams tap delivering; leaving the all-sound fallback");
+                        // The fallback has everything up to now (it heard Teams too): flush it, and
+                        // take the new tap from here on.
+                        conn.finish(&mut raw, &mut out);
+                        t.discard_queued();
+                        drop(std::mem::replace(&mut conn, Conn::new(Some(t), CaptureMode::TeamsOnly)));
+                        let _ = mode_tx.send(conn.mode);
+                        if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, false) {
+                            break 'run;
+                        }
+                    }
+                    Polled::Ready(t) => drop(t),
                 }
 
                 let (format_changed, stalled) = if last_health.elapsed() >= HEALTH_CHECK {
@@ -1068,7 +1286,8 @@ impl AudioSource for TeamsTap {
                 } else {
                     (false, false)
                 };
-                if !(format_changed || stalled || last_check.elapsed() >= RECHECK) {
+                let rate_unknown = conn.rate_unknown;
+                if !(format_changed || stalled || rate_unknown || last_check.elapsed() >= RECHECK) {
                     continue;
                 }
                 last_check = Instant::now();
@@ -1079,10 +1298,12 @@ impl AudioSource for TeamsTap {
                     has_tap: conn.tap.is_some(),
                     stalled,
                     format_changed,
+                    rate_unknown,
                     seen_changed: now.changed_from(&seen, target, conn.mode),
                     teams_running: now.teams_running,
                     teams_has_audio: !now.teams.is_empty(),
                     upgrade_due: last_upgrade.elapsed() >= UPGRADE_RETRY,
+                    upgrade_busy: upgrade.busy(),
                 };
                 let next = match decide(&check) {
                     Action::Keep => None,
@@ -1090,6 +1311,14 @@ impl AudioSource for TeamsTap {
                         // Retries that keep happening (both taps failing, a tap that keeps dying)
                         // log at most once a minute; Teams starting or quitting always logs.
                         let loud = check.seen_changed || last_loud.elapsed() >= QUIET_RETRY_LOGS;
+                        if rate_unknown {
+                            let attempt = rate_reopens.spend(Instant::now());
+                            tracing::info!(
+                                attempt,
+                                of = RATE_REOPENS,
+                                "Teams audio rate unclear after a format change; reopening the tap"
+                            );
+                        }
                         if loud {
                             last_loud = Instant::now();
                             tracing::info!(
@@ -1102,6 +1331,8 @@ impl AudioSource for TeamsTap {
                         }
                         conn.finish(&mut raw, &mut out);
                         drop(conn.tap.take());
+                        // A pending Teams-only retry was for the capture being replaced.
+                        upgrade = Upgrade::Idle;
                         let (t, m) = connect(target, &now, loud, &stop);
                         if m == CaptureMode::AllSound && conn.mode != CaptureMode::AllSound {
                             last_upgrade = Instant::now();
@@ -1110,17 +1341,8 @@ impl AudioSource for TeamsTap {
                     }
                     Action::TryTeams => {
                         last_upgrade = Instant::now();
-                        match open_tap(&now.teams, false, &stop) {
-                            Ok(t) => {
-                                tracing::info!("Teams tap opened; leaving the all-sound fallback");
-                                conn.finish(&mut raw, &mut out);
-                                Some(Conn::new(Some(t), CaptureMode::TeamsOnly))
-                            }
-                            Err(e) => {
-                                tracing::debug!(error = %e, "Teams tap still failing; staying on all sound");
-                                None
-                            }
-                        }
+                        upgrade = open_in_background(now.teams.clone(), stop.clone());
+                        None
                     }
                 };
                 seen = now;
@@ -1131,7 +1353,7 @@ impl AudioSource for TeamsTap {
                         let _ = mode_tx.send(conn.mode);
                     }
                 }
-                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted) {
+                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, conn.holding()) {
                     break 'run;
                 }
             }
@@ -1293,10 +1515,42 @@ mod tests {
         // Property unreadable: the timestamps decide whether it's still the same rate.
         assert_eq!(at_boundary(48_000, None, Some(48_000.0), false), AtBoundary::Same);
         assert_eq!(at_boundary(48_000, None, Some(16_000.0), false), AtBoundary::Wait);
-        // Held long enough: the property decides.
-        assert_eq!(at_boundary(48_000, Some(48_000), Some(24_000.0), true), AtBoundary::Same);
+        // Held long enough with nothing measured since: the property is all there is.
         assert_eq!(at_boundary(48_000, Some(16_000), None, true), AtBoundary::Retune(16_000));
-        assert_eq!(at_boundary(48_000, None, None, true), AtBoundary::Same);
+        assert_eq!(at_boundary(48_000, Some(48_000), None, true), AtBoundary::Same);
+        // Agreement still settles it after the hold.
+        assert_eq!(at_boundary(48_000, Some(24_000), Some(24_000.0), true), AtBoundary::Retune(24_000));
+    }
+
+    #[test]
+    fn rate_that_stays_ambiguous_reopens_instead_of_guessing() {
+        // Held long enough and the property and the timestamps still disagree: unknown, not a guess.
+        assert_eq!(at_boundary(48_000, Some(48_000), Some(24_000.0), true), AtBoundary::Unknown);
+        // Property unreadable and the timestamps say another rate, or say nothing.
+        assert_eq!(at_boundary(48_000, None, Some(16_000.0), true), AtBoundary::Unknown);
+        assert_eq!(at_boundary(48_000, None, None, true), AtBoundary::Unknown);
+        // Before the hold is up it is still just a wait.
+        assert_eq!(at_boundary(48_000, None, None, false), AtBoundary::Wait);
+        // Reopen budget spent: the property decides, else the current rate.
+        assert_eq!(fallback_rate(48_000, Some(24_000)), AtBoundary::Retune(24_000));
+        assert_eq!(fallback_rate(48_000, None), AtBoundary::Same);
+        // An unsettled rate reconnects (that is the reopen).
+        let healthy = check(Target::Teams, CaptureMode::TeamsOnly, true);
+        assert_eq!(decide(&Check { rate_unknown: true, ..healthy }), Action::Reconnect);
+    }
+
+    #[test]
+    fn rate_reopens_are_bounded_per_window() {
+        let t0 = Instant::now();
+        let mut b = ReopenBudget::default();
+        assert!(b.allowed(t0));
+        assert_eq!(b.spend(t0), 1);
+        assert_eq!(b.spend(t0 + Duration::from_secs(1)), 2);
+        assert!(b.allowed(t0 + Duration::from_secs(2)));
+        assert_eq!(b.spend(t0 + Duration::from_secs(2)), 3);
+        assert!(!b.allowed(t0 + Duration::from_secs(3)), "three reopens in a minute: stop reopening");
+        assert!(b.allowed(t0 + RATE_REOPEN_WINDOW), "a minute on, the budget is back");
+        assert_eq!(b.spend(t0 + RATE_REOPEN_WINDOW), 1);
     }
 
     #[test]
@@ -1325,15 +1579,104 @@ mod tests {
     fn silence_goes_before_late_audio() {
         let pad = (PAD_AFTER_MS * RATE / 1000) as usize;
         // On time: nothing to pad.
-        assert_eq!(silence_before(16_000, 14_400, 1_600), 0);
+        assert_eq!(silence_before(16_000, 14_400, 1_600, false), 0);
         // Slightly behind (under the threshold): nothing.
-        assert_eq!(silence_before(16_000 + pad as u64, 14_400, 1_600), 0);
+        assert_eq!(silence_before(16_000 + pad as u64, 14_400, 1_600, false), 0);
         // 2 s stall, then a 100 ms block: 2 s of silence first so the block ends at real time.
-        assert_eq!(silence_before(48_000, 14_400, 1_600), 48_000 - 14_400 - 1_600);
+        assert_eq!(silence_before(48_000, 14_400, 1_600, false), 48_000 - 14_400 - 1_600);
         // Nothing arrived: pad up to now.
-        assert_eq!(silence_before(48_000, 14_400, 0), 48_000 - 14_400);
+        assert_eq!(silence_before(48_000, 14_400, 0, false), 48_000 - 14_400);
         // Ahead of real time (a burst): never negative.
-        assert_eq!(silence_before(1_000, 5_000, 1_600), 0);
+        assert_eq!(silence_before(1_000, 5_000, 1_600, false), 0);
+    }
+
+    #[test]
+    fn no_padding_while_audio_is_held_at_a_boundary() {
+        // 1 s held at a rate boundary: the stream is 1 s behind, but that second is still coming.
+        assert_eq!(silence_before(32_000, 16_000, 0, true), 0);
+        assert_eq!(silence_before(32_000, 14_400, 1_600, true), 0, "nor before pre-boundary audio");
+        // Released: the held second goes out as one block and lands on real time with no silence first.
+        assert_eq!(silence_before(32_000, 16_000, 16_000, false), 0);
+        // Released after a longer stall than it covers: pad only what is still missing, before it.
+        assert_eq!(silence_before(64_000, 16_000, 16_000, false), 32_000);
+    }
+
+    #[test]
+    fn ring_holds_two_seconds_of_48k_even_when_opened_at_hands_free_rates() {
+        for rate in [8_000, 16_000, 24_000, 44_100, 48_000, 96_000] {
+            let cap = Ring::new(ring_samples(rate)).buf.len();
+            assert!(cap >= 48_000 * RING_SECS, "{rate} Hz: {cap}");
+            assert!(cap >= rate as usize * RING_SECS, "{rate} Hz: {cap}");
+        }
+        // A 16 kHz tap that switches to 48 kHz and is held for the whole boundary hold loses nothing.
+        let ring = Ring::new(ring_samples(16_000));
+        ring.push_with(1_600, |_| 0.0); // 100 ms at 16 kHz
+        ring.mark_boundary();
+        let held = 48_000 * BOUNDARY_HOLD.as_millis() as usize / 1000 + 4_800; // the hold plus a tick
+        ring.push_with(held, |_| 0.1);
+        assert_eq!(ring.dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn ring_discard_keeps_a_boundary_still_ahead() {
+        let ring = Ring::new(16);
+        ring.push_with(3, |i| i as f32);
+        ring.mark_boundary();
+        ring.push_with(2, |_| 9.0);
+        // A boundary inside what is thrown away goes with it.
+        ring.discard();
+        let mut out = Vec::new();
+        assert!(!ring.drain_into(&mut out));
+        assert!(out.is_empty());
+        // A boundary at the write position (nothing after it yet) still applies to what comes next.
+        ring.push_with(2, |_| 1.0);
+        ring.mark_boundary();
+        ring.discard();
+        ring.push_with(1, |_| 5.0);
+        assert!(ring.drain_into(&mut out), "boundary kept");
+        assert!(out.is_empty());
+        assert!(!ring.drain_into(&mut out));
+        assert_eq!(out, vec![5.0]);
+    }
+
+    /// A fake Teams-only tap: delivers once `calls` is set.
+    struct Fake(Arc<AtomicU64>);
+    impl Candidate for Fake {
+        fn delivered(&self) -> bool {
+            self.0.load(Ordering::SeqCst) > 0
+        }
+    }
+
+    #[test]
+    fn teams_retry_never_blocks_and_switches_only_once_the_tap_delivers() {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut up: Upgrade<Fake> = Upgrade::Opening(rx);
+        // Still opening (Core Audio blocking on the opener thread): the poll returns at once.
+        let t0 = Instant::now();
+        assert!(matches!(up.poll(), Polled::Nothing));
+        assert!(t0.elapsed() < Duration::from_millis(50));
+        assert!(up.busy());
+        // Opened, but no IO callback yet: keep the fallback.
+        let calls = Arc::new(AtomicU64::new(0));
+        tx.send(Ok(Fake(calls.clone()))).unwrap();
+        assert!(matches!(up.poll(), Polled::Nothing));
+        assert!(matches!(up, Upgrade::Waiting(_)));
+        assert!(matches!(up.poll(), Polled::Nothing));
+        // Delivering: switch.
+        calls.store(1, Ordering::SeqCst);
+        assert!(matches!(up.poll(), Polled::Ready(_)));
+        assert!(!up.busy());
+        // A failed open is reported once, then idle (the next try waits for UPGRADE_RETRY).
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut up: Upgrade<Fake> = Upgrade::Opening(rx);
+        tx.send(Err(anyhow::anyhow!("no"))).unwrap();
+        assert!(matches!(up.poll(), Polled::Failed(_)));
+        assert!(matches!(up.poll(), Polled::Nothing) && !up.busy());
+        // The opener thread died without a result.
+        let (tx, rx) = crossbeam_channel::bounded::<anyhow::Result<Fake>>(1);
+        drop(tx);
+        let mut up = Upgrade::Opening(rx);
+        assert!(matches!(up.poll(), Polled::Failed(_)));
     }
 
     #[test]
@@ -1613,10 +1956,12 @@ mod tests {
             has_tap,
             stalled: false,
             format_changed: false,
+            rate_unknown: false,
             seen_changed: false,
             teams_running: true,
             teams_has_audio: true,
             upgrade_due: false,
+            upgrade_busy: false,
         }
     }
 
@@ -1650,6 +1995,8 @@ mod tests {
         let fallback = check(Target::Teams, CaptureMode::AllSound, true);
         assert_eq!(decide(&fallback), Action::Keep);
         assert_eq!(decide(&Check { upgrade_due: true, ..fallback }), Action::TryTeams);
+        // A retry already opening (or open and waiting to deliver): don't start another.
+        assert_eq!(decide(&Check { upgrade_due: true, upgrade_busy: true, ..fallback }), Action::Keep);
         // Nothing of Teams' to tap: no point trying.
         assert_eq!(decide(&Check { upgrade_due: true, teams_has_audio: false, ..fallback }), Action::Keep);
         // A Teams-only capture never "upgrades".
