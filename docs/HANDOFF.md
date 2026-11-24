@@ -17,7 +17,13 @@
 - Task 12 (macOS build + live) is running in a T3 thread on the MacBook.
 - Waiting on Maximilian: Task 14 — a real Teams call with ≥ 1 other person on each machine, while
   `scripts/teams-call-probe.ps1` captures accessibility dumps (Windows; the Mac thread does the same there).
-- Then Task 15: regular council review → fixes → merge → release → update both installed apps.
+- Task 14 (Windows): one-person Teams call — 75 dumps; parser now reads the real self tile, mute button, title.
+  Remote "speaking" label still unconfirmed (no second person).
+- Task 15 council round 1: GPT Sol 4/10, Claude Opus 6/10, Gemini 4 Neon 6/10. All shared/Windows/UI fixes done
+  (commits 5065cc7 … 14fb0d2); macOS-only fixes + a Mac Teams call running in a T3 thread on the MacBook.
+  Maximilian's request: richer note formatting — done (headline box, action table, bold facts).
+- Maximilian: the Mac app matters most (most meetings there); both apps must be bug-free.
+- Next: merge the Mac thread's fixes → council round 2 (weight macOS) → fixes → merge → release → update both apps.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
