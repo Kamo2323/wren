@@ -69,9 +69,9 @@ Maximilian sits in Microsoft Teams meetings on his work account. He wants Wren t
 - **Them** = Teams' audio output.
   - **Windows:** WASAPI *process loopback* (`ActivateAudioInterfaceAsync` with
     `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`) on the
-    running `ms-teams.exe`. This follows Teams to whatever output device it uses. If no Teams process is
-    running, or activation fails, fall back to loopback of the default output device and show
-    "Capturing all computer sound" in the meeting header.
+    running `ms-teams.exe`. This follows Teams to whatever output device it uses. If Teams is running but
+    process capture fails, fall back to loopback of the default output device and show
+    "Capturing all computer sound" in the meeting header. (If Teams isn't running at all, see below.)
   - **macOS:** Core Audio *process tap* (`CATapDescription` + private aggregate device, macOS 14.2+) on the
     Teams process(es). Requires `NSAudioCaptureUsageDescription` in `Info.plist` and the "System Audio
     Recording" permission; Wren shows a one-time permission card like the existing Accessibility banner.
