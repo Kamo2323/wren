@@ -381,10 +381,11 @@ pub fn run() {
         .expect("error while building Wren")
         .run(move |app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Ready = event
-                && (start_hidden || popup_check)
-            {
-                popup::prime_hidden_launch(app);
+            if let tauri::RunEvent::Ready = event {
+                meetings::quit_macos::install(app);
+                if start_hidden || popup_check {
+                    popup::prime_hidden_launch(app);
+                }
             }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
@@ -396,13 +397,14 @@ pub fn run() {
                 }
             }
             // Cmd+Q, Dock → Quit, the app menu: with a meeting recording, ask first (spec §5.5).
-            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                let recording = app.try_state::<meetings::commands::Meetings>().is_some_and(|m| m.0.active().is_some());
-                if recording && !meetings::commands::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::SeqCst) {
-                    api.prevent_exit();
-                    tray::show_main(app);
-                    let _ = tauri::Emitter::emit(app, meetings::commands::EVENT_CONFIRM_QUIT, ());
-                }
+            // (macOS sends Cmd+Q / Dock → Quit through `applicationShouldTerminate:` instead, which never
+            // reaches here: see `meetings::quit_macos`.)
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event
+                && meetings::commands::recording(app)
+                && !meetings::commands::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                api.prevent_exit();
+                meetings::commands::ask_before_quit(app);
             }
             if let tauri::RunEvent::Exit = event {
                 // A meeting still recording ends properly (short drain, no paid notes request) rather

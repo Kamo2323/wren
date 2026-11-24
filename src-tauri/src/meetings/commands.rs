@@ -24,6 +24,17 @@ static GENERATING: parking_lot::Mutex<Vec<(String, Length)>> = parking_lot::Mute
 pub const EVENT_CONFIRM_QUIT: &str = "meeting://confirm-quit";
 /// Set once the user confirmed "Stop meeting notes and quit?" (lets the exit through).
 pub static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a meeting is being recorded now.
+pub fn recording(app: &AppHandle) -> bool {
+    app.try_state::<Meetings>().is_some_and(|m| m.0.active().is_some())
+}
+
+/// Quit was chosen mid-meeting: show Wren and ask "Stop meeting notes and quit?".
+pub fn ask_before_quit(app: &AppHandle) {
+    crate::tray::show_main(app);
+    let _ = app.emit(EVENT_CONFIRM_QUIT, ());
+}
 /// Stop waits this long for queued clips before marking the rest "[not transcribed]".
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// When quitting, wait less.

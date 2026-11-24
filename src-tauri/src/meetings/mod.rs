@@ -135,6 +135,8 @@ pub mod teams;
 pub mod capture;
 #[cfg(target_os = "macos")]
 pub mod mac_procs;
+#[cfg(target_os = "macos")]
+pub mod quit_macos;
 pub mod session;
 
 /// The running meeting service, for the dictation session's start/stop notices (spec §5.1: dictated
