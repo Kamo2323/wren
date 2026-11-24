@@ -1,5 +1,23 @@
 # Wren — handoff and decision log
 
+## Status (2026-11-24) — Meetings feature: research done, design questions with Maximilian
+
+### Completed
+- Reverse-engineered Granola (static only; couldn't log in) and Notion AI Meeting Notes (static, no recording started):
+  `docs/research/granola-teardown.md`, `docs/research/notion-meeting-notes-teardown.md`.
+- Key takeaways: both capture mic and system audio as two separate 16 kHz streams (mic = "Me", system = "Them");
+  both detect calls by "a known call app is holding the mic"; both get real names from the call app's UI
+  (Granola reads Teams' active speaker via UI Automation on Windows / Accessibility on macOS); both do
+  enhancement server-side (prompt text not in their bundles). Granola keeps "My notes" and "Enhanced notes" as separate tabs.
+
+### Decisions so far (Maximilian, 2026-11-24)
+- Council at the end: **regular** (Claude Opus 5.5, GPT Sol, Gemini 4 Neon, effort high), reviewing for Windows + macOS bugs; Mac testing via a T3 thread on "Lord's MacBook Pro" (project `/Users/maximilian/Code/Wren`).
+- Meetings to support: **Teams desktop app only**.
+- Enhancement uses his Anthropic API credit (Claude API, default model `claude-opus-5-5`; Rust has no official SDK, so raw HTTPS via reqwest).
+
+### Next step
+- Waiting on his answers to the approach questions (why/what for, local vs cloud live transcription, speaker names, auto-detect, audio retention), then write `docs/superpowers/specs/2026-11-24-meetings-design.md`, get approval, plan, build, council.
+
 Wren is Maximilian's free, local dictation app for Windows and macOS Apple Silicon (a Willow / Glaido replacement).
 
 ## Status (2026-11-24) — macOS Apple Silicon Port Verified Live & Released
