@@ -274,6 +274,64 @@ pub fn system_audio_permission() -> String {
 #[tauri::command]
 pub fn open_system_audio_settings() {}
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyStatus {
+    pub saved: bool,
+}
+
+#[tauri::command]
+pub fn claude_key_status() -> KeyStatus {
+    KeyStatus { saved: crate::meetings::claude::KeyStore::system().get().is_some() }
+}
+
+/// Check the pasted key with a tiny request, then save it. The key is never returned to the page.
+#[tauri::command]
+pub async fn claude_key_save(key: String) -> Result<(), String> {
+    use crate::meetings::claude::{looks_like_key, test_key, ClaudeError, KeyStore};
+    if !looks_like_key(&key) {
+        return Err("That doesn't look like a Claude API key (they start with sk-ant-).".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match test_key(&key) {
+            Ok(()) => {}
+            // Busy or rate-limited still proves the key was accepted.
+            Err(ClaudeError::RateLimited | ClaudeError::Overloaded) => {}
+            Err(ClaudeError::Unauthorized) => return Err("Claude rejected that key. Check it and try again.".to_string()),
+            Err(e) => return Err(e.to_string()),
+        }
+        KeyStore::system().set(&key)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn claude_key_remove() -> Result<(), String> {
+    crate::meetings::claude::KeyStore::system().remove()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Spend {
+    pub usd: f64,
+    pub notes: u32,
+}
+
+/// Estimated spend on enhanced notes since the 1st of this month (local time).
+#[tauri::command]
+pub fn claude_spend_month(state: State<'_, AppState>) -> Result<Spend, String> {
+    use chrono::{Datelike, Local, TimeZone};
+    let now = Local::now();
+    let first = Local
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .earliest()
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
+    let (usd, notes) = state.store.notes_cost_since(first).map_err(|e| e.to_string())?;
+    Ok(Spend { usd, notes })
+}
+
 /// Tray: pause/resume or stop the meeting (never on the main thread; stop can take a while).
 pub fn tray_action(app: &AppHandle, action: &str) {
     let Some(m) = app.try_state::<Meetings>() else { return };

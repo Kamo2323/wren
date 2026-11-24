@@ -40,12 +40,13 @@ tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 uuid = { version = "1.29.0", features = ["v4"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
-reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "blocking", "json"] }
 minisign-verify = "0.2"
 semver = "1"
 base64 = "0.22"
 futures-util = "0.3"
 tokio = { version = "1", features = ["time"] }
+keyring = "4"
 
 [target.'cfg(windows)'.dependencies]
 # Meetings: Teams process-loopback capture (AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK).
