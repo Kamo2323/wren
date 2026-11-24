@@ -2,12 +2,14 @@
 //! reader). `NSWorkspace.runningApplications` is AppKit and only safe on the main thread, and those
 //! threads poll it several times a second, so they use libproc instead: every pid
 //! (`proc_listallpids`), its executable path (`proc_pidpath`) and, for an app's main executable, the
-//! bundle id read from the app's Info.plist (CFBundle, thread-safe; cached per app path).
+//! bundle id read from the app's Info.plist (CFBundle, thread-safe; cached per app path, a failed
+//! lookup only briefly). Callers that poll often cache the pids they find (see `ax_macos.rs`).
 
 use crate::watcher::ax_macos::{cf_to_string, CfGuard};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 type CFTypeRef = *const c_void;
 
@@ -35,13 +37,13 @@ pub fn all_pids() -> Vec<i32> {
 
 /// The executable path of `pid`.
 pub fn pid_path(pid: i32) -> Option<String> {
-    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // On the stack: this runs for every pid on each scan.
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
     if n <= 0 {
         return None;
     }
-    buf.truncate(n as usize);
-    String::from_utf8(buf).ok()
+    std::str::from_utf8(buf.get(..n as usize)?).ok().map(str::to_owned)
 }
 
 /// The parent pid of `pid` (0 when unknown).
@@ -79,12 +81,25 @@ pub fn main_app_bundle(exe: &str) -> Option<&str> {
     (!name.is_empty() && !name.contains('/')).then_some(&exe[..end])
 }
 
+/// How long a failed bundle-id lookup is remembered: an app caught mid-install or mid-update (Teams
+/// updates itself in place) gets its id once it's readable again.
+const MISS_TTL: Duration = Duration::from_secs(30);
+
+/// A cached lookup, if still usable at `now`: hits forever, misses for [`MISS_TTL`].
+fn cached(entry: Option<&(Option<String>, Instant)>, now: Instant) -> Option<Option<String>> {
+    match entry? {
+        (Some(id), _) => Some(Some(id.clone())),
+        (None, at) if now.duration_since(*at) < MISS_TTL => Some(None),
+        (None, _) => None,
+    }
+}
+
 /// The bundle id of the app at `bundle_path` (cached).
 fn bundle_id(bundle_path: &str) -> Option<String> {
-    static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    static CACHE: OnceLock<parking_lot::Mutex<HashMap<String, (Option<String>, Instant)>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(hit) = cache.lock().get(bundle_path) {
-        return hit.clone();
+    if let Some(hit) = cached(cache.lock().get(bundle_path), Instant::now()) {
+        return hit;
     }
     let id = (|| {
         let url = CfGuard::new(unsafe {
@@ -94,7 +109,7 @@ fn bundle_id(bundle_path: &str) -> Option<String> {
         // Get rule: owned by the bundle.
         cf_to_string(unsafe { CFBundleGetIdentifier(bundle.as_ptr()) })
     })();
-    cache.lock().insert(bundle_path.to_string(), id.clone());
+    cache.lock().insert(bundle_path.to_string(), (id.clone(), Instant::now()));
     id
 }
 
@@ -130,6 +145,17 @@ mod tests {
         assert_eq!(main_app_bundle("/usr/bin/afplay"), None);
         assert_eq!(main_app_bundle("/Applications/Foo.app/Contents/MacOS/sub/tool"), None);
         assert_eq!(main_app_bundle("/Applications/Foo.app/Contents/MacOS/"), None);
+    }
+
+    #[test]
+    fn failed_bundle_lookups_expire_hits_dont() {
+        let t0 = Instant::now();
+        let hit = (Some("com.microsoft.teams2".to_string()), t0);
+        let miss = (None, t0);
+        assert_eq!(cached(None, t0), None);
+        assert_eq!(cached(Some(&hit), t0 + Duration::from_secs(3_600)), Some(Some("com.microsoft.teams2".into())));
+        assert_eq!(cached(Some(&miss), t0 + Duration::from_secs(5)), Some(None));
+        assert_eq!(cached(Some(&miss), t0 + MISS_TTL), None, "looked up again");
     }
 
     #[test]

@@ -62,6 +62,20 @@ fn limit(el: CFTypeRef) {
 const HYDRATE_BELOW: usize = 20;
 /// How long Chromium takes to build its tree after being woken.
 const HYDRATE_WAIT: Duration = Duration::from_millis(600);
+/// Look for Teams processes again at most this often while the ones found still have windows (a
+/// full process scan is a few hundred libproc calls; the watcher polls several times a second).
+const RESCAN: Duration = Duration::from_secs(5);
+/// ... and at most this often while the cached pids have no windows (Teams quit or restarted).
+const RESCAN_MISSED: Duration = Duration::from_secs(1);
+
+/// Whether the cached pids (scanned at `at`) are due a rescan at `now`; `missed`: they had no window.
+fn rescan_due(at: Option<Instant>, missed: bool, now: Instant) -> bool {
+    at.is_none_or(|at| {
+        let age = now.saturating_duration_since(at);
+        age >= RESCAN || (missed && age >= RESCAN_MISSED)
+    })
+}
+
 /// Longest `value` kept (text boxes can hold whole messages; the parser never needs them).
 const MAX_VALUE_CHARS: usize = 200;
 
@@ -190,6 +204,10 @@ pub struct AxTeamsReader {
     attrs: Retained<NSArray<NSString>>,
     /// Teams pids already woken with `AXManualAccessibility`.
     hydrated: HashSet<i32>,
+    /// The Teams pids last found, when, and whether none of them had a window since.
+    pids: Vec<i32>,
+    scanned: Option<Instant>,
+    missed: bool,
     /// Dump the first Teams window even when it isn't a meeting (probe `--any`).
     pub any_window: bool,
     /// Time allowed to copy one window (the probe raises it to capture whole trees).
@@ -210,19 +228,28 @@ impl AxTeamsReader {
         Self {
             attrs: NSArray::from_retained_slice(&names),
             hydrated: HashSet::new(),
+            pids: Vec::new(),
+            scanned: None,
+            missed: false,
             any_window: false,
             budget: SNAPSHOT_BUDGET * 2,
             bundle_id: None,
         }
     }
 
-    /// Pids of the running app(s) to read. libproc, not `NSWorkspace` (AppKit is main-thread only and
-    /// this runs on the meeting watcher's thread several times a second).
-    fn app_pids(&self) -> Vec<i32> {
-        crate::meetings::mac_procs::running_app_pids(|b| match &self.bundle_id {
-            Some(want) => b.eq_ignore_ascii_case(want),
-            None => is_teams_bundle(b),
-        })
+    /// Pids of the running app(s) to read: cached, rescanned per [`rescan_due`]. libproc, not
+    /// `NSWorkspace` (AppKit is main-thread only and this runs on the meeting watcher's thread).
+    fn app_pids(&mut self) -> Vec<i32> {
+        let now = Instant::now();
+        if rescan_due(self.scanned, self.missed, now) {
+            self.pids = crate::meetings::mac_procs::running_app_pids(|b| match &self.bundle_id {
+                Some(want) => b.eq_ignore_ascii_case(want),
+                None => is_teams_bundle(b),
+            });
+            self.scanned = Some(now);
+            self.missed = false;
+        }
+        self.pids.clone()
     }
 
     fn attrs_of(&self, el: CFTypeRef) -> Option<(AxAttrs, CfGuard)> {
@@ -333,7 +360,9 @@ impl TeamsReader for AxTeamsReader {
         if !crate::hotkey::accessibility_trusted(false) {
             return None;
         }
-        for pid in self.app_pids() {
+        let pids = self.app_pids();
+        let mut any_window = false;
+        for pid in pids.iter().copied() {
             let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) }) else { continue };
             limit(app.as_ptr());
             let (mut _keep, mut wins) = Self::windows(&app);
@@ -341,6 +370,7 @@ impl TeamsReader for AxTeamsReader {
                 self.hydrate(pid, &app);
                 (_keep, wins) = Self::windows(&app);
             }
+            any_window |= !wins.is_empty();
             // Meeting windows usually aren't titled just "Microsoft Teams"; try likely ones first.
             wins.sort_by_key(|(_, t)| t.trim().eq_ignore_ascii_case("Microsoft Teams") as u8);
             for (win, title) in wins {
@@ -354,6 +384,8 @@ impl TeamsReader for AxTeamsReader {
                 }
             }
         }
+        // Cached pids without windows: Teams may have quit or restarted; look again soon.
+        self.missed = !pids.is_empty() && !any_window;
         None
     }
 }
@@ -361,6 +393,18 @@ impl TeamsReader for AxTeamsReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn teams_pids_are_rescanned_every_5s_or_soon_after_a_miss() {
+        let t0 = Instant::now();
+        assert!(rescan_due(None, false, t0), "first read scans");
+        assert!(!rescan_due(Some(t0), false, t0 + Duration::from_millis(250)), "not on every poll");
+        assert!(!rescan_due(Some(t0), false, t0 + Duration::from_millis(4_900)));
+        assert!(rescan_due(Some(t0), false, t0 + RESCAN));
+        // The cached pids had no window (Teams restarted under a new pid): sooner, but not every poll.
+        assert!(!rescan_due(Some(t0), true, t0 + Duration::from_millis(500)));
+        assert!(rescan_due(Some(t0), true, t0 + RESCAN_MISSED));
+    }
 
     #[test]
     fn title_wins_and_description_moves_to_help() {
