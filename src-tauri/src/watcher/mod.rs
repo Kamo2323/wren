@@ -60,6 +60,9 @@ pub const TERMINALS: [&str; 14] = [
 /// 2 November 2026): the message box read in p95 0 ms (max 1 ms) over 20 reads, well under the
 /// 50 ms bar, so the watcher is on unless the user switches it off.
 pub const PROBE_VERDICT: &str = "readable";
+#[cfg(target_os = "macos")]
+pub const PROBE_REASON: &str = "Wren watches pasted text via macOS Accessibility to learn words you fix.";
+#[cfg(not(target_os = "macos"))]
 pub const PROBE_REASON: &str = "The Claude app's text box can be read in under 1 ms, so Wren watches it after pasting.";
 pub const PROBE_DEFAULT_ON: bool = true;
 
@@ -219,7 +222,7 @@ impl Watcher {
                     slow_calls = end.slow_calls,
                     "watcher switched off for this app until Wren restarts: {WATCH_MAX_SLOW_CALLS} reads took over {WATCH_SLOW_CALL_MS} ms"
                 );
-                slow_apps.lock().insert(app.clone());
+                slow_apps.lock().insert(app.to_lowercase());
             }
             tracing::info!(
                 id = %d.id,

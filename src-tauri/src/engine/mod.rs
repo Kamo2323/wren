@@ -88,6 +88,10 @@ impl std::fmt::Debug for TranscribeResult {
 pub enum EngineError {
     #[error("The speech engine is not ready yet.")]
     NotReady,
+    #[cfg(target_os = "macos")]
+    #[error("This Mac ran out of memory for the speech model ({0}).")]
+    Oom(String),
+    #[cfg(not(target_os = "macos"))]
     #[error("The graphics card ran out of memory ({0}).")]
     Oom(String),
     #[error("The recording could not be read ({0}).")]
@@ -261,8 +265,41 @@ pub fn process_image(pid: u32) -> Option<PathBuf> {
     }
 }
 
+/// True if a process with this id is still running (excludes macOS zombie `SZOMB` processes).
+#[cfg(target_os = "macos")]
+pub fn process_is_running(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if !alive {
+        return false;
+    }
+    // Check `proc_bsdinfo.pbi_status` via `proc_pidinfo` so unreaped zombies (`SZOMB == 5`) count as dead.
+    const PROC_PIDTBSDINFO: libc::c_int = 3;
+    const SZOMB: u32 = 5;
+    unsafe extern "C" {
+        fn proc_pidinfo(
+            pid: libc::c_int,
+            flavor: libc::c_int,
+            arg: u64,
+            buffer: *mut libc::c_void,
+            buffersize: libc::c_int,
+        ) -> libc::c_int;
+    }
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let sz = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe { proc_pidinfo(pid as libc::c_int, PROC_PIDTBSDINFO, 0, info.as_mut_ptr() as *mut libc::c_void, sz) };
+    if got == sz {
+        let info = unsafe { info.assume_init() };
+        return info.pbi_status != SZOMB;
+    }
+    true
+}
+
 /// True if a process with this id is still running (used to prove no sidecar outlives Wren).
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn process_is_running(pid: u32) -> bool {
     if pid == 0 {
         return false;

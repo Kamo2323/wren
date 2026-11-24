@@ -18,6 +18,31 @@ fn cache() -> &'static Mutex<HashMap<String, Option<String>>> {
 /// Returns a `data:image/png;base64,...` icon for `process_name` (e.g. `"claude.exe"` on Windows,
 /// `"Claude"` / `"Safari"` on macOS), or `None`.
 pub fn icon_data_url(process_name: &str) -> Option<String> {
+    icon_data_url_with(process_name, |p| extract_icon_png(p))
+}
+
+/// Same as [`icon_data_url`], dispatching macOS AppKit icon rendering onto the main thread via
+/// `app.run_on_main_thread` so concurrent Tauri async command calls never touch `NSGraphicsContext`
+/// or `NSImage::drawInRect` off the main thread.
+#[cfg(target_os = "macos")]
+pub fn icon_data_url_on_app(app: &tauri::AppHandle, process_name: &str) -> Option<String> {
+    icon_data_url_with(process_name, |p| {
+        let path = p.to_path_buf();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        if app
+            .run_on_main_thread(move || {
+                let png = extract_icon_png(&path);
+                let _ = tx.send(png);
+            })
+            .is_err()
+        {
+            return None;
+        }
+        rx.recv_timeout(std::time::Duration::from_secs(2)).ok().flatten()
+    })
+}
+
+fn icon_data_url_with(process_name: &str, render: impl FnOnce(&Path) -> Option<Vec<u8>>) -> Option<String> {
     let trimmed = process_name.trim();
     if trimmed.is_empty() {
         return None;
@@ -27,7 +52,7 @@ pub fn icon_data_url(process_name: &str) -> Option<String> {
         return hit.clone();
     }
 
-    let result = find_app_path(trimmed).and_then(|p| extract_icon_png(&p)).map(|bytes| {
+    let result = find_app_path(trimmed).and_then(|p| render(&p)).map(|bytes| {
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         format!("data:image/png;base64,{b64}")
     });
@@ -339,101 +364,105 @@ mod mac_icons {
     use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
     pub fn find_app_path(process_name: &str) -> Option<PathBuf> {
-        let raw = process_name.trim();
-        let clean = raw
-            .strip_suffix(".app")
-            .or_else(|| raw.strip_suffix(".exe"))
-            .unwrap_or(raw);
-        let needle = clean.to_lowercase();
+        objc2::rc::autoreleasepool(|_| {
+            let raw = process_name.trim();
+            let clean = raw
+                .strip_suffix(".app")
+                .or_else(|| raw.strip_suffix(".exe"))
+                .unwrap_or(raw);
+            let needle = clean.to_lowercase();
 
-        // 1. Check currently running macOS apps (exact localized name, executable name, or bundle ID).
-        let ws = NSWorkspace::sharedWorkspace();
-        let running = ws.runningApplications();
-        for app in running.iter() {
-            let loc_match = app
-                .localizedName()
-                .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
-            let bundle_match = app
-                .bundleIdentifier()
-                .is_some_and(|b| b.to_string().eq_ignore_ascii_case(raw));
-            let exe_match = app
-                .executableURL()
-                .and_then(|u| u.lastPathComponent())
-                .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
-            if (loc_match || bundle_match || exe_match)
-                && let Some(url) = app.bundleURL()
-                && let Some(p) = url.path()
-            {
-                let pb = PathBuf::from(p.to_string());
-                if pb.exists() {
-                    return Some(pb);
+            // 1. Check currently running macOS apps (exact localized name, executable name, or bundle ID).
+            let ws = NSWorkspace::sharedWorkspace();
+            let running = ws.runningApplications();
+            for app in running.iter() {
+                let loc_match = app
+                    .localizedName()
+                    .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
+                let bundle_match = app
+                    .bundleIdentifier()
+                    .is_some_and(|b| b.to_string().eq_ignore_ascii_case(raw));
+                let exe_match = app
+                    .executableURL()
+                    .and_then(|u| u.lastPathComponent())
+                    .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
+                if (loc_match || bundle_match || exe_match)
+                    && let Some(url) = app.bundleURL()
+                    && let Some(p) = url.path()
+                {
+                    let pb = PathBuf::from(p.to_string());
+                    if pb.exists() {
+                        return Some(pb);
+                    }
                 }
             }
-        }
 
-        // 2. Check standard macOS Application folders so closed apps still resolve their real icon.
-        let mut dirs = vec![
-            PathBuf::from("/Applications"),
-            PathBuf::from("/System/Applications"),
-            PathBuf::from("/System/Applications/Utilities"),
-            PathBuf::from("/System/Library/CoreServices"),
-        ];
-        if let Some(home) = std::env::var_os("HOME") {
-            dirs.push(PathBuf::from(home).join("Applications"));
-        }
+            // 2. Check standard macOS Application folders so closed apps still resolve their real icon.
+            let mut dirs = vec![
+                PathBuf::from("/Applications"),
+                PathBuf::from("/System/Applications"),
+                PathBuf::from("/System/Applications/Utilities"),
+                PathBuf::from("/System/Library/CoreServices"),
+            ];
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.push(PathBuf::from(home).join("Applications"));
+            }
 
-        let app_filename = format!("{needle}.app");
-        for dir in dirs {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-            for entry in entries.flatten().take(250) {
-                let name = entry.file_name();
-                let Some(s) = name.to_str() else { continue };
-                if s.eq_ignore_ascii_case(&app_filename) {
-                    return Some(entry.path());
+            let app_filename = format!("{needle}.app");
+            for dir in dirs {
+                let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+                for entry in entries.flatten().take(250) {
+                    let name = entry.file_name();
+                    let Some(s) = name.to_str() else { continue };
+                    if s.eq_ignore_ascii_case(&app_filename) {
+                        return Some(entry.path());
+                    }
                 }
             }
-        }
-        None
+            None
+        })
     }
 
     pub fn extract_icon_png(app_path: &Path) -> Option<Vec<u8>> {
-        let path_str = app_path.to_str()?;
-        let ns_path = NSString::from_str(path_str);
-        let ws = NSWorkspace::sharedWorkspace();
-        let icon = ws.iconForFile(&ns_path);
+        objc2::rc::autoreleasepool(|_| {
+            let path_str = app_path.to_str()?;
+            let ns_path = NSString::from_str(path_str);
+            let ws = NSWorkspace::sharedWorkspace();
+            let icon = ws.iconForFile(&ns_path);
 
-        // Render at 64x64 for crisp Retina icons (displayed at 28-32 logical px).
-        let size: isize = 64;
-        let color_space = NSString::from_str("NSCalibratedRGBColorSpace");
-        let rep = unsafe {
-            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
-                NSBitmapImageRep::alloc(),
-                std::ptr::null_mut(),
-                size,
-                size,
-                8,
-                4,
-                true,
-                false,
-                &color_space,
-                NSBitmapFormat::empty(),
-                size * 4,
-                32,
-            )
-        }?;
-        let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
-        let prev = NSGraphicsContext::currentContext();
-        NSGraphicsContext::setCurrentContext(Some(&ctx));
-        let target = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size as f64, size as f64));
-        let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
-        icon.drawInRect_fromRect_operation_fraction(target, zero, NSCompositingOperation::SourceOver, 1.0);
-        ctx.flushGraphics();
-        NSGraphicsContext::setCurrentContext(prev.as_deref());
+            // Render at 64x64 for crisp Retina icons (displayed at 28-32 logical px).
+            let size: isize = 64;
+            let color_space = NSString::from_str("NSCalibratedRGBColorSpace");
+            let rep = unsafe {
+                NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+                    NSBitmapImageRep::alloc(),
+                    std::ptr::null_mut(),
+                    size,
+                    size,
+                    8,
+                    4,
+                    true,
+                    false,
+                    &color_space,
+                    NSBitmapFormat::empty(),
+                    size * 4,
+                    32,
+                )
+            }?;
+            let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+            let prev = NSGraphicsContext::currentContext();
+            NSGraphicsContext::setCurrentContext(Some(&ctx));
+            let target = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size as f64, size as f64));
+            let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+            icon.drawInRect_fromRect_operation_fraction(target, zero, NSCompositingOperation::SourceOver, 1.0);
+            ctx.flushGraphics();
+            NSGraphicsContext::setCurrentContext(prev.as_deref());
 
-        let props = NSDictionary::new();
-        let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }?;
-        let bytes = data.to_vec();
-        (!bytes.is_empty()).then_some(bytes)
+            let props = NSDictionary::new();
+            let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }?;
+            let bytes = data.to_vec();
+            (!bytes.is_empty()).then_some(bytes)
+        })
     }
 }
 

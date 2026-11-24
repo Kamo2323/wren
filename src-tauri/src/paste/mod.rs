@@ -255,19 +255,26 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
-    use crate::constants::INJECT_TAG;
+    use crate::constants::{INJECT_TAG, PASTE_READ_WAIT_MS};
     use objc2_app_kit::NSWorkspace;
     use std::ffi::c_void;
 
     type CGEventSourceRef = *mut c_void;
     type CGEventRef = *mut c_void;
     type CGEventFlags = u64;
+    type TISInputSourceRef = *mut c_void;
+    type CFStringRef = *const c_void;
+    type CFDataRef = *const c_void;
 
-    const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM: i32 = 1;
+    // Private source state (-1) isolates synthetic ⌘V from live physical HID modifier keys
+    // (such as a still-settling Fn or Control key).
+    const K_CG_EVENT_SOURCE_STATE_PRIVATE: i32 = -1;
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
     const K_CG_EVENT_FLAG_MASK_COMMAND: CGEventFlags = 1 << 20;
     const K_CG_EVENT_SOURCE_USER_DATA: u32 = 42;
     const K_VK_ANSI_V: u16 = 9;
+    const K_UC_KEY_ACTION_DOWN: u16 = 0;
+    const K_UC_KEY_TRANSLATE_NO_DEAD_KEYS_BIT: u32 = 1 << 0;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
@@ -281,24 +288,90 @@ mod platform {
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFRelease(cf: *const c_void);
+        fn CFDataGetBytePtr(the_data: CFDataRef) -> *const u8;
+        fn CFDataGetLength(the_data: CFDataRef) -> isize;
+    }
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        static kTISPropertyUnicodeKeyLayoutData: CFStringRef;
+        fn TISCopyCurrentKeyboardLayoutInputSource() -> TISInputSourceRef;
+        fn TISGetInputSourceProperty(input_source: TISInputSourceRef, property_key: CFStringRef) -> *const c_void;
+        fn LMGetKbdType() -> u8;
+        fn UCKeyTranslate(
+            key_layout_ptr: *const c_void,
+            virtual_key_code: u16,
+            key_action: u16,
+            modifier_key_state: u32,
+            keyboard_type: u32,
+            key_translate_options: u32,
+            dead_key_state: *mut u32,
+            max_string_length: usize,
+            actual_string_length: *mut usize,
+            unicode_string: *mut u16,
+        ) -> i32;
+    }
+
+    /// Resolve the virtual keycode for `'v'` in the user's active keyboard layout (supports QWERTY,
+    /// Dvorak, Colemak, AZERTY, etc.), falling back to ANSI `V` (`9`).
+    fn keycode_for_v() -> u16 {
+        unsafe {
+            let src = TISCopyCurrentKeyboardLayoutInputSource();
+            if src.is_null() {
+                return K_VK_ANSI_V;
+            }
+            let raw = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) as CFDataRef;
+            let mut found = None;
+            if !raw.is_null() && CFDataGetLength(raw) > 0 {
+                let layout = CFDataGetBytePtr(raw) as *const c_void;
+                if !layout.is_null() {
+                    let kbd_type = LMGetKbdType() as u32;
+                    for vk in 0u16..128 {
+                        let mut dead_key_state: u32 = 0;
+                        let mut chars = [0u16; 4];
+                        let mut actual_len: usize = 0;
+                        let status = UCKeyTranslate(
+                            layout,
+                            vk,
+                            K_UC_KEY_ACTION_DOWN,
+                            0,
+                            kbd_type,
+                            K_UC_KEY_TRANSLATE_NO_DEAD_KEYS_BIT,
+                            &mut dead_key_state,
+                            chars.len(),
+                            &mut actual_len,
+                            chars.as_mut_ptr(),
+                        );
+                        if status == 0 && actual_len == 1 && (chars[0] == b'v' as u16 || chars[0] == b'V' as u16) {
+                            found = Some(vk);
+                            break;
+                        }
+                    }
+                }
+            }
+            CFRelease(src as *const c_void);
+            found.unwrap_or(K_VK_ANSI_V)
+        }
     }
 
     /// Frontmost application PID, friendly name, and a token encoding PID (+ AX window hash if
     /// accessible) so switching apps OR switching windows inside an app is caught as `FocusChanged`.
     pub fn foreground() -> ForegroundInfo {
-        let ws = NSWorkspace::sharedWorkspace();
-        let Some(app) = ws.frontmostApplication() else {
-            return ForegroundInfo { hwnd: 0, pid: 0, process_name: String::new() };
-        };
-        let pid = app.processIdentifier().max(0) as u32;
-        let name = app
-            .localizedName()
-            .map(|n| n.to_string())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| process_name(pid));
-        let win_hash = crate::watcher::ax_macos::focused_window_token(pid).unwrap_or(0);
-        let hwnd = ((pid as isize) << 32) | (win_hash as isize & 0xFFFF_FFFF);
-        ForegroundInfo { hwnd, pid, process_name: name }
+        objc2::rc::autoreleasepool(|_| {
+            let ws = NSWorkspace::sharedWorkspace();
+            let Some(app) = ws.frontmostApplication() else {
+                return ForegroundInfo { hwnd: 0, pid: 0, process_name: String::new() };
+            };
+            let pid = app.processIdentifier().max(0) as u32;
+            let name = app
+                .localizedName()
+                .map(|n| n.to_string())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| process_name(pid));
+            let win_hash = crate::watcher::ax_macos::focused_window_token(pid).unwrap_or(0);
+            let hwnd = ((pid as isize) << 32) | (win_hash as isize & 0xFFFF_FFFF);
+            ForegroundInfo { hwnd, pid, process_name: name }
+        })
     }
 
     pub fn process_name(pid: u32) -> String {
@@ -308,10 +381,11 @@ mod platform {
     }
 
     fn send_cmd_v() -> Result<(), String> {
+        let vk_v = keycode_for_v();
         unsafe {
-            let source = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM);
-            let down = CGEventCreateKeyboardEvent(source, K_VK_ANSI_V, true);
-            let up = CGEventCreateKeyboardEvent(source, K_VK_ANSI_V, false);
+            let source = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_PRIVATE);
+            let down = CGEventCreateKeyboardEvent(source, vk_v, true);
+            let up = CGEventCreateKeyboardEvent(source, vk_v, false);
             if down.is_null() || up.is_null() {
                 if !down.is_null() {
                     CFRelease(down as *const c_void);
@@ -326,7 +400,7 @@ mod platform {
             }
             CGEventSetFlags(down, K_CG_EVENT_FLAG_MASK_COMMAND);
             CGEventSetIntegerValueField(down, K_CG_EVENT_SOURCE_USER_DATA, INJECT_TAG as i64);
-            CGEventSetFlags(up, K_CG_EVENT_FLAG_MASK_COMMAND);
+            CGEventSetFlags(up, 0);
             CGEventSetIntegerValueField(up, K_CG_EVENT_SOURCE_USER_DATA, INJECT_TAG as i64);
 
             CGEventPost(K_CG_SESSION_EVENT_TAP, down);
@@ -361,6 +435,10 @@ mod platform {
             tracing::info!(target = %target.process_name, now = %now.process_name, "foreground changed; not pasting");
             return PasteResult::FocusChanged;
         }
+        if !crate::hotkey::accessibility_trusted(false) {
+            tracing::warn!("macOS Accessibility not granted; skipping ⌘V paste");
+            return PasteResult::Failed("Accessibility permission is needed to paste.".into());
+        }
         let tx = match clipboard_macos::Transaction::start(text) {
             Ok(tx) => tx,
             Err(e) => {
@@ -382,6 +460,15 @@ mod platform {
             tx.leave_text();
             tracing::warn!(error = %e, "⌘V injection failed; text left on the clipboard");
             return PasteResult::Failed(e);
+        }
+        if !tx.wait_for_read(Duration::from_millis(PASTE_READ_WAIT_MS)) {
+            tx.leave_text();
+            tracing::warn!(
+                chars = text.chars().count(),
+                app = %target.process_name,
+                "no clipboard read after ⌘V; text left on the clipboard"
+            );
+            return PasteResult::Failed(REASON_NOT_READ.into());
         }
         let latency_ms = sent_at.elapsed().as_millis() as u64;
         tx.restore_later();

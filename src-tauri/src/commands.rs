@@ -113,8 +113,16 @@ pub fn set_window_theme(app: AppHandle, theme: Option<String>) {
 
 /// Extract and cache a real OS app icon PNG data URL for a process/app name.
 #[tauri::command(async)]
-pub fn app_icon(process_name: String) -> Option<String> {
-    crate::app_icons::icon_data_url(&process_name)
+pub fn app_icon(app: AppHandle, process_name: String) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::app_icons::icon_data_url_on_app(&app, &process_name)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        crate::app_icons::icon_data_url(&process_name)
+    }
 }
 
 /// On macOS, returns whether Accessibility permission is granted (needed for Fn + Control, ⌘V paste,
@@ -443,18 +451,20 @@ fn running_process_names() -> Vec<String> {
 
 #[cfg(target_os = "macos")]
 fn running_process_names() -> Vec<String> {
-    use objc2_app_kit::NSWorkspace;
-    let mut names = Vec::new();
-    let apps = NSWorkspace::sharedWorkspace().runningApplications();
-    for app in apps.iter() {
-        if let Some(name) = app.localizedName() {
-            names.push(name.to_string());
+    objc2::rc::autoreleasepool(|_| {
+        use objc2_app_kit::NSWorkspace;
+        let mut names = Vec::new();
+        let apps = NSWorkspace::sharedWorkspace().runningApplications();
+        for app in apps.iter() {
+            if let Some(name) = app.localizedName() {
+                names.push(name.to_string());
+            }
+            if let Some(exe) = app.executableURL().and_then(|u| u.lastPathComponent()) {
+                names.push(exe.to_string());
+            }
         }
-        if let Some(exe) = app.executableURL().and_then(|u| u.lastPathComponent()) {
-            names.push(exe.to_string());
-        }
-    }
-    names
+        names
+    })
 }
 
 // ---- correction watcher, AI clean-up (Task 9) ----

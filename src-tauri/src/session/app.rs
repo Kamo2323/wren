@@ -45,6 +45,7 @@ pub struct AppEnv {
     /// Kept so `Reinstall` can start the hotkey after launch (e.g. once macOS Accessibility is granted).
     hotkey_tx: Sender<HotkeyEvent>,
     /// Wren's own window handles, read once on the main thread at start-up.
+    #[cfg(windows)]
     own_windows: Vec<isize>,
     /// Correction watcher and pre-paste check (Task 9).
     watcher: Watcher,
@@ -53,6 +54,9 @@ pub struct AppEnv {
     session: OnceLock<SessionHandle>,
     /// An AI clean-up model load is in flight.
     ai_warming: Arc<AtomicBool>,
+    /// Stops the macOS post-launch Accessibility watcher thread on quit.
+    #[cfg(target_os = "macos")]
+    ax_watch_stop: Arc<AtomicBool>,
 }
 
 impl AppEnv {
@@ -99,6 +103,8 @@ impl AppEnv {
 
     /// On quit: unhook, stop the sidecar, and put back any clipboard a paste still owes.
     pub fn shutdown(&self) {
+        #[cfg(target_os = "macos")]
+        self.ax_watch_stop.store(true, Ordering::SeqCst);
         self.watcher.stop();
         drop(self.hotkey.lock().take());
         self.engine().shutdown();
@@ -129,7 +135,14 @@ impl Env for AppEnv {
         paste::foreground()
     }
     fn paste(&self, text: &str, target: &ForegroundInfo) -> PasteResult {
-        paste::paste_text(text, target, &|hwnd| self.own_windows.contains(&hwnd))
+        #[cfg(windows)]
+        {
+            paste::paste_text(text, target, &|hwnd| self.own_windows.contains(&hwnd))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            paste::paste_text(text, target, &|hwnd| popup::is_own_window(&self.app, hwnd))
+        }
     }
     fn copy_text(&self, text: &str) -> anyhow::Result<()> {
         paste::copy_text(text)
@@ -180,7 +193,7 @@ impl Env for AppEnv {
         }
     }
     fn play(&self, sound: Sound) {
-        play_tick(sound);
+        play_tick(&self.app, sound);
     }
     fn dictation_started(&self) {
         self.watcher.stop();
@@ -314,11 +327,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         .filter_map(|w| w.hwnd().ok().map(|h| h.0 as isize))
         .collect();
     #[cfg(target_os = "macos")]
-    let own_windows: Vec<isize> = app
-        .webview_windows()
-        .values()
-        .filter_map(|w| w.ns_window().ok().map(|p| p as isize))
-        .collect();
+    let ax_watch_stop = Arc::new(AtomicBool::new(false));
     let env = Arc::new(AppEnv {
         app: app.clone(),
         recorder,
@@ -328,14 +337,43 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         swapping: AtomicBool::new(false),
         hotkey: Mutex::new(hotkey),
         hotkey_tx,
+        #[cfg(windows)]
         own_windows,
         watcher: Watcher::new(),
         prepaste: prepaste::Checker::start().map_err(|e| tracing::warn!(error = %e, "no pre-paste check")).ok(),
         session: OnceLock::new(),
         ai_warming: Arc::new(AtomicBool::new(false)),
+        #[cfg(target_os = "macos")]
+        ax_watch_stop: ax_watch_stop.clone(),
     });
     let session = super::start(env.clone(), hotkey_rx)?;
     let _ = env.session.set(session.clone());
+
+    // On macOS, if Accessibility was not granted yet at launch, poll gently in the background so
+    // enabling Wren in System Settings activates `Fn + Control` automatically even while hidden.
+    #[cfg(target_os = "macos")]
+    if hotkey_failed {
+        let env_watch = env.clone();
+        let session_watch = session.clone();
+        let stop = ax_watch_stop;
+        let _ = std::thread::Builder::new().name("wren-ax-watch".into()).spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_secs(2));
+                if stop.load(Ordering::SeqCst) || env_watch.has_hotkey() {
+                    break;
+                }
+                if crate::hotkey::accessibility_trusted(false) {
+                    tracing::info!("macOS Accessibility granted after launch; installing Fn + Control hotkey");
+                    session_watch.send(Msg::ReinstallHook);
+                    // Wait briefly for the session to apply ReinstallHook before re-checking.
+                    std::thread::sleep(Duration::from_millis(500));
+                    if env_watch.has_hotkey() {
+                        break;
+                    }
+                }
+            }
+        });
+    }
 
     // Tray: pause and reinstall.
     {
@@ -404,15 +442,16 @@ pub fn tick_wav(freq_hz: f32) -> Vec<u8> {
     wav
 }
 
-fn play_tick(sound: Sound) {
+fn play_tick(app: &AppHandle, sound: Sound) {
     static START: OnceLock<Vec<u8>> = OnceLock::new();
     static STOP: OnceLock<Vec<u8>> = OnceLock::new();
-    let bytes = match sound {
+    let bytes: &'static [u8] = match sound {
         Sound::Start => START.get_or_init(|| tick_wav(SOUND_START_HZ)),
         Sound::Stop => STOP.get_or_init(|| tick_wav(SOUND_STOP_HZ)),
     };
     #[cfg(windows)]
     {
+        let _ = app;
         use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
         // SND_MEMORY reads the WAV from this (static, so always alive) buffer; SND_ASYNC returns at once.
         unsafe {
@@ -425,22 +464,28 @@ fn play_tick(sound: Sound) {
     }
     #[cfg(target_os = "macos")]
     {
-        use objc2::AnyThread;
-        use objc2_app_kit::NSSound;
-        use objc2_foundation::NSData;
-        // Keep the latest NSSound alive in a mutex so async playback completes cleanly without leak.
-        static ACTIVE: Mutex<Option<usize>> = Mutex::new(None);
-        let data = NSData::with_bytes(bytes);
-        if let Some(snd) = NSSound::initWithData(NSSound::alloc(), &data) {
-            let _ = snd.play();
-            let raw = objc2::rc::Retained::into_raw(snd) as usize;
-            let prev = ACTIVE.lock().replace(raw);
-            if let Some(old) = prev {
-                unsafe {
-                    let _ = objc2::rc::Retained::from_raw(old as *mut NSSound);
+        // Dispatch AppKit `NSSound` allocation, playback, stop, and release strictly on the main thread.
+        let _ = app.run_on_main_thread(move || {
+            objc2::rc::autoreleasepool(|_| {
+                use objc2::AnyThread;
+                use objc2_app_kit::NSSound;
+                use objc2_foundation::NSData;
+                static ACTIVE: Mutex<Option<usize>> = Mutex::new(None);
+                let data = NSData::with_bytes(bytes);
+                if let Some(snd) = NSSound::initWithData(NSSound::alloc(), &data) {
+                    let _ = snd.play();
+                    let raw = objc2::rc::Retained::into_raw(snd) as usize;
+                    let prev = ACTIVE.lock().replace(raw);
+                    if let Some(old) = prev {
+                        unsafe {
+                            if let Some(old_snd) = objc2::rc::Retained::from_raw(old as *mut NSSound) {
+                                let _ = old_snd.stop();
+                            }
+                        }
+                    }
                 }
-            }
-        }
+            });
+        });
     }
 }
 

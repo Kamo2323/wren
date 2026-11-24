@@ -346,8 +346,13 @@ pub fn run() {
                 popup::prime_hidden_launch(app);
             }
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
-                tray::show_main(app);
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let main_visible = app
+                    .get_webview_window(tray::MAIN_LABEL)
+                    .is_some_and(|w| w.is_visible().unwrap_or(false));
+                if !main_visible {
+                    tray::show_main(app);
+                }
             }
             if let tauri::RunEvent::Exit = event {
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).

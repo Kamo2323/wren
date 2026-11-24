@@ -11,11 +11,30 @@ use std::ffi::{CStr, CString, c_char, c_void};
 type CFTypeRef = *const c_void;
 type CFStringRef = *const c_void;
 type CFBooleanRef = *const c_void;
+type CFNumberRef = *const c_void;
 type AXUIElementRef = *const c_void;
+type AXValueRef = *const c_void;
 type AXError = i32;
 
 const K_AX_ERROR_SUCCESS: AXError = 0;
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+const K_CF_NUMBER_SINT64_TYPE: isize = 4;
+const K_AX_VALUE_CGPOINT_TYPE: u32 = 1;
+const K_AX_VALUE_CGSIZE_TYPE: u32 = 2;
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -34,10 +53,11 @@ unsafe extern "C" {
     fn AXUIElementIsAttributeSettable(
         element: AXUIElementRef,
         attribute: CFStringRef,
-        settable: *mut bool,
+        settable: *mut u8,
     ) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout_in_seconds: f32) -> AXError;
     fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
+    fn AXValueGetValue(value: AXValueRef, value_type: u32, value_ptr: *mut c_void) -> u8;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -47,6 +67,8 @@ unsafe extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
     fn CFGetTypeID(cf: CFTypeRef) -> usize;
     fn CFStringGetTypeID() -> usize;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFNumberGetValue(number: CFNumberRef, the_type: isize, value_ptr: *mut c_void) -> u8;
     fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const c_char, encoding: u32) -> CFStringRef;
     fn CFStringGetLength(the_string: CFStringRef) -> isize;
     fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
@@ -55,7 +77,7 @@ unsafe extern "C" {
         buffer: *mut c_char,
         buffer_size: isize,
         encoding: u32,
-    ) -> bool;
+    ) -> u8;
 }
 
 /// Owned `CFTypeRef` released on drop.
@@ -98,13 +120,30 @@ fn cf_to_string(ptr: CFTypeRef) -> Option<String> {
             return Some(String::new());
         }
         let mut buf = vec![0u8; max as usize];
-        if !CFStringGetCString(ptr, buf.as_mut_ptr() as *mut c_char, max, K_CF_STRING_ENCODING_UTF8) {
+        if CFStringGetCString(ptr, buf.as_mut_ptr() as *mut c_char, max, K_CF_STRING_ENCODING_UTF8) == 0 {
             return None;
         }
         CStr::from_ptr(buf.as_ptr() as *const c_char)
             .to_str()
             .ok()
             .map(str::to_owned)
+    }
+}
+
+fn cf_to_i64(ptr: CFTypeRef) -> Option<i64> {
+    if ptr.is_null() {
+        return None;
+    }
+    unsafe {
+        if CFGetTypeID(ptr) != CFNumberGetTypeID() {
+            return None;
+        }
+        let mut out: i64 = 0;
+        if CFNumberGetValue(ptr, K_CF_NUMBER_SINT64_TYPE, (&mut out as *mut i64) as *mut c_void) != 0 {
+            Some(out)
+        } else {
+            None
+        }
     }
 }
 
@@ -123,11 +162,16 @@ fn attr_string(elem: AXUIElementRef, attr: &str) -> Option<String> {
     cf_to_string(val.as_ptr())
 }
 
+fn attr_i64(elem: AXUIElementRef, attr: &str) -> Option<i64> {
+    let val = copy_attr(elem, attr)?;
+    cf_to_i64(val.as_ptr())
+}
+
 fn attr_settable(elem: AXUIElementRef, attr: &str) -> bool {
     let Some(key) = cf_str(attr) else { return false };
-    let mut settable = false;
+    let mut settable: u8 = 0;
     let err = unsafe { AXUIElementIsAttributeSettable(elem, key.as_ptr(), &mut settable) };
-    err == K_AX_ERROR_SUCCESS && settable
+    err == K_AX_ERROR_SUCCESS && settable != 0
 }
 
 /// Stable-ish 32-bit hash token for the currently focused window of `pid` (used by `paste::foreground`
@@ -143,16 +187,61 @@ pub fn focused_window_token(pid: u32) -> Option<u32> {
     Some((hash as u32) ^ ((hash >> 32) as u32))
 }
 
+/// Center point `(x, y)` of the frontmost app's focused window in CoreGraphics top-left screen
+/// coordinates, used by `popup` to appear on the display holding the active window.
+pub fn focused_window_center() -> Option<(f64, f64)> {
+    if !crate::hotkey::accessibility_trusted(false) {
+        return None;
+    }
+    let pid = objc2::rc::autoreleasepool(|_| {
+        objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|a| a.processIdentifier())
+            .unwrap_or(0)
+    });
+    if pid <= 0 || pid == std::process::id() as i32 {
+        return None;
+    }
+    let app = CfGuard::new(unsafe { AXUIElementCreateApplication(pid) })?;
+    unsafe { AXUIElementSetMessagingTimeout(app.as_ptr(), 0.04) };
+    let win = copy_attr(app.as_ptr(), "AXFocusedWindow")?;
+    let pos_val = copy_attr(win.as_ptr(), "AXPosition")?;
+    let size_val = copy_attr(win.as_ptr(), "AXSize")?;
+    let mut pos = CGPoint::default();
+    let mut size = CGSize::default();
+    let ok_pos = unsafe {
+        AXValueGetValue(
+            pos_val.as_ptr(),
+            K_AX_VALUE_CGPOINT_TYPE,
+            (&mut pos as *mut CGPoint) as *mut c_void,
+        ) != 0
+    };
+    let ok_size = unsafe {
+        AXValueGetValue(
+            size_val.as_ptr(),
+            K_AX_VALUE_CGSIZE_TYPE,
+            (&mut size as *mut CGSize) as *mut c_void,
+        ) != 0
+    };
+    if ok_pos && ok_size && size.width > 0.0 && size.height > 0.0 {
+        Some((pos.x + size.width / 2.0, pos.y + size.height / 2.0))
+    } else {
+        None
+    }
+}
+
 /// Wake Chromium/Electron apps' accessibility trees (`AXManualAccessibility = true`) when a
 /// recording starts so pre-paste checks and the correction watcher see actual text inputs.
 pub fn prime_frontmost() {
     if !crate::hotkey::accessibility_trusted(false) {
         return;
     }
-    let Some(app) = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication() else {
-        return;
-    };
-    let pid = app.processIdentifier();
+    let pid = objc2::rc::autoreleasepool(|_| {
+        objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|a| a.processIdentifier())
+            .unwrap_or(0)
+    });
     if pid <= 0 {
         return;
     }
@@ -227,7 +316,19 @@ impl AxClient {
     }
 
     /// Read the element's string value (`AXValue`), bounded to `max_chars + 1`.
+    /// Checks `AXNumberOfCharacters` first so huge documents (IDEs, Notes, Obsidian) never pay
+    /// for a multi-megabyte Accessibility IPC copy before the tracker skips them as too large.
     pub fn read_text(&self, f: &Focused, max_chars: Option<usize>) -> anyhow::Result<Option<String>> {
+        if let Some(m) = max_chars {
+            let cap = m.saturating_add(1);
+            if let Some(n) = attr_i64(f.element.as_ptr(), "AXNumberOfCharacters")
+                && n > cap as i64
+            {
+                // Return a marker string of length `cap` so `track::watch` recognizes the box as
+                // too large and stops watching without copying the whole document across IPC.
+                return Ok(Some(" ".repeat(cap)));
+            }
+        }
         let Some(text) = attr_string(f.element.as_ptr(), "AXValue") else {
             return Ok(None);
         };

@@ -16,7 +16,9 @@ use crate::constants::{POPUP_BOTTOM_MARGIN, POPUP_HIT_SLOP, POPUP_HOVER_POLL_MS,
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+#[cfg(windows)]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 pub const POPUP_LABEL: &str = "popup";
 /// Event the popup front end listens to for state changes.
@@ -388,6 +390,8 @@ mod platform {
 
     unsafe extern "C" {
         fn object_setClass(obj: *mut core::ffi::c_void, cls: *const core::ffi::c_void) -> *const core::ffi::c_void;
+        fn object_getClass(obj: *const core::ffi::c_void) -> *const core::ffi::c_void;
+        fn class_getInstanceSize(cls: *const core::ffi::c_void) -> usize;
     }
 
     // Real AppKit NSPanel subclass so macOS honors `NSWindowStyleMask::NonactivatingPanel`,
@@ -427,29 +431,48 @@ mod platform {
             return;
         }
         unsafe {
-            // Swizzle the popup's TaoWindow instance into `WrenPopupPanel : NSPanel` so AppKit
-            // accepts `NonactivatingPanel` and floating panel semantics.
-            let cls = WrenPopupPanel::class() as *const _ as *const core::ffi::c_void;
-            object_setClass(raw as *mut core::ffi::c_void, cls);
+            // Verify runtime instance-size compatibility before swizzling `TaoWindow` (`NSWindow`
+            // subclass with a single `AtomicBool` ivar that has no `Drop` glue) into
+            // `WrenPopupPanel : NSPanel` (zero extra ivars). On Apple Silicon macOS 13–26,
+            // `sizeof(NSPanel) == sizeof(NSWindow)` and `WrenPopupPanel <= TaoWindow`.
+            let orig_cls = object_getClass(raw as *const core::ffi::c_void);
+            let panel_cls = WrenPopupPanel::class() as *const _ as *const core::ffi::c_void;
+            let ns_panel_size = class_getInstanceSize(NSPanel::class() as *const _ as *const core::ffi::c_void);
+            let ns_win_size = class_getInstanceSize(NSWindow::class() as *const _ as *const core::ffi::c_void);
+            let target_size = class_getInstanceSize(panel_cls);
+            let orig_size = class_getInstanceSize(orig_cls);
 
-            let panel: &NSPanel = &*(raw as *const NSPanel);
-            panel.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
-            panel.setFloatingPanel(true);
-            panel.setBecomesKeyOnlyIfNeeded(true);
-            panel.setWorksWhenModal(true);
-            panel.setLevel(NSStatusWindowLevel);
-            panel.setCollectionBehavior(
+            if ns_panel_size == ns_win_size && target_size <= orig_size {
+                object_setClass(raw as *mut core::ffi::c_void, panel_cls);
+                let panel: &NSPanel = &*(raw as *const NSPanel);
+                panel.setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
+                panel.setFloatingPanel(true);
+                panel.setBecomesKeyOnlyIfNeeded(true);
+                panel.setWorksWhenModal(true);
+            } else {
+                tracing::warn!(
+                    ns_panel_size,
+                    ns_win_size,
+                    target_size,
+                    orig_size,
+                    "skipping NSPanel swizzle due to unexpected AppKit instance size"
+                );
+            }
+
+            let win: &NSWindow = &*(raw as *const NSWindow);
+            win.setLevel(NSStatusWindowLevel);
+            win.setCollectionBehavior(
                 NSWindowCollectionBehavior::CanJoinAllSpaces
                     | NSWindowCollectionBehavior::FullScreenAuxiliary
                     | NSWindowCollectionBehavior::Stationary
                     | NSWindowCollectionBehavior::IgnoresCycle,
             );
-            panel.setOpaque(false);
-            panel.setBackgroundColor(Some(&NSColor::clearColor()));
-            panel.setHasShadow(false);
-            panel.setHidesOnDeactivate(false);
-            panel.setCanHide(false);
-            panel.setIgnoresMouseEvents(true);
+            win.setOpaque(false);
+            win.setBackgroundColor(Some(&NSColor::clearColor()));
+            win.setHasShadow(false);
+            win.setHidesOnDeactivate(false);
+            win.setCanHide(false);
+            win.setIgnoresMouseEvents(true);
         }
     }
 
@@ -484,18 +507,30 @@ mod platform {
         }
     }
 
-    /// Pick the screen holding the mouse cursor (falls back to main screen), then place the popup
-    /// horizontally centred above the bottom edge (and above a bottom Dock if present).
+    /// Pick the screen holding the focused application's active window (matching Windows'
+    /// `MonitorFromWindow(GetForegroundWindow())`), falling back to the screen under the mouse
+    /// cursor and then the main screen. Places the popup horizontally centred above the bottom edge
+    /// (and above a bottom Dock if present).
     fn compute_frame(mtm: MainThreadMarker) -> Option<NSRect> {
-        let mouse = NSEvent::mouseLocation();
         let screens = NSScreen::screens(mtm);
+        // Primary screen height is used to flip CoreGraphics top-left Y into Cocoa bottom-left Y.
+        let primary_h = screens
+            .iter()
+            .next()
+            .map(|s| s.frame().size.height)
+            .unwrap_or(0.0);
+        let anchor = crate::watcher::ax_macos::focused_window_center()
+            .filter(|_| primary_h > 0.0)
+            .map(|(cg_x, cg_y)| NSPoint::new(cg_x, primary_h - cg_y))
+            .unwrap_or_else(NSEvent::mouseLocation);
+
         let mut chosen = None;
         for screen in screens.iter() {
             let f = screen.frame();
-            if mouse.x >= f.origin.x
-                && mouse.x <= f.origin.x + f.size.width
-                && mouse.y >= f.origin.y
-                && mouse.y <= f.origin.y + f.size.height
+            if anchor.x >= f.origin.x
+                && anchor.x <= f.origin.x + f.size.width
+                && anchor.y >= f.origin.y
+                && anchor.y <= f.origin.y + f.size.height
             {
                 chosen = Some(screen);
                 break;
@@ -541,10 +576,12 @@ mod platform {
                 // Wait briefly for WindowServer to deliver the deferred launch activation, then yield back.
                 for _ in 0..10 {
                     std::thread::sleep(std::time::Duration::from_millis(20));
-                    let front = NSWorkspace::sharedWorkspace()
-                        .frontmostApplication()
-                        .map(|a| a.processIdentifier())
-                        .unwrap_or(0);
+                    let front = objc2::rc::autoreleasepool(|_| {
+                        NSWorkspace::sharedWorkspace()
+                            .frontmostApplication()
+                            .map(|a| a.processIdentifier())
+                            .unwrap_or(0)
+                    });
                     if front == me {
                         let _ = app_clone.run_on_main_thread(move || {
                             if let Some(prev) = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
@@ -587,10 +624,12 @@ mod platform {
 
     pub fn hide(app: &AppHandle) {
         let Some(raw) = popup_raw() else { return };
-        POPUP_VISIBLE.store(false, Ordering::SeqCst);
-        let _ = app.run_on_main_thread(move || unsafe {
-            let win: &NSWindow = &*(raw as *const NSWindow);
-            win.orderOut(None);
+        let _ = app.run_on_main_thread(move || {
+            unsafe {
+                let win: &NSWindow = &*(raw as *const NSWindow);
+                win.orderOut(None);
+            }
+            POPUP_VISIBLE.store(false, Ordering::SeqCst);
         });
     }
 
@@ -601,7 +640,7 @@ mod platform {
         let Some((left, bottom, right, top)) = *POPUP_FRAME.lock().unwrap_or_else(|e| e.into_inner()) else {
             return false;
         };
-        let mouse = NSEvent::mouseLocation();
+        let mouse = objc2::rc::autoreleasepool(|_| NSEvent::mouseLocation());
         if mouse.x < left || mouse.x >= right || mouse.y < bottom || mouse.y >= top {
             return false;
         }
@@ -663,11 +702,10 @@ mod platform {
         }
     }
 
-    pub fn is_own_window(app: &AppHandle, win_id: isize) -> bool {
-        app.webview_windows()
-            .values()
-            .filter_map(ns_window_ptr)
-            .any(|p| p == win_id)
+    pub fn is_own_window(_app: &AppHandle, win_id: isize) -> bool {
+        // On macOS, `paste::foreground().hwnd` packs `(pid << 32) | (ax_window_hash & 0xFFFF_FFFF)`.
+        let pid = ((win_id as u64) >> 32) as u32;
+        pid != 0 && pid == std::process::id()
     }
 
     pub fn self_check(app: &AppHandle) -> Vec<String> {

@@ -67,25 +67,29 @@ def main(argv: list[str] | None = None) -> int:
 
     def reader() -> None:
         stdin = sys.stdin.buffer
-        for raw in stdin:
-            if not raw.strip():
-                continue
-            try:
-                msg = protocol.parse(raw)
-            except protocol.ProtocolError as e:
-                out.send(protocol.error(None, "INTERNAL", f"bad request: {e}"))
-                continue
-            kind = msg["type"]
-            if kind == "shutdown":
-                work.put(None)
-                if handler.transcriber is None:
-                    os._exit(0)  # still loading: nothing to finish
-                return
-            if kind == "transcribe" and handler.transcriber is not None:
-                work.put(msg)
-                continue
-            for reply in handler.handle(msg):  # ping, or transcribe before ready
-                out.send(reply)
+        try:
+            for raw in stdin:
+                if not raw.strip():
+                    continue
+                try:
+                    msg = protocol.parse(raw)
+                except protocol.ProtocolError as e:
+                    out.send(protocol.error(None, "INTERNAL", f"bad request: {e}"))
+                    continue
+                kind = msg["type"]
+                if kind == "shutdown":
+                    work.put(None)
+                    if handler.transcriber is None:
+                        os._exit(0)  # still loading: nothing to finish
+                    return
+                if kind == "transcribe" and handler.transcriber is not None:
+                    work.put(msg)
+                    continue
+                for reply in handler.handle(msg):  # ping, or transcribe before ready
+                    out.send(reply)
+        except BrokenPipeError:
+            # Parent stdout pipe broke while replying: Wren has gone.
+            os._exit(0)
         # stdin closed: Wren has gone. Leave at once so no GPU memory is held.
         os._exit(0)
 

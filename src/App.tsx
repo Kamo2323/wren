@@ -226,7 +226,11 @@ function AppShell() {
       <main className="panel" ref={panelRef}>
         {showAccessibilityBanner && (
           <AccessibilityBanner
-            onAllow={() => void openAccessibilitySettings().catch(() => {})}
+            onAllow={() =>
+              void openAccessibilitySettings()
+                .then(() => accessibilityStatus().then(setAccessibilityOk))
+                .catch(() => {})
+            }
             onDismiss={() => setAccessibilityDismissed(true)}
           />
         )}

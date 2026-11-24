@@ -166,7 +166,8 @@ class MlxTranscriber:
             # `verbose=None` disables both stdout segment printing and tqdm progress bars in mlx_whisper.
             verbose=None,
             fp16=True,
-            temperature=0.0,
+            # Match faster-whisper's default temperature fallback ladder for looping/noisy audio.
+            temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
             condition_on_previous_text=self.cfg.condition_on_previous_text,
         )
         if self.cfg.language:

@@ -1143,7 +1143,8 @@ fi
 
 sleep 0.3
 log "Extracting update archive: $ARCHIVE_PATH -> $TARGET_APP"
-STAGE_DIR="$(mktemp -d "${{TMPDIR:-/tmp}}/wren-update.XXXXXX")"
+TARGET_PARENT="$(dirname "$TARGET_APP")"
+STAGE_DIR="$(mktemp -d "${{TARGET_PARENT}}/.wren-update.XXXXXX" 2>/dev/null || mktemp -d "${{TMPDIR:-/tmp}}/wren-update.XXXXXX")"
 if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGE_DIR" 2>>"$LOG_PATH"; then
   log "Archive extraction failed"
   rm -rf "$STAGE_DIR" "$ARCHIVE_PATH" "$0"
@@ -1151,7 +1152,11 @@ if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGE_DIR" 2>>"$LOG_PATH"; then
   exit 1
 fi
 
-NEW_APP="$(find "$STAGE_DIR" -maxdepth 2 -name "*.app" -type d | head -n 1)"
+if [ -d "$STAGE_DIR/Wren.app" ]; then
+  NEW_APP="$STAGE_DIR/Wren.app"
+else
+  NEW_APP="$(find "$STAGE_DIR" -maxdepth 1 -name "*.app" -type d | head -n 1)"
+fi
 if [ -z "$NEW_APP" ] || [ ! -d "$NEW_APP" ]; then
   log "No .app bundle found inside archive"
   rm -rf "$STAGE_DIR" "$ARCHIVE_PATH" "$0"
@@ -1180,6 +1185,7 @@ if mv "$NEW_APP" "$TARGET_APP"; then
   fi
 else
   log "Failed to swap new bundle into place; rolling back"
+  rm -rf "$TARGET_APP" 2>/dev/null || true
   [ -d "$BACKUP_APP" ] && mv "$BACKUP_APP" "$TARGET_APP" 2>/dev/null || true
   rm -rf "$STAGE_DIR" "$ARCHIVE_PATH"
   [ "$NO_RELAUNCH" != "1" ] && open -n "$TARGET_APP" 2>/dev/null || true
@@ -1209,6 +1215,24 @@ fn spawn_install_helper(
 }
 
 #[cfg(target_os = "macos")]
+fn check_macos_target_writable(target_app: &Path) -> Result<(), String> {
+    let parent = target_app
+        .parent()
+        .ok_or_else(|| "Couldn't find the folder containing Wren.app.".to_string())?;
+    let probe = parent.join(format!(".wren-update-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(_) => Err(format!(
+            "Wren can't update itself inside {} (read-only or restricted folder). Move Wren.app into Applications and try again.",
+            parent.display()
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn spawn_macos_install_helper(
     updates_dir: &Path,
     parent_pid: u32,
@@ -1219,6 +1243,8 @@ fn spawn_macos_install_helper(
 ) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::CommandExt;
+
+    check_macos_target_writable(target_app)?;
 
     let script_path = updates_dir.join("apply-update.sh");
     std::fs::write(&script_path, macos_apply_script_body())
