@@ -23,6 +23,7 @@ pub mod updater;
 pub mod watcher;
 
 use parking_lot::RwLock;
+use std::sync::Arc;
 use paths::Paths;
 use session::app::Services;
 use settings::Settings;
@@ -41,7 +42,7 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     /// History, dictionary and stats. If the database could not be opened this is an
     /// unavailable store whose calls all return the reason; the app still runs.
-    pub store: Store,
+    pub store: Arc<Store>,
 }
 
 /// Open the database, or log why not and carry on with an unavailable store.
@@ -224,7 +225,7 @@ pub fn run() {
             app.manage(AppState {
                 paths,
                 settings: RwLock::new(settings),
-                store,
+                store: Arc::new(store),
             });
             app.manage(updater::UpdaterService::new(
                 app.package_info().version.to_string(),
@@ -246,6 +247,8 @@ pub fn run() {
             // check only exercises the window: no sidecar, no hook.
             if !popup_check {
                 let services = session::app::start_services(app.handle())?;
+                let meetings = meetings::commands::build_service(app.handle(), services.env.clone());
+                app.manage(meetings::commands::Meetings(meetings));
                 app.manage(services);
                 updater::UpdaterService::start_background(app.handle().clone());
             }
@@ -337,6 +340,20 @@ pub fn run() {
             commands::popup_open_main,
             commands::popup_hit_rect,
             commands::main_ready,
+            meetings::commands::meeting_start,
+            meetings::commands::meeting_pause,
+            meetings::commands::meeting_resume,
+            meetings::commands::meeting_stop,
+            meetings::commands::meeting_stop_and_quit,
+            meetings::commands::meeting_active,
+            meetings::commands::meeting_list,
+            meetings::commands::meeting_get,
+            meetings::commands::meeting_update,
+            meetings::commands::meeting_rename_speaker,
+            meetings::commands::meeting_delete,
+            meetings::commands::meeting_audio_clip,
+            meetings::commands::system_audio_permission,
+            meetings::commands::open_system_audio_settings,
             commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,
@@ -369,6 +386,10 @@ pub fn run() {
                 }
             }
             if let tauri::RunEvent::Exit = event {
+                // A meeting still recording ends properly (short drain) rather than "interrupted".
+                if let Some(m) = app.try_state::<meetings::commands::Meetings>() {
+                    m.0.stop_within(std::time::Duration::from_secs(3));
+                }
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {
                     services.shutdown();

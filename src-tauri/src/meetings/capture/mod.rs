@@ -24,6 +24,38 @@ pub trait AudioSource: Send {
     fn stop(&mut self);
 }
 
+/// A source that only emits silence (keeps the timeline aligned where no capture exists).
+#[derive(Default)]
+pub struct Silence {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AudioSource for Silence {
+    fn start(&mut self, tx: Sender<AudioBlock>, _mode: Sender<CaptureMode>) -> anyhow::Result<CaptureMode> {
+        let stop = self.stop.clone();
+        std::thread::Builder::new().name("wren-silence".into()).spawn(move || {
+            let t0 = std::time::Instant::now();
+            let mut emitted: u64 = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let due = t0.elapsed().as_millis() as u64 * 16;
+                if due > emitted {
+                    let pos = emitted / 16;
+                    let n = (due - emitted) as usize;
+                    emitted = due;
+                    if tx.send(AudioBlock { samples: vec![0.0; n], stream_pos_ms: pos }).is_err() {
+                        break;
+                    }
+                }
+            }
+        })?;
+        Ok(CaptureMode::MicOnly)
+    }
+    fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Pick the root Teams processes from `(pid, parent_pid, exe name)`: `ms-teams.exe` processes whose
 /// parent isn't another Teams process. Capturing a root with its process tree covers its helpers.
 pub fn teams_roots(procs: &[(u32, u32, String)]) -> Vec<u32> {

@@ -387,6 +387,11 @@ impl MeetingService {
     /// Stop: finish the audio, wait up to `drain_timeout` for queued clips, save the rest as
     /// "[not transcribed]", mark the meeting ended. Returns its id.
     pub fn stop(&self) -> Option<String> {
+        self.stop_within(self.deps.drain_timeout)
+    }
+
+    /// `stop` with a custom wait for queued clips (quitting waits less).
+    pub fn stop_within(&self, drain: Duration) -> Option<String> {
         let mut r = self.running.lock().take()?;
         let s = r.shared.clone();
         let elapsed = s.elapsed_ms();
@@ -395,7 +400,7 @@ impl MeetingService {
         if let Some(p) = r.pipeline.take() {
             let _ = p.join();
         }
-        let deadline = Instant::now() + self.deps.drain_timeout;
+        let deadline = Instant::now() + drain;
         {
             let mut q = s.queue.lock();
             while (!q.jobs.is_empty() || q.in_flight.is_some()) && Instant::now() < deadline {

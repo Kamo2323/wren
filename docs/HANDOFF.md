@@ -1,6 +1,16 @@
 # Wren — handoff and decision log
 
-## Status (2026-11-24) — Meetings feature: spec APPROVED, writing plan
+## Status (2026-11-24, building) — Meetings feature on branch `feat/meetings`
+
+- Plan: `docs/superpowers/plans/2026-11-24-meetings.md` (native execution). Ledger with every ruling:
+  `.superpowers/sdd/2026-11-24-meetings/progress.md` (git-ignored) — read it first when resuming.
+- Done: Tasks 1–5, 7, 8 (storage/retention, segmenter, speaker attribution, Teams UIA reader + probe,
+  Windows Teams process-loopback capture via the `wasapi` crate, recorder service, commands/tray/quit guard).
+- Task 6 (macOS tap + AX reader) is delegated to a T3 thread on the MacBook; on macOS the Teams source is a
+  `Silence` placeholder until that work is merged into `meetings/commands.rs::make_sources`.
+- Next: Task 9 (Claude client) → 10 (enhanced notes) → 11 (UI) → 12–15.
+
+## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
 ### Completed
 - Reverse-engineered Granola (static only; couldn't log in) and Notion AI Meeting Notes (static, no recording started):
