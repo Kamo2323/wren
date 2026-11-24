@@ -72,9 +72,14 @@ pub enum Target {
 pub struct AudioProc {
     pub object: AudioObjectID,
     pub pid: i32,
-    pub ppid: i32,
+    /// Parent, grandparent, … (at most [`ANCESTOR_HOPS`]).
+    pub ancestors: Vec<i32>,
     pub bundle_id: String,
 }
+
+/// How far up the process tree a Teams helper may sit below the Teams app (Teams → WebView host →
+/// renderer / GPU / audio helpers is already two hops).
+pub const ANCESTOR_HOPS: usize = 4;
 
 /// New Teams (`com.microsoft.teams2`), its helpers (`com.microsoft.teams2.*`) and classic Teams.
 pub fn is_teams_bundle(id: &str) -> bool {
@@ -84,12 +89,15 @@ pub fn is_teams_bundle(id: &str) -> bool {
         .any(|b| id == *b || id.strip_prefix(b).is_some_and(|rest| rest.starts_with('.')))
 }
 
-/// The process objects to tap for Teams: anything with a Teams bundle id, plus processes started by a
-/// running Teams app (Chromium-style helpers that may carry their own bundle id). Sorted, unique.
+/// The process objects to tap for Teams: anything with a Teams bundle id, plus processes descended
+/// (within [`ANCESTOR_HOPS`]) from a running Teams app (Chromium-style helpers, which may carry their
+/// own bundle id). Sorted, unique.
 pub fn teams_objects(procs: &[AudioProc], teams_pids: &[i32]) -> Vec<AudioObjectID> {
     let mut out: Vec<AudioObjectID> = procs
         .iter()
-        .filter(|p| is_teams_bundle(&p.bundle_id) || teams_pids.contains(&p.pid) || teams_pids.contains(&p.ppid))
+        .filter(|p| {
+            is_teams_bundle(&p.bundle_id) || teams_pids.contains(&p.pid) || p.ancestors.iter().any(|a| teams_pids.contains(a))
+        })
         .map(|p| p.object)
         .collect();
     out.sort_unstable();
@@ -191,20 +199,14 @@ fn get_string(obj: AudioObjectID, selector: u32) -> Option<String> {
     Some(s.to_string())
 }
 
-fn parent_pid(pid: i32) -> i32 {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
-    if n == size { info.pbi_ppid as i32 } else { 0 }
-}
-
 /// Every process the audio system knows about.
 pub fn audio_processes() -> Vec<AudioProc> {
     get_u32_list(kAudioObjectSystemObject as u32, kAudioHardwarePropertyProcessObjectList)
         .into_iter()
         .map(|object| {
             let pid = get::<i32>(object, kAudioProcessPropertyPID, None).unwrap_or(-1);
-            AudioProc { object, pid, ppid: if pid > 0 { parent_pid(pid) } else { 0 }, bundle_id: get_string(object, kAudioProcessPropertyBundleID).unwrap_or_default() }
+            let ancestors = if pid > 0 { crate::meetings::mac_procs::ancestors(pid, ANCESTOR_HOPS) } else { Vec::new() };
+            AudioProc { object, pid, ancestors, bundle_id: get_string(object, kAudioProcessPropertyBundleID).unwrap_or_default() }
         })
         .collect()
 }
@@ -566,7 +568,7 @@ mod tests {
     use super::*;
 
     fn p(object: u32, pid: i32, ppid: i32, bundle: &str) -> AudioProc {
-        AudioProc { object, pid, ppid, bundle_id: bundle.into() }
+        AudioProc { object, pid, ancestors: if ppid > 0 { vec![ppid] } else { vec![] }, bundle_id: bundle.into() }
     }
 
     #[test]
@@ -593,6 +595,22 @@ mod tests {
         assert_eq!(teams_objects(&procs, &[500]), vec![80, 81, 82]);
         // Bundle ids alone are enough when the app list isn't available.
         assert_eq!(teams_objects(&procs, &[]), vec![80, 81]);
+    }
+
+    #[test]
+    fn teams_objects_include_grandchildren_within_hop_limit() {
+        let deep = |object: u32, pid: i32, ancestors: &[i32]| AudioProc { object, pid, ancestors: ancestors.to_vec(), bundle_id: String::new() };
+        let procs = [
+            p(80, 500, 1, "com.microsoft.teams2"),
+            // Teams → WebView host (510) → renderer (520) → audio helper (530).
+            deep(81, 520, &[510, 500, 1]),
+            deep(82, 530, &[520, 510, 500]),
+            // Four hops down: still Teams.
+            deep(83, 540, &[530, 520, 510, 500]),
+            // Unrelated tree.
+            deep(84, 900, &[800, 700, 1]),
+        ];
+        assert_eq!(teams_objects(&procs, &[500]), vec![80, 81, 82, 83]);
     }
 
     #[test]
