@@ -32,9 +32,10 @@ pub const TEAMS_LAG_MS: u64 = 900;
 const MAX_OBSERVATION_MS: u64 = 1_000;
 /// Privacy first: a clip with at least this much time muted in Teams counts as muted (left out of notes).
 const MUTED_MIN_MS: u64 = 500;
-/// Observations are kept for this long (attribution only looks seconds back); bounds memory.
-const KEEP_OBSERVATIONS_MS: u64 = 600_000;
-const PRUNE_ABOVE: usize = 4_000;
+/// Observations are kept for this long: longer than the most audio that can wait for transcription
+/// (20 min), so a late clip still finds its mute state and speaker. Bounds memory (~7k entries).
+const KEEP_OBSERVATIONS_MS: u64 = 25 * 60_000;
+const PRUNE_ABOVE: usize = 7_000;
 
 /// `"Sarah Jones (You)"` → `"Sarah Jones"`; also `(Me)`. Case is kept.
 pub fn strip_self_suffix(name: &str) -> &str {
@@ -54,6 +55,8 @@ fn is_self_marked(name: &str) -> bool {
 #[derive(Debug, Default, Clone)]
 pub struct SpeakerTimeline {
     obs: Vec<TeamsObservation>,
+    /// Earliest time still covered after pruning (`None`: nothing pruned yet).
+    covered_from: Option<u64>,
     self_name: Option<String>,
     participants: Vec<String>,
     title: Option<String>,
@@ -86,7 +89,10 @@ impl SpeakerTimeline {
         if self.obs.len() > PRUNE_ABOVE {
             let latest = self.obs.last().map_or(0, |x| x.at_ms);
             let cut = self.obs.partition_point(|x| x.at_ms + KEEP_OBSERVATIONS_MS < latest);
-            self.obs.drain(..cut);
+            if cut > 0 {
+                self.obs.drain(..cut);
+                self.covered_from = self.obs.first().map(|x| x.at_ms);
+            }
         }
     }
 
@@ -150,6 +156,10 @@ impl SpeakerTimeline {
     pub fn muted_during(&self, start_ms: u64, end_ms: u64) -> Option<bool> {
         if end_ms <= start_ms {
             return None;
+        }
+        // Privacy: the mute state of a clip older than the kept history is unknown — count it as muted.
+        if self.covered_from.is_some_and(|c| start_ms < c) {
+            return Some(true);
         }
         let (mut known, mut muted) = (0u64, 0u64);
         for (o, ov) in self.overlapping(start_ms, end_ms) {
@@ -317,9 +327,33 @@ mod tests {
         for i in 0..30_000u64 {
             t.record(&obs(i * 250, &["Sarah Jones"]));
         }
-        assert!(t.len() <= 4_000, "{}", t.len());
+        assert!(t.len() <= 7_000, "{}", t.len());
         assert_eq!(t.attribute(30_000 * 250 - 3_000, 30_000 * 250 - 1_000, 0).name.as_deref(), Some("Sarah Jones"));
         assert_eq!(t.participants(), vec!["Sarah Jones", "Tom Reid"], "participants survive pruning");
+    }
+
+    #[test]
+    fn a_clip_older_than_the_kept_history_counts_as_muted() {
+        // Privacy: once history was pruned, an old clip's mute state is unknown — treat it as muted.
+        let mut t = SpeakerTimeline::default();
+        for i in 0..20_000u64 {
+            let mut o = obs(i * 250, &[]);
+            o.self_muted = Some(false);
+            t.record(&o);
+        }
+        assert_eq!(t.muted_during(0, 2_000), Some(true));
+        assert_eq!(t.muted_during(20_000 * 250 - 5_000, 20_000 * 250 - 3_000), Some(false));
+    }
+
+    #[test]
+    fn history_covers_the_whole_transcription_backlog() {
+        let mut t = SpeakerTimeline::default();
+        for i in 0..(25 * 60 * 4) as u64 {
+            t.record(&obs(i * 250, &["Sarah Jones"]));
+        }
+        // 20 minutes back (the most audio that can wait for transcription) is still known.
+        let end = 25 * 60_000u64;
+        assert_eq!(t.attribute(end - 20 * 60_000, end - 20 * 60_000 + 2_000, 0).name.as_deref(), Some("Sarah Jones"));
     }
 
     #[test]

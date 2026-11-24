@@ -79,6 +79,18 @@ impl AudioSource for MicSource {
                     if let Some((_, resampler)) = input.as_mut() {
                         out.clear();
                         if resampler.push(&raw, &mut out).is_ok() && !out.is_empty() {
+                            // After a stall (slow open, reopen), fill the gap with silence first so
+                            // this audio keeps its real time instead of landing at the gap's start.
+                            let real = started.elapsed().as_millis() as u64;
+                            let block_ms = out.len() as u64 * 1000 / RATE;
+                            let have = emitted * 1000 / RATE;
+                            if real > have + block_ms + PAD_AFTER_MS {
+                                let missing = ((real - block_ms - have) * RATE / 1000) as usize;
+                                emitted += missing as u64;
+                                if tx.send(AudioBlock { samples: vec![0.0; missing], stream_pos_ms: have }).is_err() {
+                                    break;
+                                }
+                            }
                             let pos = emitted * 1000 / RATE;
                             emitted += out.len() as u64;
                             if tx.send(AudioBlock { samples: out.clone(), stream_pos_ms: pos }).is_err() {
@@ -117,7 +129,17 @@ impl AudioSource for MicSource {
     fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // Opening a mic can block inside the OS (a Bluetooth headset waking up): never let that
+            // hang Stop or quitting. Wait briefly, then leave the thread to finish on its own.
+            let until = Instant::now() + Duration::from_secs(2);
+            while !t.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                tracing::warn!("meeting microphone didn't stop in time; leaving it to finish on its own");
+            }
         }
     }
 }
@@ -171,6 +193,29 @@ mod tests {
         assert!(late_sound, "audio flows again after the reopen");
         let total: usize = blocks.iter().map(|b| b.samples.len()).sum();
         assert!(total as f64 >= 16_000.0 * 5.0, "timeline stays aligned through the gap ({total})");
+    }
+
+    #[test]
+    fn audio_after_a_slow_open_keeps_its_real_time() {
+        // The mic takes 800 ms to open; its first sound must be stamped ~800 ms, not at 0.
+        let opener: Opener = Arc::new(|cb: MonoCallback| {
+            std::thread::sleep(Duration::from_millis(800));
+            std::thread::spawn(move || {
+                for _ in 0..100 {
+                    cb(vec![0.3; 160]);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            });
+            Ok((16_000, Box::new(()) as Box<dyn std::any::Any>))
+        });
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (mtx, _m) = crossbeam_channel::unbounded();
+        let mut mic = MicSource::with_opener(opener);
+        mic.start(tx, mtx).unwrap();
+        std::thread::sleep(Duration::from_millis(1_500));
+        mic.stop();
+        let first_sound = rx.try_iter().find(|b| b.samples.iter().any(|&x| x > 0.1)).unwrap();
+        assert!(first_sound.stream_pos_ms >= 650, "{}", first_sound.stream_pos_ms);
     }
 
     #[test]

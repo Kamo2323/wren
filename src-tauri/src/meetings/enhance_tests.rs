@@ -197,3 +197,25 @@ fn nothing_to_summarise_is_an_error_without_a_call() {
     assert!(matches!(r, Err(ClaudeError::Api(_))));
     assert_eq!(*w.model_seen.lock(), "", "no request was made");
 }
+
+struct DeletingWriter(Arc<Store>, std::path::PathBuf, String);
+impl NoteWriter for DeletingWriter {
+    fn write(&self, _body: &serde_json::Value, on_delta: &mut dyn FnMut(&str)) -> Result<Completed, ClaudeError> {
+        on_delta("## Summary\n");
+        self.0.meeting_delete(&self.2, &self.1).unwrap(); // the user deletes the meeting meanwhile
+        Ok(Completed { text: "## Summary\nx".into(), usage: Usage { input: 1_000, output: 100, cache_read: 0, cache_write: 0 }, stop_reason: "end_turn".into() })
+    }
+}
+
+#[test]
+fn a_note_for_a_meeting_deleted_while_writing_still_counts_its_cost() {
+    let (d, s) = store();
+    let id = meeting(&s);
+    let w = DeletingWriter(s.clone(), d.join("meetings"), id.clone());
+    let since = chrono::Utc::now() - chrono::Duration::minutes(1);
+    let r = generate(&s, &w, "claude-opus-5-5", "Maximilian", &id, Length::Medium, &mut |_| {});
+    assert!(r.is_err());
+    let (usd, n) = s.notes_cost_since(since).unwrap();
+    assert_eq!(n, 1, "the paid request shows in this month's spend");
+    assert!(usd > 0.0);
+}

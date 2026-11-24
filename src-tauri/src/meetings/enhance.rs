@@ -280,7 +280,11 @@ pub fn generate(
     };
     match store.note_save_if_current(&note, started) {
         Ok(true) => {}
-        Ok(false) => return fail(ClaudeError::Api("That meeting was deleted.".into()), emit),
+        Ok(false) => {
+            // The request was still paid for: keep this month's spend honest.
+            let _ = store.log_spend(id, &note.created_at_utc, note.cost_usd);
+            return fail(ClaudeError::Api("That meeting was deleted.".into()), emit);
+        }
         Err(e) => return fail(ClaudeError::Api(format!("couldn't save the notes ({e})")), emit),
     }
     // Saved stale if the notes or names changed while Claude was writing.

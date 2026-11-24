@@ -27,7 +27,7 @@ pub static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::At
 
 /// Whether a meeting is being recorded now.
 pub fn recording(app: &AppHandle) -> bool {
-    app.try_state::<Meetings>().is_some_and(|m| m.0.active().is_some())
+    app.try_state::<Meetings>().is_some_and(|m| m.0.in_progress())
 }
 
 /// Quit was chosen mid-meeting: show Wren and ask "Stop meeting notes and quit?".
@@ -303,16 +303,21 @@ pub async fn meeting_stop(app: AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || s.stop()).await.map_err(|e| e.to_string())
 }
 
-/// The quit confirmation said yes: stop the meeting (short drain), then quit.
+/// The quit confirmation said yes: stop the meeting (short drain, or wait for a Stop already saving),
+/// then quit. Resolves only if quitting failed, so the page keeps showing "Stopping…".
 #[tauri::command]
-pub fn meeting_stop_and_quit(app: AppHandle) {
-    std::thread::spawn(move || {
-        if let Some(m) = app.try_state::<Meetings>() {
+pub async fn meeting_stop_and_quit(app: AppHandle) -> Result<(), String> {
+    let a = app.clone();
+    blocking(move || {
+        if let Some(m) = a.try_state::<Meetings>() {
             m.0.stop_for_quit(QUIT_DRAIN_TIMEOUT);
         }
-        QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
-        app.exit(0);
-    });
+        Ok(())
+    })
+    .await?;
+    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -398,14 +403,17 @@ pub fn open_system_audio_settings() {
 }
 
 /// Write (or rewrite) the notes of one length. Without `regenerate`, an existing note is kept and
-/// nothing is sent. Returns whether a run started.
+/// nothing is sent. Returns `"started"`, `"running"` (one is already being written) or `"exists"`.
 #[tauri::command]
-pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, length: Length, regenerate: bool) -> Result<bool, String> {
+pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, length: Length, regenerate: bool) -> Result<String, String> {
     valid_id(&id)?;
-    if !regenerate && state.store.notes(&id).map_err(|e| e.to_string())?.iter().any(|n| n.length == length) {
-        return Ok(false);
+    if GENERATING.lock().iter().any(|(i, l)| *i == id && *l == length) {
+        return Ok("running".into());
     }
-    Ok(spawn_enhance(&app, id, length))
+    if !regenerate && state.store.notes(&id).map_err(|e| e.to_string())?.iter().any(|n| n.length == length) {
+        return Ok("exists".into());
+    }
+    Ok(if spawn_enhance(&app, id, length) { "started" } else { "running" }.into())
 }
 
 /// Lengths being written for a meeting right now (so a reopened page shows "Writing…").

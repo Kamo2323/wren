@@ -336,6 +336,16 @@ impl Store {
         Ok(true)
     }
 
+    /// Record what a note cost even when the note itself couldn't be kept.
+    pub fn log_spend(&self, meeting_id: &str, created_at_utc: &str, cost_usd: f64) -> StoreResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO meeting_spend (meeting_id, created_at_utc, cost_usd) VALUES (?1, ?2, ?3)",
+            params![meeting_id, created_at_utc, cost_usd],
+        )?;
+        Ok(())
+    }
+
     /// Meetings left interrupted that still have audio (their WAV headers may need repair).
     pub fn interrupted_with_audio(&self) -> StoreResult<Vec<String>> {
         let conn = self.conn()?;

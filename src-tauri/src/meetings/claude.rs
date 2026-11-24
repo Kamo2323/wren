@@ -384,6 +384,9 @@ fn stream_once(
     let mut pending: Vec<u8> = Vec::new();
     let mut saw_stop = false;
     loop {
+        if saw_stop {
+            break; // the final event arrived: don't wait on the connection closing
+        }
         let n = resp.read(&mut raw).map_err(|_| ClaudeError::Network("the connection dropped".into()))?;
         if n == 0 {
             break;

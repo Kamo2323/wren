@@ -210,8 +210,12 @@ pub struct MeetingService {
     running: Mutex<Option<Running>>,
     /// Set while `start` opens the audio (outside the `running` lock, so dictation never waits on it).
     starting: AtomicBool,
-    /// The meeting `stop` is still draining (delete must wait for it).
+    /// The meeting `stop` is still draining (delete, start and quit must wait for it).
     stopping: Mutex<Option<String>>,
+    stopped_cv: Condvar,
+    /// Recent dictation windows (wall clock), kept even with no meeting running, so a meeting that is
+    /// still starting when the hotkey goes down seeds its gate from them.
+    dictation: Mutex<VecDeque<(Instant, Option<Instant>)>>,
     max_backlog_ms: AtomicU64,
     /// One meeting transcription at a time across this service's meetings: a stopping meeting's slow
     /// clip and the next meeting's first clip never both queue on the sidecar ahead of a dictation.
@@ -249,6 +253,8 @@ impl MeetingService {
             running: Mutex::new(None),
             starting: AtomicBool::new(false),
             stopping: Mutex::new(None),
+            stopped_cv: Condvar::new(),
+            dictation: Mutex::new(VecDeque::new()),
             max_backlog_ms: AtomicU64::new(max),
             asr_permit: Arc::new(Mutex::new(())),
             listener: Arc::new(RwLock::new(None)),
@@ -273,6 +279,11 @@ impl MeetingService {
         self.running.lock().as_ref().map(|r| r.shared.snapshot())
     }
 
+    /// True while a meeting is starting, recording or still being saved (quit must ask / wait).
+    pub fn in_progress(&self) -> bool {
+        self.starting.load(Ordering::SeqCst) || self.running.lock().is_some() || self.stopping.lock().is_some()
+    }
+
     /// True while meeting `id` records or is still being stopped (deleting it then would race).
     pub fn is_busy(&self, id: &str) -> bool {
         self.running.lock().as_ref().is_some_and(|r| r.shared.id == id) || self.stopping.lock().as_deref() == Some(id)
@@ -291,6 +302,9 @@ impl MeetingService {
     /// Start recording a new meeting. Fails if one is already running. Opening the audio happens
     /// outside the `running` lock: dictation's start/stop notices take that lock and must not wait.
     pub fn start(&self, title: Option<String>) -> Result<MeetingRow, String> {
+        if self.stopping.lock().is_some() {
+            return Err("The last meeting is still being saved. Try again in a moment.".into());
+        }
         if self.running.lock().is_some() || self.starting.swap(true, Ordering::SeqCst) {
             return Err("A meeting is already being recorded.".into());
         }
@@ -406,7 +420,24 @@ impl MeetingService {
         }
         tracing::info!(meeting = %row.id, mode = ?mode, "meeting started");
         shared.emit(MeetingEvent::Status { active: Some(shared.snapshot()) });
-        *self.running.lock() = Some(Running { shared, ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
+        {
+            // Dictation that began while the audio was opening: carry it into the gate. Held across
+            // publishing so a dictation ending in between is never lost (lock order: dictation → running).
+            let dl = self.dictation.lock();
+            {
+                let mut gate = shared.gate.lock();
+                for &(b, e) in dl.iter() {
+                    if e.is_some_and(|e| e < t0) {
+                        continue;
+                    }
+                    gate.begin(b.saturating_duration_since(t0).as_millis() as u64);
+                    if let Some(e) = e {
+                        gate.end(e.saturating_duration_since(t0).as_millis() as u64);
+                    }
+                }
+            }
+            *self.running.lock() = Some(Running { shared, ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
+        }
         Ok(row)
     }
 
@@ -437,6 +468,13 @@ impl MeetingService {
     }
 
     pub fn dictation_began(&self, at: Instant) {
+        let mut dl = self.dictation.lock();
+        if !matches!(dl.back(), Some((_, None))) {
+            dl.push_back((at, None));
+        }
+        while dl.len() > 1 && dl.front().is_some_and(|(_, e)| e.is_some_and(|e| e.elapsed() > Duration::from_secs(120))) {
+            dl.pop_front();
+        }
         if let Some(r) = self.running.lock().as_ref() {
             let ms = at.saturating_duration_since(r.shared.t0).as_millis() as u64;
             r.shared.gate.lock().begin(ms);
@@ -444,6 +482,10 @@ impl MeetingService {
     }
 
     pub fn dictation_ended(&self, at: Instant) {
+        let mut dl = self.dictation.lock();
+        if let Some((_, e @ None)) = dl.back_mut() {
+            *e = Some(at);
+        }
         if let Some(r) = self.running.lock().as_ref() {
             let ms = at.saturating_duration_since(r.shared.t0).as_millis() as u64;
             r.shared.gate.lock().end(ms);
@@ -482,9 +524,34 @@ impl MeetingService {
     }
 
     fn stop_inner(&self, drain: Duration, run_hook: bool) -> Option<String> {
-        let mut r = self.running.lock().take()?;
+        let taken = {
+            let mut running = self.running.lock();
+            let r = running.take();
+            if let Some(r) = &r {
+                *self.stopping.lock() = Some(r.shared.id.clone());
+            }
+            r
+        };
+        let Some(mut r) = taken else {
+            if !run_hook {
+                // Quitting while an earlier Stop still saves: wait for it rather than cut it short.
+                let mut st = self.stopping.lock();
+                let until = Instant::now() + drain + Duration::from_secs(5);
+                while st.is_some() && Instant::now() < until {
+                    self.stopped_cv.wait_until(&mut st, until);
+                }
+            }
+            return None;
+        };
+        struct Stopping<'a>(&'a Mutex<Option<String>>, &'a Condvar);
+        impl Drop for Stopping<'_> {
+            fn drop(&mut self) {
+                *self.0.lock() = None;
+                self.1.notify_all();
+            }
+        }
+        let stopping_guard = Stopping(&self.stopping, &self.stopped_cv);
         let s = r.shared.clone();
-        *self.stopping.lock() = Some(s.id.clone());
         let elapsed = s.elapsed_ms();
         r.watcher_stop.store(true, Ordering::Relaxed);
         let _ = r.ctl.send(Ctl::Stop);
@@ -518,6 +585,11 @@ impl MeetingService {
             }
         }
         if let Some(w) = r.worker.take() {
+            // On a clean stop the worker exits within moments of `closed`; give it that time.
+            let until = Instant::now() + Duration::from_millis(300);
+            while !w.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
             if w.is_finished() {
                 let _ = w.join();
                 let _ = std::fs::remove_dir_all(s.dir.join("segments"));
@@ -529,7 +601,7 @@ impl MeetingService {
             tracing::warn!(error = %e, "could not mark the meeting ended");
         }
         tracing::info!(meeting = %s.id, elapsed_ms = elapsed, "meeting stopped");
-        *self.stopping.lock() = None;
+        drop(stopping_guard); // saved: a new meeting may start, quit may proceed
         s.emit(MeetingEvent::Status { active: None });
         let hook = self.on_stopped.read().clone();
         if let (true, Some(h)) = (run_hook, hook) {
@@ -680,22 +752,36 @@ impl Pipeline {
 
     fn run(
         mut self,
-        me_rx: Receiver<AudioBlock>,
-        them_rx: Receiver<AudioBlock>,
-        mode_rx: Receiver<CaptureMode>,
-        obs_rx: Receiver<TeamsObservation>,
+        mut me_rx: Receiver<AudioBlock>,
+        mut them_rx: Receiver<AudioBlock>,
+        mut mode_rx: Receiver<CaptureMode>,
+        mut obs_rx: Receiver<TeamsObservation>,
         ctl_rx: Receiver<Ctl>,
     ) {
         let tick = crossbeam_channel::tick(STATUS_EVERY);
         loop {
             select! {
-                recv(me_rx) -> b => if let Ok(b) = b { self.block(Source::Me, b) },
-                recv(them_rx) -> b => if let Ok(b) = b { self.block(Source::Them, b) },
-                recv(obs_rx) -> o => if let Ok(o) = o { self.observation(o) },
-                recv(mode_rx) -> m => if let Ok(m) = m {
-                    *self.shared.capture_mode.lock() = m;
-                    let _ = self.store.meeting_set_capture_mode(&self.shared.id, m);
-                    self.shared.emit(MeetingEvent::Status { active: Some(self.shared.snapshot()) });
+                // A closed channel (a source that failed or ended) is always "ready": swap it for
+                // `never()` or this loop would spin a CPU core for the rest of the meeting.
+                recv(me_rx) -> b => match b {
+                    Ok(b) => self.block(Source::Me, b),
+                    Err(_) => me_rx = crossbeam_channel::never(),
+                },
+                recv(them_rx) -> b => match b {
+                    Ok(b) => self.block(Source::Them, b),
+                    Err(_) => them_rx = crossbeam_channel::never(),
+                },
+                recv(obs_rx) -> o => match o {
+                    Ok(o) => self.observation(o),
+                    Err(_) => obs_rx = crossbeam_channel::never(),
+                },
+                recv(mode_rx) -> m => match m {
+                    Ok(m) => {
+                        *self.shared.capture_mode.lock() = m;
+                        let _ = self.store.meeting_set_capture_mode(&self.shared.id, m);
+                        self.shared.emit(MeetingEvent::Status { active: Some(self.shared.snapshot()) });
+                    }
+                    Err(_) => mode_rx = crossbeam_channel::never(),
                 },
                 recv(tick) -> _ => self.shared.emit(MeetingEvent::Status { active: Some(self.shared.snapshot()) }),
                 recv(ctl_rx) -> c => match c {

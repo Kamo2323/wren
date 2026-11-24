@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Wren records your voice locally on this Mac to turn speech into text. Nothing leaves your computer.</string>
+  <string>Wren records your voice on this Mac to turn speech into text. Dictation never leaves your computer; meeting notes you ask Claude to write send that meeting's transcript to Anthropic.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Wren records the sound of your Teams meeting so it can transcribe what others say.</string>
   <key>NSAppleEventsUsageDescription</key>

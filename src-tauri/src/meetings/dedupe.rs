@@ -20,6 +20,8 @@ pub const BLEED_SIMILARITY: f32 = 0.80;
 pub const ECHO_LEAD_MS: u64 = 200;
 /// How far after a Me line's end an echo of it may still start.
 pub const ECHO_MAX_LAG_MS: u64 = 2_000;
+/// A one- or two-word Them line is an echo only if it starts within this of the Me line.
+pub const SHORT_ECHO_MAX_LAG_MS: u64 = 1_000;
 pub const DICTATION_MARGIN_MS: u64 = 300;
 
 fn words(s: &str) -> Vec<String> {
@@ -74,11 +76,22 @@ pub fn is_bleed(me: &(u64, u64, &str), them: &[(u64, u64, &str)]) -> bool {
 /// `(start_ms, end_ms, text)` of a Them segment against the Me segments before it: Teams echoing the
 /// user's own words back.
 pub fn is_echo(them: &(u64, u64, &str), me: &[(u64, u64, &str)]) -> bool {
+    // One or two words ("Yeah, sure.", "Thanks, bye") are often genuinely said back: only an echo when
+    // it comes back about as fast as the measured Teams echo (~0.4 s), not a second later.
+    let short = distinct_words(them.2) < 3;
     me.iter().any(|m| {
         starts_after(them.0, m.0)
             && them.0 < m.1 + ECHO_MAX_LAG_MS
+            && (!short || them.0 <= m.0 + SHORT_ECHO_MAX_LAG_MS)
             && distinct_word_similarity(them.2, m.2) >= BLEED_SIMILARITY
     })
+}
+
+fn distinct_words(s: &str) -> usize {
+    let mut w = words(s);
+    w.sort();
+    w.dedup();
+    w.len()
 }
 
 /// Dictation windows in meeting-stream milliseconds.
@@ -113,6 +126,14 @@ impl DictationGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_identical_reply_is_kept_unless_it_comes_back_like_an_echo() {
+        // Maximilian: "Yeah, sure." … a colleague answers "Yeah, sure." a second and a half later.
+        assert!(!is_echo(&(2_500, 3_300, "Yeah, sure."), &[(0, 1_000, "Yeah, sure.")]));
+        // Teams echoes it back ~0.4 s later: that's an echo.
+        assert!(is_echo(&(400, 1_400, "Yeah, sure."), &[(0, 1_000, "Yeah, sure.")]));
+    }
 
     #[test]
     fn echo_of_me_is_dropped_from_them() {

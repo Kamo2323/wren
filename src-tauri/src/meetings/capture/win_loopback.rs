@@ -26,8 +26,6 @@ const TICK: Duration = Duration::from_millis(100);
 const PAD_AFTER_MS: u64 = 300;
 /// How often to look for Teams appearing, restarting or quitting.
 const RECHECK: Duration = Duration::from_secs(5);
-/// While on the all-sound fallback, how often to try Teams-only again.
-const UPGRADE_RETRY: Duration = Duration::from_secs(30);
 /// Longest Stop waits for the capture thread.
 const STOP_JOIN: Duration = Duration::from_secs(2);
 
@@ -149,7 +147,6 @@ impl AudioSource for TeamsLoopback {
             let mut emitted: u64 = 0; // samples
             let mut bytes: VecDeque<u8> = VecDeque::new();
             let mut last_check = Instant::now();
-            let mut last_upgrade = Instant::now();
             while !stop.load(Ordering::Relaxed) {
                 match &client {
                     Some(c) => {
@@ -171,6 +168,17 @@ impl AudioSource for TeamsLoopback {
                         let b = [bytes.pop_front().unwrap(), bytes.pop_front().unwrap(), bytes.pop_front().unwrap(), bytes.pop_front().unwrap()];
                         samples.push(f32::from_le_bytes(b));
                     }
+                    // After a stall, silence first so this audio keeps its real time.
+                    let real = started.elapsed().as_millis() as u64;
+                    let block_ms = samples.len() as u64 * 1000 / RATE;
+                    let have = emitted * 1000 / RATE;
+                    if real > have + block_ms + PAD_AFTER_MS {
+                        let missing = ((real - block_ms - have) * RATE / 1000) as usize;
+                        emitted += missing as u64;
+                        if tx.send(AudioBlock { samples: vec![0.0; missing], stream_pos_ms: have }).is_err() {
+                            break;
+                        }
+                    }
                     let pos = emitted * 1000 / RATE;
                     emitted += samples.len() as u64;
                     if tx.send(AudioBlock { samples, stream_pos_ms: pos }).is_err() {
@@ -191,22 +199,10 @@ impl AudioSource for TeamsLoopback {
                 if target == Target::Teams && last_check.elapsed() >= RECHECK {
                     last_check = Instant::now();
                     let now_pid = teams_pid();
-                    // Reconnect when Teams appears, restarts or quits, when capture was lost, and keep
-                    // retrying Teams-only after falling back to all computer sound.
+                    // Reconnect when Teams appears, restarts or quits, or capture was lost. (No periodic
+                    // retry of Teams-only from the all-sound fallback: activation can block this thread.)
                     let lost = client.is_none() && (now_pid.is_some() || mode != CaptureMode::MicOnly);
-                    if mode == CaptureMode::AllSound && now_pid == pid && !lost {
-                        // Fell back to all sound: every 30 s, try Teams-only again; swap only if it opens.
-                        if last_upgrade.elapsed() >= UPGRADE_RETRY {
-                            last_upgrade = Instant::now();
-                            if let Some(p) = now_pid {
-                                if let Ok(c) = open_client(p, true) {
-                                    client = Some(c);
-                                    mode = CaptureMode::TeamsOnly;
-                                    let _ = mode_tx.send(mode);
-                                }
-                            }
-                        }
-                    } else if now_pid != pid || lost {
+                    if now_pid != pid || lost {
                         let (c, m, p) = connect(Target::Teams);
                         client = c;
                         pid = p;

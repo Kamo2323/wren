@@ -540,3 +540,77 @@ fn meeting_counts_as_busy_while_stop_drains() {
     stopping.join().unwrap();
     assert!(!svc.is_busy(&m.id));
 }
+
+// ---------------- council round 2 ----------------
+
+#[test]
+fn a_new_meeting_cannot_start_while_the_last_one_is_still_stopping() {
+    let r = rig_with(700, Duration::from_secs(3));
+    r.svc.start(None).unwrap();
+    r.me.utter(0, 800, 0.10);
+    std::thread::sleep(Duration::from_millis(100));
+    let svc = Arc::new(r.svc);
+    let s2 = svc.clone();
+    let stopping = std::thread::spawn(move || s2.stop());
+    std::thread::sleep(Duration::from_millis(80));
+    assert!(svc.start(None).is_err(), "one meeting at a time, including while stopping");
+    stopping.join().unwrap();
+    assert!(svc.start(None).is_ok());
+    svc.stop();
+}
+
+#[test]
+fn quitting_during_a_stop_waits_for_it() {
+    let r = rig_with(600, Duration::from_secs(3));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 800, 0.10);
+    std::thread::sleep(Duration::from_millis(100));
+    let svc = Arc::new(r.svc);
+    let s2 = svc.clone();
+    let stopping = std::thread::spawn(move || s2.stop());
+    std::thread::sleep(Duration::from_millis(80));
+    svc.stop_for_quit(Duration::from_secs(3));
+    // When quit returns, the first stop has finished: the meeting is saved as ended.
+    assert_eq!(r.store.meeting_get(&m.id).unwrap().unwrap().status, MeetingStatus::Ended);
+    stopping.join().unwrap();
+}
+
+#[test]
+fn dictation_while_the_meeting_is_starting_stays_out() {
+    let dir = std::env::temp_dir().join(format!("wren-meet-dstart-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(Store::open(&dir.join("wren.db")).unwrap());
+    let (me, them) = (Manual::default(), Manual::default());
+    let (m2, t2) = (me.clone(), them.clone());
+    let deps = Deps {
+        store: store.clone(),
+        transcriber: FakeTranscriber::new(10),
+        meetings_dir: dir.join("meetings"),
+        make_sources: Arc::new(move || {
+            (
+                Box::new(ManualSource(m2.clone(), CaptureMode::TeamsOnly)) as Box<dyn AudioSource>,
+                Box::new(SlowStart(t2.clone(), Duration::from_millis(800))) as Box<dyn AudioSource>,
+            )
+        }),
+        make_teams_reader: None,
+        bias_terms: Arc::new(Vec::new),
+        me_name: Arc::new(|| "Maximilian".to_string()),
+        drain_timeout: Duration::from_secs(5),
+        max_backlog_ms: 600_000,
+    };
+    let svc = Arc::new(MeetingService::new(deps));
+    let s2 = svc.clone();
+    let starting = std::thread::spawn(move || s2.start(None).unwrap());
+    std::thread::sleep(Duration::from_millis(100));
+    svc.dictation_began(Instant::now()); // hotkey held while Teams is still attaching
+    let m = starting.join().unwrap();
+    me.utter(0, 1_000, 0.10); // what the mic heard during that dictation
+    svc.dictation_ended(Instant::now());
+    me.utter(5_000, 1_000, 0.20);
+    wait_for("one segment", 3_000, || store.segments(&m.id).unwrap().len() == 1);
+    std::thread::sleep(Duration::from_millis(200));
+    svc.stop();
+    let segs = store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 1, "{segs:?}");
+    assert_eq!(segs[0].text, "the rollout moves to thursday");
+}
