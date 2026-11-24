@@ -4,6 +4,7 @@
 use crate::meetings::CaptureMode;
 use crossbeam_channel::Sender;
 
+pub mod mic;
 pub mod wav;
 #[cfg(windows)]
 pub mod win_loopback;

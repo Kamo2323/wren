@@ -1,0 +1,365 @@
+//! MeetingRecorder tests (plan Task 7): fake sources the test feeds by hand, a fake transcriber that
+//! reads a "marker" from each clip's peak level, and a real Store in a temp folder.
+
+use super::*;
+use crate::meetings::speakers::TeamsObservation;
+use crate::meetings::{CaptureMode, MeetingStatus, Source};
+use crate::store::Store;
+use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+const SR: u64 = 16_000;
+
+/// Text the fake transcriber returns for a clip whose peak is about `amp`.
+fn text_for(amp: f32) -> &'static str {
+    match (amp * 20.0).round() as i32 {
+        2 => "hello from me",               // 0.10
+        4 => "the rollout moves to thursday", // 0.20
+        6 => "tom will chase qa today",     // 0.30
+        8 => "fine by me as long as qa signs off", // 0.40
+        _ => "something else",
+    }
+}
+
+struct FakeTranscriber {
+    delay: Duration,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+impl FakeTranscriber {
+    fn new(delay_ms: u64) -> Arc<Self> {
+        Arc::new(Self {
+            delay: Duration::from_millis(delay_ms),
+            in_flight: AtomicUsize::new(0),
+            max_in_flight: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl Transcriber for FakeTranscriber {
+    fn transcribe(&self, wav: &Path, _clip_ms: u64, _bias: &[String]) -> Result<String, String> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.delay);
+        let peak = hound::WavReader::open(wav)
+            .map_err(|e| e.to_string())?
+            .samples::<i16>()
+            .map(|s| (s.unwrap() as f32 / i16::MAX as f32).abs())
+            .fold(0.0f32, f32::max);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(text_for(peak).to_string())
+    }
+}
+
+/// A source whose sender the test drives.
+#[derive(Clone, Default)]
+struct Manual {
+    tx: Arc<Mutex<Option<crossbeam_channel::Sender<AudioBlock>>>>,
+}
+impl Manual {
+    fn send(&self, samples: Vec<f32>, pos_ms: u64) {
+        let tx = self.tx.lock().clone().expect("source started");
+        tx.send(AudioBlock { samples, stream_pos_ms: pos_ms }).unwrap();
+    }
+    /// Silence until `from`, a tone of `amp` for `ms`, then 1 s of silence — in 100 ms blocks.
+    fn utter(&self, from: u64, ms: u64, amp: f32) {
+        let tone: Vec<f32> = (0..(SR * ms / 1000) as usize)
+            .map(|i| amp * (i as f32 * 2.0 * std::f32::consts::PI * 220.0 / SR as f32).sin())
+            .collect();
+        let mut all = tone;
+        all.extend(vec![0.0; SR as usize]);
+        let mut pos = from;
+        for chunk in all.chunks((SR / 10) as usize) {
+            self.send(chunk.to_vec(), pos);
+            pos += chunk.len() as u64 * 1000 / SR;
+        }
+    }
+    fn silence(&self, from: u64, ms: u64) {
+        let mut pos = from;
+        for _ in 0..ms / 100 {
+            self.send(vec![0.0; (SR / 10) as usize], pos);
+            pos += 100;
+        }
+    }
+}
+struct ManualSource(Manual, CaptureMode);
+impl AudioSource for ManualSource {
+    fn start(
+        &mut self,
+        tx: crossbeam_channel::Sender<AudioBlock>,
+        _mode: crossbeam_channel::Sender<CaptureMode>,
+    ) -> anyhow::Result<CaptureMode> {
+        *self.0.tx.lock() = Some(tx);
+        Ok(self.1)
+    }
+    fn stop(&mut self) {
+        self.0.tx.lock().take();
+    }
+}
+
+struct Rig {
+    _dir: TempDir,
+    store: Arc<Store>,
+    svc: MeetingService,
+    me: Manual,
+    them: Manual,
+    fake: Arc<FakeTranscriber>,
+    events: Arc<Mutex<Vec<MeetingEvent>>>,
+}
+
+struct TempDir(PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn rig_with(delay_ms: u64, drain: Duration) -> Rig {
+    let dir = std::env::temp_dir().join(format!("wren-meet-svc-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(Store::open(&dir.join("wren.db")).unwrap());
+    let fake = FakeTranscriber::new(delay_ms);
+    let (me, them) = (Manual::default(), Manual::default());
+    let (m2, t2) = (me.clone(), them.clone());
+    let deps = Deps {
+        store: store.clone(),
+        transcriber: fake.clone(),
+        meetings_dir: dir.join("meetings"),
+        make_sources: Arc::new(move || {
+            (
+                Box::new(ManualSource(m2.clone(), CaptureMode::TeamsOnly)) as Box<dyn AudioSource>,
+                Box::new(ManualSource(t2.clone(), CaptureMode::TeamsOnly)) as Box<dyn AudioSource>,
+            )
+        }),
+        make_teams_reader: None,
+        bias_terms: Arc::new(Vec::new),
+        me_name: Arc::new(|| "Maximilian".to_string()),
+        drain_timeout: drain,
+    };
+    let svc = MeetingService::new(deps);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let ev = events.clone();
+    svc.set_listener(Arc::new(move |e| ev.lock().push(e)));
+    Rig { _dir: TempDir(dir), store, svc, me, them, fake, events }
+}
+
+fn rig() -> Rig {
+    rig_with(20, Duration::from_secs(10))
+}
+
+fn wait_for(what: &str, timeout_ms: u64, mut f: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < end {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+fn obs(at: u64, speaking: &[&str], muted: Option<bool>) -> TeamsObservation {
+    TeamsObservation {
+        at_ms: at,
+        speaking: speaking.iter().map(|s| s.to_string()).collect(),
+        roster: vec!["Sarah Jones".into(), "Max Teams (You)".into()],
+        self_name: Some("Max Teams".into()),
+        self_muted: muted,
+        title: Some("Weekly sync".into()),
+    }
+}
+
+fn observe_span(svc: &MeetingService, from: u64, to: u64, speaking: &[&str], muted: Option<bool>) {
+    let mut at = from;
+    while at < to {
+        svc.observe(obs(at, speaking, muted));
+        at += 250;
+    }
+}
+
+#[test]
+fn two_streams_produce_ordered_named_segments() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    observe_span(&r.svc, 0, 2_900, &[], None);
+    observe_span(&r.svc, 2_900, 4_400, &["Sarah Jones"], None);
+    observe_span(&r.svc, 4_400, 6_000, &[], None);
+    r.me.utter(0, 1_000, 0.10);
+    r.them.silence(0, 2_000);
+    r.them.utter(2_000, 1_000, 0.20);
+    wait_for("two segments", 5_000, || r.store.segments(&m.id).unwrap().len() == 2);
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs[0].source, Source::Me);
+    assert_eq!(segs[0].speaker.as_deref(), Some("Maximilian"));
+    assert_eq!(segs[0].text, "hello from me");
+    assert_eq!(segs[1].source, Source::Them);
+    assert_eq!(segs[1].speaker.as_deref(), Some("Sarah Jones"));
+    assert_eq!(segs[1].text, "the rollout moves to thursday");
+    // Watcher facts reach the meeting row: participants without the user, the Teams title.
+    let row = r.store.meeting_get(&m.id).unwrap().unwrap();
+    assert_eq!(row.participants, vec!["Sarah Jones".to_string()]);
+    assert_eq!(row.teams_self_name.as_deref(), Some("Max Teams"));
+    assert_eq!(row.title, "Weekly sync");
+    assert!(r.events.lock().iter().any(|e| matches!(e, MeetingEvent::Segment { .. })));
+    r.svc.stop();
+}
+
+#[test]
+fn one_request_in_flight_max() {
+    let r = rig_with(60, Duration::from_secs(10));
+    let m = r.svc.start(None).unwrap();
+    for i in 0..4 {
+        r.me.utter(i * 2_000, 800, 0.10);
+        r.them.utter(i * 2_000, 800, 0.30);
+    }
+    wait_for("eight segments", 8_000, || r.fake.calls.load(Ordering::SeqCst) == 8);
+    r.svc.stop();
+    assert_eq!(r.fake.max_in_flight.load(Ordering::SeqCst), 1);
+    // Me and Them overlap in time but say different things: both kept.
+    assert_eq!(r.store.segments(&m.id).unwrap().len(), 8);
+}
+
+#[test]
+fn pause_excludes_time_and_audio() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 1_000, 0.10);
+    wait_for("first segment", 3_000, || r.store.segments(&m.id).unwrap().len() == 1);
+    r.svc.pause().unwrap();
+    assert_eq!(r.svc.active().unwrap().status, MeetingStatus::Paused);
+    r.me.utter(2_000, 1_000, 0.20); // spoken while paused: never transcribed
+    std::thread::sleep(Duration::from_millis(400));
+    let paused_elapsed = r.svc.active().unwrap().elapsed_ms;
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(r.svc.active().unwrap().elapsed_ms - paused_elapsed < 50, "clock stops while paused");
+    r.svc.resume().unwrap();
+    r.me.utter(4_000, 1_000, 0.30);
+    wait_for("second segment", 3_000, || r.store.segments(&m.id).unwrap().len() == 2);
+    r.svc.stop();
+    let texts: Vec<_> = r.store.segments(&m.id).unwrap().into_iter().map(|s| s.text).collect();
+    assert_eq!(texts, vec!["hello from me", "tom will chase qa today"]);
+    // me.wav keeps the timeline (paused audio is written as silence).
+    let wav = hound::WavReader::open(r.svc_dir(&m.id).join("me.wav")).unwrap();
+    let secs = wav.duration() as f64 / 16_000.0;
+    assert!((secs - 6.0).abs() < 0.15, "{secs}");
+    let peak_paused = wav
+        .into_samples::<i16>()
+        .skip(2_000 * 16)
+        .take(1_000 * 16)
+        .map(|s| s.unwrap().unsigned_abs())
+        .max()
+        .unwrap();
+    assert_eq!(peak_paused, 0, "no paused audio kept");
+}
+
+#[test]
+fn dictation_window_drops_me_segment() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    r.svc.dictation_began_at_ms(900);
+    r.me.utter(1_000, 1_000, 0.10);
+    r.svc.dictation_ended_at_ms(2_100);
+    r.me.utter(5_000, 1_000, 0.20);
+    wait_for("one segment", 3_000, || r.store.segments(&m.id).unwrap().len() == 1);
+    std::thread::sleep(Duration::from_millis(200));
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 1);
+    assert_eq!(segs[0].text, "the rollout moves to thursday");
+}
+
+#[test]
+fn bleed_me_segment_dropped() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    // The mic picks up the speakers: same words on both streams at the same time.
+    r.them.utter(1_000, 1_200, 0.20);
+    r.me.utter(1_050, 1_200, 0.20);
+    wait_for("calls", 3_000, || r.fake.calls.load(Ordering::SeqCst) == 2);
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 1, "{segs:?}");
+    assert_eq!(segs[0].source, Source::Them);
+}
+
+#[test]
+fn muted_me_segment_flagged() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    observe_span(&r.svc, 0, 3_000, &[], Some(true));
+    observe_span(&r.svc, 3_000, 8_000, &[], Some(false));
+    r.me.utter(500, 1_000, 0.10);
+    r.me.utter(4_000, 1_000, 0.20);
+    wait_for("two segments", 3_000, || r.store.segments(&m.id).unwrap().len() == 2);
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert!(segs[0].muted);
+    assert!(!segs[1].muted);
+}
+
+#[test]
+fn backlog_sets_catching_up() {
+    let r = rig_with(1_500, Duration::from_millis(200));
+    r.svc.start(None).unwrap();
+    // 80 s of continuous speech → four 20 s segments queued behind a slow transcriber.
+    r.me.utter(0, 80_000, 0.10);
+    wait_for("catching up", 3_000, || r.svc.active().unwrap().catching_up);
+    r.svc.stop();
+}
+
+#[test]
+fn stop_drains_then_marks_untranscribed() {
+    let r = rig_with(800, Duration::from_millis(300));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 1_000, 0.10);
+    r.me.utter(3_000, 1_000, 0.20);
+    r.me.utter(6_000, 1_000, 0.30);
+    std::thread::sleep(Duration::from_millis(100));
+    let t = Instant::now();
+    let id = r.svc.stop().unwrap();
+    assert_eq!(id, m.id);
+    assert!(t.elapsed() < Duration::from_millis(1_500), "stop doesn't wait for the slow queue");
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 3, "{segs:?}");
+    assert!(segs.iter().any(|s| s.text == NOT_TRANSCRIBED));
+    let row = r.store.meeting_get(&m.id).unwrap().unwrap();
+    assert_eq!(row.status, MeetingStatus::Ended);
+    assert!(row.ended_at_utc.is_some());
+    assert!(r.svc.active().is_none());
+    // A late result from the in-flight clip must not add a duplicate row.
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert_eq!(r.store.segments(&m.id).unwrap().len(), 3);
+}
+
+#[test]
+fn second_start_rejected() {
+    let r = rig();
+    r.svc.start(None).unwrap();
+    assert!(r.svc.start(None).is_err());
+    r.svc.stop();
+    assert!(r.svc.start(Some("Next".into())).is_ok());
+    r.svc.stop();
+}
+
+#[test]
+fn drop_finalises_wavs() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 1_000, 0.10);
+    std::thread::sleep(Duration::from_millis(200));
+    let dir = r.svc_dir(&m.id);
+    drop(r.svc);
+    let wav = hound::WavReader::open(dir.join("me.wav")).expect("valid header after drop");
+    assert!(wav.duration() >= 16_000);
+}
+
+impl Rig {
+    fn svc_dir(&self, id: &str) -> PathBuf {
+        self.svc.meeting_dir(id)
+    }
+}

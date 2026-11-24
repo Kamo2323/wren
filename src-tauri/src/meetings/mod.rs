@@ -133,3 +133,23 @@ pub mod segmenter;
 pub mod speakers;
 pub mod teams;
 pub mod capture;
+pub mod session;
+
+/// The running meeting service, for the dictation session's start/stop notices (spec §5.1: dictated
+/// words never become meeting lines). Set once at startup.
+static SERVICE: std::sync::OnceLock<std::sync::Weak<session::MeetingService>> = std::sync::OnceLock::new();
+
+pub fn register_service(svc: &std::sync::Arc<session::MeetingService>) {
+    let _ = SERVICE.set(std::sync::Arc::downgrade(svc));
+}
+
+/// Dictation began (`true`) or ended (`false`) at `at`.
+pub fn dictation_hook(began: bool, at: std::time::Instant) {
+    if let Some(svc) = SERVICE.get().and_then(std::sync::Weak::upgrade) {
+        if began {
+            svc.dictation_began(at);
+        } else {
+            svc.dictation_ended(at);
+        }
+    }
+}
