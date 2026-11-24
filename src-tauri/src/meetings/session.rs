@@ -13,7 +13,7 @@
 
 use crate::meetings::capture::wav::ContinuousWav;
 use crate::meetings::capture::{AudioBlock, AudioSource};
-use crate::meetings::dedupe::{is_bleed, DictationGate};
+use crate::meetings::dedupe::{is_bleed, is_echo, starts_after, DictationGate, ECHO_MAX_LAG_MS};
 use crate::meetings::segmenter::{RawSegment, Segmenter, SegmenterConfig};
 use crate::meetings::speakers::{SpeakerTimeline, TeamsObservation, TEAMS_LAG_MS};
 use crate::meetings::teams::{spawn_watcher, ReaderFactory};
@@ -134,9 +134,15 @@ struct Shared {
     has_observations: AtomicBool,
     gate: Mutex<DictationGate>,
     recent_them: Mutex<VecDeque<(u64, u64, String)>>,
+    /// Recent Me lines, to drop Teams echoing them back (see `dedupe::is_echo`).
+    recent_me: Mutex<VecDeque<(u64, u64, String)>>,
     /// Latest Them stream position the pipeline has processed, and when it last moved.
     them_pos: AtomicU64,
     them_seen: Mutex<Option<Instant>>,
+    /// End of the Me audio seen so far, and where its open segment started (`u64::MAX`: none). A
+    /// Them clip that may echo a Me line still being spoken waits for it (see `next_job`).
+    me_pos: AtomicU64,
+    me_open_since: AtomicU64,
     abort: AtomicBool,
     listener: Arc<RwLock<Option<Listener>>>,
     dir: PathBuf,
@@ -344,8 +350,11 @@ impl MeetingService {
             has_observations: AtomicBool::new(false),
             gate: Mutex::new(DictationGate::default()),
             recent_them: Mutex::new(VecDeque::new()),
+            recent_me: Mutex::new(VecDeque::new()),
             them_pos: AtomicU64::new(0),
             them_seen: Mutex::new(None),
+            me_pos: AtomicU64::new(0),
+            me_open_since: AtomicU64::new(u64::MAX),
             abort: AtomicBool::new(false),
             listener: self.listener.clone(),
             dir: dir.clone(),
@@ -620,6 +629,12 @@ impl Pipeline {
         for s in segs {
             self.enqueue(source, s);
         }
+        if source == Source::Me {
+            let end = b.stream_pos_ms + b.samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
+            let open = self.segmenter(i).open_since().unwrap_or(u64::MAX);
+            self.shared.me_open_since.store(open, Ordering::Relaxed);
+            self.shared.me_pos.fetch_max(end, Ordering::Relaxed);
+        }
         let speaking = self.segmenter(i).is_speaking();
         self.set_speaking(source, speaking);
     }
@@ -728,12 +743,32 @@ fn next_job(s: &Shared, q: &mut Queue) -> Option<Job> {
     let them_live = s.them_seen.lock().is_some_and(|t| t.elapsed() < Duration::from_secs(1));
     let them_pos = s.them_pos.load(Ordering::Relaxed);
     let mut pick = None;
+    let may_echo = |me: &Job, them: &Job| {
+        me.start_ms < them.end_ms && them.start_ms < me.end_ms + ECHO_MAX_LAG_MS && starts_after(them.start_ms, me.start_ms)
+    };
     for (i, j) in q.jobs.iter().enumerate() {
         if j.source == Source::Them {
+            // A Them clip that starts clearly after a queued Me clip may be Teams echoing it: the Me
+            // line goes first so the echo can be checked against it.
+            let echo_of_queued_me = q
+                .jobs
+                .iter()
+                .any(|m| m.source == Source::Me && may_echo(m, j));
+            // Or one the mic hasn't delivered yet: still being spoken, or not reached yet. Bounded.
+            let me_open = s.me_open_since.load(Ordering::Relaxed);
+            let me_pending = (s.me_pos.load(Ordering::Relaxed) < j.start_ms
+                || (me_open != u64::MAX && starts_after(j.start_ms, me_open)))
+                && j.queued_at.elapsed() < ME_WAIT_FOR_THEM;
+            if echo_of_queued_me || me_pending {
+                continue;
+            }
             pick = Some(i);
             break;
         }
-        let overlapping_them = q.jobs.iter().any(|t| t.source == Source::Them && t.start_ms < j.end_ms && j.start_ms < t.end_ms);
+        // Me waits for overlapping Them clips that could be bleed (not ones that start clearly later).
+        let overlapping_them = q.jobs.iter().any(|t| {
+            t.source == Source::Them && t.start_ms < j.end_ms && j.start_ms < t.end_ms && !starts_after(t.start_ms, j.start_ms)
+        });
         let waiting = them_live && them_pos < j.end_ms + 100 && j.queued_at.elapsed() < ME_WAIT_FOR_THEM;
         if overlapping_them || waiting {
             continue;
@@ -776,13 +811,15 @@ fn worker(
         if let Some(seg) = row {
             match store.segment_insert(&seg) {
                 Ok(row) => {
-                    if row.source == Source::Them {
-                        let mut r = s.recent_them.lock();
-                        r.push_back((row.start_ms, row.end_ms, row.text.clone()));
-                        while r.front().is_some_and(|f| f.1 + RECENT_THEM_MS < row.end_ms) {
-                            r.pop_front();
-                        }
+                    let mut r = match row.source {
+                        Source::Them => s.recent_them.lock(),
+                        Source::Me => s.recent_me.lock(),
+                    };
+                    r.push_back((row.start_ms, row.end_ms, row.text.clone()));
+                    while r.front().is_some_and(|f| f.1 + RECENT_THEM_MS < row.end_ms) {
+                        r.pop_front();
                     }
+                    drop(r);
                     s.emit(MeetingEvent::Segment { segment: row });
                 }
                 Err(e) => tracing::warn!(error = %e, "could not save a meeting segment"),
@@ -865,6 +902,12 @@ fn process(
             seg.muted = s.timeline.lock().muted_during(j.start_ms, j.end_ms).unwrap_or(false);
         }
         Source::Them => {
+            let me: Vec<(u64, u64, String)> = s.recent_me.lock().iter().cloned().collect();
+            let refs: Vec<(u64, u64, &str)> = me.iter().map(|(a, b, t)| (*a, *b, t.as_str())).collect();
+            if is_echo(&(j.start_ms, j.end_ms, seg.text.as_str()), &refs) {
+                tracing::debug!(start_ms = j.start_ms, "dropped Teams echo of the user's own line");
+                return None;
+            }
             if s.has_observations.load(Ordering::Relaxed) {
                 let want = j.end_ms + TEAMS_LAG_MS;
                 let until = Instant::now() + THEM_WAIT_FOR_TEAMS;

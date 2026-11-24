@@ -289,6 +289,44 @@ fn bleed_me_segment_dropped() {
 }
 
 #[test]
+fn teams_echo_of_my_line_dropped() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    // Teams hands my own voice back ~0.4 s late (real Mac call): same words on Them, later.
+    r.me.utter(1_000, 1_200, 0.20);
+    r.them.utter(1_400, 1_200, 0.20);
+    wait_for("calls", 3_000, || r.fake.calls.load(Ordering::SeqCst) == 2);
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 1, "{segs:?}");
+    assert_eq!(segs[0].source, Source::Me);
+}
+
+#[test]
+fn teams_echo_dropped_even_when_its_clip_is_queued_first() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    r.them.utter(1_400, 1_200, 0.20);
+    r.me.utter(1_000, 1_200, 0.20);
+    wait_for("calls", 3_000, || r.fake.calls.load(Ordering::SeqCst) == 2);
+    r.svc.stop();
+    let segs = r.store.segments(&m.id).unwrap();
+    assert_eq!(segs.len(), 1, "{segs:?}");
+    assert_eq!(segs[0].source, Source::Me);
+}
+
+#[test]
+fn reply_with_other_words_after_me_is_kept() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(1_000, 1_200, 0.20);
+    r.them.utter(1_400, 1_200, 0.30);
+    wait_for("two segments", 3_000, || r.store.segments(&m.id).unwrap().len() == 2);
+    r.svc.stop();
+    assert_eq!(r.store.segments(&m.id).unwrap().len(), 2);
+}
+
+#[test]
 fn muted_me_segment_flagged() {
     let r = rig();
     let m = r.svc.start(None).unwrap();

@@ -77,6 +77,11 @@ impl Segmenter {
         self.open.is_some()
     }
 
+    /// Stream position where the open segment started, while one is open.
+    pub fn open_since(&self) -> Option<u64> {
+        self.open.as_ref().map(|o| o.start_ms)
+    }
+
     /// Feed audio that starts at `stream_pos_ms`; returns the segments that closed.
     pub fn push(&mut self, samples: &[f32], stream_pos_ms: u64) -> Vec<RawSegment> {
         let mut out = Vec::new();
