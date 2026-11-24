@@ -24,8 +24,18 @@ decisions. If something is unclear in the transcript, say so briefly rather than
 - The recorder's own notes show what mattered to them: make sure those points are covered.
 - The transcript is machine-made and may mishear words; correct obvious mis-hearings only when the meaning \
 is certain from context.
-- Output only the notes in Markdown, starting with the first heading. No preamble, no closing remarks. \
-If a section has nothing in it, write \"None.\" under its heading.";
+- Output only the notes in Markdown. No preamble, no closing remarks. If a section has nothing in it, \
+write \"None.\" under its heading.
+
+Formatting (the notes are shown in an app that renders Markdown):
+- Begin with one line: > **In short:** <the single most important outcome, in one sentence>
+- Use **bold** for the facts people skim for: dates, times, numbers, amounts, names of people who own \
+something, and the decision itself. Don't bold whole sentences.
+- Action items are a Markdown table with the columns | Owner | Task | Due |, one row per item. Write the \
+owner's name in bold, \"Not assigned\" when nobody took it, and \"—\" when no due date was said.
+- When someone said something important word for word, you may quote it as a blockquote, at most three in \
+the whole note: > \"exact words\" — Name
+- Use ### sub-headings and short bullets inside sections. No emoji, no HTML.";
 
 /// The length instruction (second, uncached block).
 pub fn instruction(len: Length) -> &'static str {
@@ -37,7 +47,7 @@ Write SHORT notes (about half a page) with exactly these sections:
 ## Key points
 At most 8 bullets.
 ## Action items
-Bullets as \"- **Owner** — task — due date if one was said\".",
+The | Owner | Task | Due | table.",
         Length::Medium => "\
 Write MEDIUM notes (about one page) with exactly these sections:
 ## Summary
@@ -47,7 +57,7 @@ One ### heading per topic, in the order discussed, with bullets under each.
 ## Decisions
 Bullets.
 ## Action items
-Bullets as \"- **Owner** — task — due date if one was said\" (Owner — task — due).
+The | Owner | Task | Due | table.
 ## Open questions
 Bullets for anything left unresolved.",
         Length::Long => "\
@@ -59,7 +69,7 @@ One ### heading per topic, in the order discussed, with bullets under each.
 ## Decisions
 Bullets, with who made or agreed each decision.
 ## Action items
-Bullets as \"- **Owner** — task — due date if one was said\" (Owner — task — due).
+The | Owner | Task | Due | table.
 ## Open questions
 Bullets for anything left unresolved.
 ## Walkthrough

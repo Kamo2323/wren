@@ -75,6 +75,7 @@ export type MeetingEvent =
 export type NoteErrorKind = "no_key" | "unauthorized" | "rate_limited" | "overloaded" | "network" | "refusal" | "api";
 
 export type NoteEvent =
+  | { event: "started"; meetingId: string; length: Length }
   | { event: "delta"; meetingId: string; length: Length; text: string }
   | { event: "done"; note: NoteRow }
   | { event: "error"; meetingId: string; length: Length; kind: NoteErrorKind; message: string };

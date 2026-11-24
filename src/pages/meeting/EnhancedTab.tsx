@@ -1,11 +1,11 @@
 // Enhanced notes: Short / Medium / Long written by Claude. Streams while writing; a note is only kept once
 // it finished. Errors say what to do; "Notes changed" offers a rewrite after edits (spec §5.4, §6.3).
-import { useMemo, useState } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Length, NoteErrorKind, NoteRow } from "../../lib/meetings";
 import { footerLabel } from "../../lib/meetingText";
-import { copyText } from "../../lib/api";
+import { copyText, inTauri } from "../../lib/api";
 import { Button } from "../../components/Button";
 import { useToast } from "../../components/Toast";
 import { Copy, KeyRound, RotateCw, Sparkles } from "../../components/Icon";
@@ -27,9 +27,21 @@ function toHtml(md: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true }, FORBID_TAGS: ["style", "img", "iframe", "form"] });
 }
 
+/** Links never navigate Wren's own window: web links open in the browser, anything else is ignored. */
+function onLinkClick(e: MouseEvent<HTMLDivElement>) {
+  const a = (e.target as HTMLElement).closest("a");
+  if (!a) return;
+  e.preventDefault();
+  const href = a.getAttribute("href") ?? "";
+  if (!/^https?:\/\//i.test(href)) return;
+  if (inTauri) void import("@tauri-apps/plugin-opener").then((m) => m.openUrl(href)).catch(() => {});
+  // Browser preview (no Tauri): just note it, so the page checks can see where it would have gone.
+  else (window as unknown as { __wrenOpenedLink?: string }).__wrenOpenedLink = href;
+}
+
 function Markdown({ md }: { md: string }) {
   const html = useMemo(() => toHtml(md), [md]);
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className="md" onClick={onLinkClick} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 /** Copy as Markdown text through Wren's native clipboard path (pages never use the web clipboard). */

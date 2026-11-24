@@ -116,7 +116,9 @@ fn instructions_contain_required_headings() {
     for h in ["## Summary", "## Topics discussed", "## Decisions", "## Action items", "## Open questions", "## Walkthrough"] {
         assert!(long.contains(h), "long: {h}");
     }
-    assert!(medium.contains("Owner — task — due"));
+    assert!(medium.contains("| Owner | Task | Due |"));
+    assert!(SYSTEM_PROMPT.contains("> **In short:**"), "headline box");
+    assert!(SYSTEM_PROMPT.contains("| Owner | Task | Due |"), "action-item table");
 }
 
 struct FakeWriter {

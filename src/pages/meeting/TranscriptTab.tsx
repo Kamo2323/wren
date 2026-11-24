@@ -195,10 +195,12 @@ export function TranscriptTab({
   const heights = useRef(new Map<string, number>());
   const [measured, setMeasured] = useState(0);
   const [view, setView] = useState({ top: 0, height: 900 });
+  // Created during the first render (not in an effect), so it exists before the first slots mount and
+  // measure themselves; the effect only disconnects it.
   const ro = useRef<ResizeObserver | null>(null);
-  useEffect(() => {
-    let frame = 0;
-    const obs = new ResizeObserver((entries) => {
+  const frame = useRef(0);
+  if (ro.current === null && typeof ResizeObserver !== "undefined") {
+    ro.current = new ResizeObserver((entries) => {
       let changed = false;
       for (const e of entries) {
         const el = e.target as HTMLElement;
@@ -210,18 +212,20 @@ export function TranscriptTab({
           changed = true;
         }
       }
-      if (changed && !frame) frame = requestAnimationFrame(() => {
-        frame = 0;
-        setMeasured((n) => n + 1);
-      });
+      if (changed && !frame.current)
+        frame.current = requestAnimationFrame(() => {
+          frame.current = 0;
+          setMeasured((n) => n + 1);
+        });
     });
-    ro.current = obs;
-    return () => {
-      cancelAnimationFrame(frame);
-      obs.disconnect();
-      ro.current = null;
-    };
-  }, []);
+  }
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(frame.current);
+      ro.current?.disconnect();
+    },
+    [],
+  );
   const tops = useMemo(() => {
     const t = [0];
     runs.forEach((r, i) => t.push(t[i] + (heights.current.get(r.key) ?? estimateRun(r))));
@@ -247,7 +251,6 @@ export function TranscriptTab({
     if (live) el.scrollTop = el.scrollHeight;
     setView({ top: el.scrollTop, height: el.clientHeight });
   }, [live]);
-  useEffect(() => () => audio.current?.pause(), []);
 
   const scrollFrame = useRef(0);
   function onScroll() {
@@ -266,12 +269,24 @@ export function TranscriptTab({
 
   const playingRef = useRef<number | null>(null);
   playingRef.current = playing;
+  /** Bumped by every click and on leaving: a clip that arrives late for an older click never plays. */
+  const playSeq = useRef(0);
+  useEffect(
+    () => () => {
+      playSeq.current++;
+      audio.current?.pause();
+    },
+    [],
+  );
   const play = useCallback(async (s: SegmentRow) => {
+    const mine = ++playSeq.current;
     audio.current?.pause();
     if (playingRef.current === s.id) return setPlaying(null);
     try {
       const url = await meetingAudioClip(meeting.id, s.source, s.startMs, s.endMs);
+      if (mine !== playSeq.current) return;
       if (!url) return toast.show("This recording has been deleted (meeting audio is kept for 24 hours).");
+      audio.current?.pause();
       const a = new Audio(url);
       audio.current = a;
       setPlaying(s.id);

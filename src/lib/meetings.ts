@@ -84,8 +84,10 @@ function lines(meetingId: string, count: number, startId: number): SegmentRow[] 
   return out;
 }
 
-const MEDIUM = `## Summary
-The team agreed to move the rollout to Thursday, provided QA signs off by Wednesday evening. Tom will chase QA today, and Maximilian will pull the latest supplier pricing.
+const MEDIUM = `> **In short:** The rollout moves to **Thursday**, if QA signs off by **Wednesday evening**.
+
+## Summary
+The team agreed to move the rollout to **Thursday**, provided QA signs off by **Wednesday evening**. Tom will chase QA today, and Maximilian will pull the latest supplier pricing ([pricing sheet](https://example.com/pricing)).
 
 ## Topics discussed
 ### Rollout date
@@ -99,8 +101,12 @@ The team agreed to move the rollout to Thursday, provided QA signs off by Wednes
 - Rollout on Thursday, if QA signs off.
 
 ## Action items
-- **Tom Reid** — chase QA and send round the test report — today
-- **Maximilian** — pull the latest supplier pricing sheet — tomorrow lunchtime
+| Owner | Task | Due |
+| --- | --- | --- |
+| **Tom Reid** | Chase QA and send round the test report | Today |
+| **Maximilian** | Pull the latest supplier pricing sheet | Tomorrow lunchtime |
+
+> "As long as QA signs off, Thursday works." — Maximilian
 
 ## Open questions
 None.`;
@@ -205,7 +211,8 @@ function find(id: string) {
 function preview(m: MockMeeting) {
   const medium = m.notes.find((n) => n.length === "medium");
   const line = medium?.markdown.split("\n").find((l) => l.trim() && !l.startsWith("#"));
-  return line?.replace(/^[-*]\s*/, "") ?? m.segments.find((s) => !s.muted)?.text ?? null;
+  const clean = line?.replace(/^[>\-*]\s*/, "").replace(/\*\*/g, "").replace(/^In short:\s*/, "");
+  return clean ?? m.segments.find((s) => !s.muted)?.text ?? null;
 }
 
 function mockEnhance(id: string, length: Length) {
@@ -216,7 +223,11 @@ function mockEnhance(id: string, length: Length) {
     setTimeout(() => emit(NOTE_EVENT, { event: "error", meetingId: id, length, kind: "no_key", message: "Add your Claude API key in Settings." }), 50);
     return;
   }
-  const text = length === "short" ? MEDIUM.split("## Topics")[0].trim() + "\n\n## Action items\n- **Tom Reid** — chase QA — today" : MEDIUM;
+  emit(NOTE_EVENT, { event: "started", meetingId: id, length } satisfies NoteEvent);
+  const text =
+    length === "short"
+      ? MEDIUM.split("## Topics")[0].trim() + "\n\n## Action items\n| Owner | Task | Due |\n| --- | --- | --- |\n| **Tom Reid** | Chase QA | Today |"
+      : MEDIUM;
   const chunks = text.match(/[\s\S]{1,40}/g) ?? [];
   chunks.forEach((c, i) =>
     setTimeout(() => {

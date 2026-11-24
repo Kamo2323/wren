@@ -235,6 +235,10 @@ fn preview_prefers_medium_summary_then_first_segment() {
     s.note_upsert(&note(&m.id, Length::Medium, "## Summary\n\n- Rollout moved to Thursday.\n", 0.1, Utc::now()))
         .unwrap();
     assert_eq!(s.meeting_list().unwrap()[0].preview.as_deref(), Some("Rollout moved to Thursday."));
+    // The headline box is the best preview, without its label or bold marks.
+    s.note_upsert(&note(&m.id, Length::Medium, "> **In short:** Rollout moves to **Thursday**.\n\n## Summary\n", 0.1, Utc::now()))
+        .unwrap();
+    assert_eq!(s.meeting_list().unwrap()[0].preview.as_deref(), Some("Rollout moves to Thursday."));
 }
 
 #[test]

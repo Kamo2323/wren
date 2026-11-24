@@ -232,6 +232,12 @@ test("groupRuns merges consecutive lines of one speaker", () => {
   ]);
   assert.deepEqual(runs.map((r) => r.lines.map((l) => l.id)), [[1, 2], [3], [4], [5]], "a long gap starts a new run");
 });
+test("groupRuns splits a very long monologue so the transcript stays windowed", () => {
+  const many = Array.from({ length: 95 }, (_, i) => seg(i + 1, "them", "Sarah", i * 3000, "x"));
+  const runs = groupRuns(many);
+  assert.ok(runs.length >= 3, `${runs.length}`);
+  assert.ok(runs.every((r) => r.lines.length <= 40));
+});
 test("groupRuns keeps unnamed Them lines apart from named ones", () => {
   const runs = groupRuns([seg(1, "them", null, 0, "a"), seg(2, "them", "Tom", 1000, "b"), seg(3, "them", null, 2000, "c")]);
   assert.equal(runs.length, 3);

@@ -37,12 +37,15 @@ export function MeetingHeader({
   meName,
   onBack,
   onChanged,
+  beforeStop,
 }: {
   meeting: MeetingRow;
   active: ActiveMeeting | null;
   meName: string;
   onBack: () => void;
   onChanged: (m: MeetingRow) => void;
+  /** Saves pending My notes so the automatic notes include them. */
+  beforeStop: () => Promise<void>;
 }) {
   const toast = useToast();
   const [editing, setEditing] = useState(false);
@@ -142,7 +145,10 @@ export function MeetingHeader({
               >
                 {paused ? "Resume" : "Pause"}
               </Button>
-              <Button variant="danger" icon={<Square size={13} strokeWidth={2.4} />} disabled={busy} onClick={() => void act(meetingStop)}>
+              <Button variant="danger" icon={<Square size={13} strokeWidth={2.4} />} disabled={busy} onClick={() => void act(async () => {
+                  await beforeStop().catch(() => {});
+                  await meetingStop();
+                })}>
                 Stop
               </Button>
             </>

@@ -40,6 +40,18 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
   const [writing, setWriting] = useState<Length[]>([]);
   const [errors, setErrors] = useState<Partial<Record<Length, NoteError>>>({});
   const wasLive = useRef(false);
+  /** Set by My notes while it is open: saves any pending edit (awaited before Stop writes the notes). */
+  const flushNotes = useRef<(() => Promise<void>) | null>(null);
+
+  /** My notes saved: keep the latest text here (so reopening the tab never loads an old copy) and mark
+   *  written notes as changed, like the store does. */
+  const onNotesSaved = useCallback((json: string) => {
+    setDetail((d) =>
+      d && d.meeting.myNotes !== json
+        ? { ...d, meeting: { ...d.meeting, myNotes: json }, notes: d.notes.map((n) => ({ ...n, stale: true })) }
+        : d,
+    );
+  }, []);
 
   const reload = useCallback(async () => {
     const d = await meetingGet(id).catch(() => null);
@@ -89,6 +101,9 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
               // Just stopped: reload (status, duration) and show the notes being written.
               setSpeaking({ me: false, them: false });
               void reload();
+              void meetingGenerating(id)
+                .then((gen) => gen.length && setWriting((w) => [...new Set([...w, ...gen])]))
+                .catch(() => {});
               setTab("enhanced");
             }
             wasLive.current = !!live;
@@ -103,6 +118,12 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         }
       }),
       onNoteEvent((e) => {
+        if (e.event === "started") {
+          if (e.meetingId !== id) return;
+          setErrors((x) => ({ ...x, [e.length]: undefined }));
+          setWriting((w) => (w.includes(e.length) ? w : [...w, e.length]));
+          return;
+        }
         if (e.event === "done") {
           if (e.note.meetingId !== id) return;
           const len = e.note.length;
@@ -162,6 +183,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         meName={meName}
         onBack={onBack}
         onChanged={(m) => setDetail((d) => (d ? { ...d, meeting: m } : d))}
+        beforeStop={() => flushNotes.current?.() ?? Promise.resolve()}
       />
       <div className="meeting-tabs">
         <Tabs<TabId>
@@ -177,7 +199,9 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         />
       </div>
       <div className="meeting-panel" role="tabpanel" id={`meeting-panel-${tab}`} aria-labelledby={`meeting-tab-${tab}`}>
-        {tab === "notes" && <NotesTab meetingId={id} initial={detail.meeting.myNotes} />}
+        {tab === "notes" && (
+          <NotesTab meetingId={id} initial={detail.meeting.myNotes} onSaved={onNotesSaved} flushRef={flushNotes} />
+        )}
         {tab === "transcript" && (
           <TranscriptTab
             meeting={detail.meeting}

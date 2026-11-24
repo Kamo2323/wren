@@ -39,8 +39,10 @@ export interface Run {
   lines: SegmentRow[];
 }
 
-/** A run of one speaker's consecutive lines breaks after this much silence. */
+/** A run of one speaker's consecutive lines breaks after this much silence… */
 const RUN_GAP_MS = 60_000;
+/** …or at this many lines, so a long monologue still renders in windowed pieces. */
+const MAX_RUN_LINES = 40;
 
 /** Consecutive lines from one speaker (same source and same stored name) become one run. */
 export function groupRuns(segments: SegmentRow[]): Run[] {
@@ -48,7 +50,14 @@ export function groupRuns(segments: SegmentRow[]): Run[] {
   for (const s of segments) {
     const last = runs[runs.length - 1];
     const prev = last?.lines[last.lines.length - 1];
-    if (last && prev && last.source === s.source && last.speaker === s.speaker && s.startMs - prev.endMs < RUN_GAP_MS) {
+    if (
+      last &&
+      prev &&
+      last.source === s.source &&
+      last.speaker === s.speaker &&
+      s.startMs - prev.endMs < RUN_GAP_MS &&
+      last.lines.length < MAX_RUN_LINES
+    ) {
       last.lines.push(s);
     } else {
       runs.push({ key: `r${s.id}`, source: s.source, speaker: s.speaker, startMs: s.startMs, lines: [s] });

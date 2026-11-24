@@ -79,8 +79,9 @@ pub(crate) fn first_summary_line(md: &str) -> Option<String> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| {
-            let l = l.trim_start_matches(['-', '*', '+']).trim_start();
-            l.trim_start_matches("[ ]").trim_start_matches("[x]").trim().replace("**", "")
+            let l = l.trim_start_matches(['>', '-', '*', '+']).trim_start();
+            let l = l.trim_start_matches("[ ]").trim_start_matches("[x]").trim().replace("**", "");
+            l.strip_prefix("In short:").map(|r| r.trim().to_string()).unwrap_or(l)
         })
         .find(|l| !l.is_empty())
 }

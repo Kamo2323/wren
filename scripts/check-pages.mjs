@@ -325,6 +325,13 @@ await page.waitForSelector(".meeting-view");
 check("ended meeting opens on the Enhanced tab", (await selectedTab())?.startsWith("Enhanced"));
 await page.waitForSelector(".md h2");
 check("enhanced notes render markdown headings", (await page.locator(".md h2").first().textContent()) === "Summary");
+check("notes open with an 'In short' headline box", (await page.locator(".md > blockquote:first-child").textContent())?.includes("In short"));
+check("action items render as a table", (await page.locator(".md table th").allTextContents()).join("|").includes("Owner"));
+const urlBefore = page.url();
+await page.locator(".md a").first().click();
+await wait(200);
+check("links in notes don't navigate Wren's window", page.url() === urlBefore);
+check("…and go to the browser instead", (await page.evaluate(() => window.__wrenOpenedLink)) === "https://example.com/pricing");
 check("enhanced footer shows model, tokens and cost", /Claude Opus 5\.5 · [\d.]+k tokens · ~\$\d+\.\d\d/.test((await page.locator(".enh-footer").textContent()) ?? ""));
 await page.getByRole("button", { name: "Short", exact: true }).click();
 await page.waitForSelector(".enh-writing", { timeout: 2000 }).catch(() => {});
@@ -345,6 +352,23 @@ check("Rename all updates every Sarah Jones run", sarahBefore > 1 &&
   (await page.locator(".trun__name", { hasText: "Sarah J." }).count()) === sarahBefore &&
   (await page.locator(".trun__name", { hasText: "Sarah Jones" }).count()) === 0);
 check("an unnamed line shows as Speaker", (await page.locator(".trun__name", { hasText: "Speaker" }).count()) >= 1);
+
+// My notes survive switching tabs (they used to reload the old text and overwrite it).
+await page.getByRole("tab", { name: "My notes" }).click();
+await page.locator(".notes-editor").click();
+await page.keyboard.type("Keep this line");
+await wait(900);
+await page.getByRole("tab", { name: "Transcript" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+await wait(150);
+check("My notes keep what was typed after switching tabs", (await page.locator(".notes-editor").textContent())?.includes("Keep this line"));
+await page.locator(".notes-editor").click();
+await page.keyboard.press("End");
+await page.keyboard.type(" and more");
+await wait(900);
+await page.getByRole("tab", { name: "Transcript" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+check("…and further edits add to them", (await page.locator(".notes-editor").textContent())?.includes("Keep this line and more"));
 
 // No key: the Enhanced tab sends you to Settings.
 await page.goto(`${base}/index.html?claude=nokey#meetings`);
@@ -382,7 +406,9 @@ check("Pause shows Paused and Resume", (await page.locator(".mh-status").textCon
 await page.getByRole("button", { name: "Resume" }).click();
 await page.getByRole("button", { name: "Stop" }).click();
 await page.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Enhanced"), null, { timeout: 3000 });
-check("Stop switches to Enhanced and Medium writes itself", true);
+check("Stop switches to Enhanced", true);
+check("'Writing…' shows straight after Stop (no Write notes button meanwhile)",
+  (await page.locator(".enh-writing").count()) === 1 && (await page.getByRole("button", { name: /Write notes/ }).count()) === 0);
 
 // Big transcript: jump to live and smooth scrolling.
 await page.goto(`${base}/index.html?meeting=recording&big=1#meetings`);

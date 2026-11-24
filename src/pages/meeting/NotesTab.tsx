@@ -1,5 +1,5 @@
 // My notes: a simple Notion-like editor (headings, bullets, checkboxes, bold), autosaved as TipTap JSON.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import TaskList from "@tiptap/extension-task-list";
@@ -19,21 +19,38 @@ function parse(doc: string): object | string {
   }
 }
 
-export function NotesTab({ meetingId, initial }: { meetingId: string; initial: string }) {
+export function NotesTab({
+  meetingId,
+  initial,
+  onSaved,
+  flushRef,
+}: {
+  meetingId: string;
+  /** The latest saved notes (the parent keeps it current via `onSaved`). */
+  initial: string;
+  onSaved: (json: string) => void;
+  /** The parent calls this before Stop so the automatic notes include the last edit. */
+  flushRef: MutableRefObject<(() => Promise<void>) | null>;
+}) {
   const pending = useRef<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Saves run one after another, in order, so an older save can never land after a newer one. */
+  const chain = useRef<Promise<void>>(Promise.resolve());
   const [saved, setSaved] = useState<"idle" | "saving" | "saved" | "failed">("idle");
 
-  const flush = () => {
+  const flush = (): Promise<void> => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const json = pending.current;
     pending.current = null;
-    if (json === null) return;
+    if (json === null) return chain.current;
     setSaved("saving");
-    void meetingUpdate(meetingId, { myNotes: json })
+    onSaved(json);
+    chain.current = chain.current
+      .then(() => meetingUpdate(meetingId, { myNotes: json }))
       .then(() => setSaved("saved"))
       .catch(() => setSaved("failed"));
+    return chain.current;
   };
 
   const editor = useEditor({
@@ -43,7 +60,7 @@ export function NotesTab({ meetingId, initial }: { meetingId: string; initial: s
     onUpdate: ({ editor }) => {
       pending.current = editor.isEmpty ? "" : JSON.stringify(editor.getJSON());
       if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
+      timer.current = setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
     },
   });
   const state = useEditorState({
@@ -57,8 +74,14 @@ export function NotesTab({ meetingId, initial }: { meetingId: string; initial: s
     }),
   });
 
-  // Save on leaving the tab or the page.
-  useEffect(() => () => flush(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Save on leaving the tab or the page; let the parent flush before Stop.
+  useEffect(() => {
+    flushRef.current = flush;
+    return () => {
+      flushRef.current = null;
+      void flush();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tool = (label: string, active: boolean | undefined, run: () => void, text: ReactNode) => (
     <button
