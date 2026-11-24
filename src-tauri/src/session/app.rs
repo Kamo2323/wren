@@ -197,6 +197,8 @@ impl Env for AppEnv {
     }
     fn dictation_started(&self) {
         self.watcher.stop();
+        #[cfg(target_os = "macos")]
+        let _ = self.app.run_on_main_thread(paste::refresh_v_keycode);
         if let Some(c) = &self.prepaste {
             c.prime();
         }
@@ -267,6 +269,9 @@ impl Services {
 /// Start the recorder, engine, hotkey and session. Call from `setup`, after `AppState` is managed
 /// and the windows exist (main thread).
 pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
+    #[cfg(target_os = "macos")]
+    paste::refresh_v_keycode();
+
     let state = app.state::<AppState>();
     let settings = state.settings.read().clone();
 

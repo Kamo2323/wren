@@ -257,7 +257,14 @@ mod platform {
     use super::*;
     use crate::constants::{INJECT_TAG, PASTE_READ_WAIT_MS};
     use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::MainThreadMarker;
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    /// Cached virtual keycode for `'v'` in the user's active keyboard layout. Updated strictly on
+    /// the main thread via [`refresh_v_keycode`] so `send_cmd_v` on `wren-finisher` never touches
+    /// Carbon HIToolbox from a background queue.
+    static CACHED_V_KEYCODE: AtomicU16 = AtomicU16::new(K_VK_ANSI_V);
 
     type CGEventSourceRef = *mut c_void;
     type CGEventRef = *mut c_void;
@@ -314,7 +321,9 @@ mod platform {
 
     /// Resolve the virtual keycode for `'v'` in the user's active keyboard layout (supports QWERTY,
     /// Dvorak, Colemak, AZERTY, etc.), falling back to ANSI `V` (`9`).
-    fn keycode_for_v() -> u16 {
+    ///
+    /// Caller MUST be on the main thread (Carbon HIToolbox enforces `dispatch_assert_queue(main)`).
+    fn keycode_for_v_on_main() -> u16 {
         unsafe {
             let src = TISCopyCurrentKeyboardLayoutInputSource();
             if src.is_null() {
@@ -354,6 +363,17 @@ mod platform {
         }
     }
 
+    /// Refresh the cached `'v'` virtual keycode for the current keyboard layout.
+    /// No-ops safely if called off the main thread so Carbon HIToolbox can never trap with `SIGTRAP`.
+    pub fn refresh_v_keycode() {
+        if MainThreadMarker::new().is_none() {
+            tracing::debug!("skipping Carbon keyboard-layout refresh off the main thread");
+            return;
+        }
+        let vk = keycode_for_v_on_main();
+        CACHED_V_KEYCODE.store(vk, Ordering::Relaxed);
+    }
+
     /// Frontmost application PID, friendly name, and a token encoding PID (+ AX window hash if
     /// accessible) so switching apps OR switching windows inside an app is caught as `FocusChanged`.
     pub fn foreground() -> ForegroundInfo {
@@ -381,7 +401,7 @@ mod platform {
     }
 
     fn send_cmd_v() -> Result<(), String> {
-        let vk_v = keycode_for_v();
+        let vk_v = CACHED_V_KEYCODE.load(Ordering::Relaxed);
         unsafe {
             let source = CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_PRIVATE);
             let down = CGEventCreateKeyboardEvent(source, vk_v, true);
@@ -482,6 +502,8 @@ mod platform {
 pub use platform::{foreground, paste_text, process_name};
 #[cfg(windows)]
 pub use platform::{chord_keys, paste_via_clipboard};
+#[cfg(target_os = "macos")]
+pub use platform::refresh_v_keycode;
 
 #[cfg(test)]
 mod tests {
@@ -536,5 +558,12 @@ mod tests {
         if fg.hwnd != 0 {
             assert!(fg.pid != 0);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refresh_v_keycode_is_safe_from_worker_thread() {
+        // Must never invoke Carbon HIToolbox off the main thread (macOS traps with SIGTRAP).
+        std::thread::spawn(refresh_v_keycode).join().unwrap();
     }
 }
