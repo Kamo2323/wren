@@ -131,3 +131,4 @@ pub struct NoteRow {
 pub mod dedupe;
 pub mod segmenter;
 pub mod speakers;
+pub mod teams;
