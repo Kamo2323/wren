@@ -1,6 +1,7 @@
 //! Dump the Teams meeting window's accessibility tree to JSON (meetings plan Task 4 / Task 14).
 //!
 //!   cargo run --example teams_probe -- --out tests/fixtures/teams/win_call_1.json [--any] [--parse]
+//!   (macOS also: [--bundle <bundle id>] to read another app's window, e.g. to check the reader)
 //!
 //! `--any` dumps the first Teams window even if it isn't a meeting (e.g. the idle main window).
 //! `--parse` also prints what Wren's parser reads from it.
@@ -35,7 +36,31 @@ fn main() {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (out, any, show);
-        eprintln!("macOS probe: see meetings::teams::ax_macos (plan Task 6)");
+        use wren_lib::meetings::teams::{ax_macos::AxTeamsReader, snapshot::Dump, TeamsReader};
+        if !wren_lib::hotkey::accessibility_trusted(false) {
+            eprintln!("this process isn't trusted for Accessibility: allow the app that runs it (e.g. Terminal) in System Settings › Privacy & Security › Accessibility");
+            std::process::exit(3);
+        }
+        let mut reader = AxTeamsReader::new();
+        reader.any_window = any;
+        // Copy whole trees for fixtures (the live watcher keeps the ~300 ms budget).
+        reader.budget = std::time::Duration::from_secs(5);
+        // `--bundle <id>` reads another app's windows, to check the reader without Teams.
+        reader.bundle_id = args.iter().position(|a| a == "--bundle").and_then(|i| args.get(i + 1)).cloned();
+        let t0 = std::time::Instant::now();
+        let Some((tree, title)) = reader.snapshot() else {
+            eprintln!("no Teams {}window found", if any { "" } else { "meeting " });
+            std::process::exit(2);
+        };
+        eprintln!("read {} nodes in {} ms", tree.count(), t0.elapsed().as_millis());
+        if show {
+            println!("{:#?}", wren_lib::meetings::teams::parse(&tree, &title));
+        }
+        let dump = Dump { title, tree };
+        let json = serde_json::to_string_pretty(&dump).unwrap();
+        match out {
+            Some(p) => std::fs::write(&p, json).expect("write"),
+            None => println!("{json}"),
+        }
     }
 }

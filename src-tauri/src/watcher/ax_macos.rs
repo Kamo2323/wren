@@ -81,13 +81,13 @@ unsafe extern "C" {
 }
 
 /// Owned `CFTypeRef` released on drop.
-struct CfGuard(CFTypeRef);
+pub(crate) struct CfGuard(CFTypeRef);
 
 impl CfGuard {
-    fn new(ptr: CFTypeRef) -> Option<Self> {
+    pub(crate) fn new(ptr: CFTypeRef) -> Option<Self> {
         (!ptr.is_null()).then_some(Self(ptr))
     }
-    fn as_ptr(&self) -> CFTypeRef {
+    pub(crate) fn as_ptr(&self) -> CFTypeRef {
         self.0
     }
 }
@@ -100,13 +100,13 @@ impl Drop for CfGuard {
     }
 }
 
-fn cf_str(s: &str) -> Option<CfGuard> {
+pub(crate) fn cf_str(s: &str) -> Option<CfGuard> {
     let cs = CString::new(s).ok()?;
     let ptr = unsafe { CFStringCreateWithCString(std::ptr::null(), cs.as_ptr(), K_CF_STRING_ENCODING_UTF8) };
     CfGuard::new(ptr)
 }
 
-fn cf_to_string(ptr: CFTypeRef) -> Option<String> {
+pub(crate) fn cf_to_string(ptr: CFTypeRef) -> Option<String> {
     if ptr.is_null() {
         return None;
     }
@@ -130,7 +130,7 @@ fn cf_to_string(ptr: CFTypeRef) -> Option<String> {
     }
 }
 
-fn cf_to_i64(ptr: CFTypeRef) -> Option<i64> {
+pub(crate) fn cf_to_i64(ptr: CFTypeRef) -> Option<i64> {
     if ptr.is_null() {
         return None;
     }
@@ -147,7 +147,7 @@ fn cf_to_i64(ptr: CFTypeRef) -> Option<i64> {
     }
 }
 
-fn copy_attr(elem: AXUIElementRef, attr: &str) -> Option<CfGuard> {
+pub(crate) fn copy_attr(elem: AXUIElementRef, attr: &str) -> Option<CfGuard> {
     let key = cf_str(attr)?;
     let mut val: CFTypeRef = std::ptr::null();
     let err = unsafe { AXUIElementCopyAttributeValue(elem, key.as_ptr(), &mut val) };
