@@ -16,8 +16,11 @@
 //!
 //! Self-healing (as `win_loopback.rs`): the worker reopens the capture when Teams appears, quits or
 //! restarts, when no tap is open while Teams has audio (both taps failed), when the tap stops calling
-//! back for [`STALL`], and when the output device's sample rate changes under it (AirPods 48 kHz ↔
-//! hands-free 16/24 kHz, sleep/wake), so the resampler always runs at the real rate. On the all-sound
+//! back for [`STALL`] (or its aggregate device reads as not alive, or unreadable), and when the tap's
+//! rate changes in a way the in-place handling below didn't catch. Rate changes (AirPods 48 kHz ↔
+//! hands-free 16/24 kHz, sleep/wake) are caught per IO cycle: a timeline jump or a cycle whose
+//! timestamps imply another rate marks a boundary in the ring, and the worker settles the new rate
+//! there before resampling anything after it, so audio is never resampled at the wrong rate. On the all-sound
 //! fallback it retries Teams-only every [`UPGRADE_RETRY`] and switches only if that opens. Mode
 //! changes are reported on `mode_tx`. Wall-clock alignment: when too little arrives, zeros are emitted so
 //! `stream_pos_ms` tracks real time. Audio is never logged.
@@ -40,7 +43,9 @@ use objc2_core_audio::{
     kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject, kAudioObjectUnknown, kAudioProcessPropertyBundleID,
     kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyFormat,
 };
-use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatFlagIsFloat};
+use objc2_core_audio_types::{
+    AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, AudioTimeStampFlags, kAudioFormatFlagIsFloat,
+};
 use objc2_core_foundation::CFDictionary;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSObject, NSString};
 use std::ffi::{CStr, c_void};
@@ -65,6 +70,10 @@ const STALL: Duration = Duration::from_secs(3);
 const HEALTH_CHECK: Duration = Duration::from_secs(1);
 /// While on the all-sound fallback, how often to try Teams-only again (as on Windows).
 const UPGRADE_RETRY: Duration = Duration::from_secs(30);
+/// How long `stop` waits for the worker before leaving it to finish on its own (as `mic.rs`).
+const STOP_JOIN: Duration = Duration::from_secs(2);
+/// `open_tap`'s error when Stop came in while it was opening.
+const STOPPED: &str = "capture stopped while the tap was opening";
 /// Retries that keep failing log a warning at most this often.
 const QUIET_RETRY_LOGS: Duration = Duration::from_secs(60);
 /// Seconds of audio buffered between the Core Audio IO thread and the worker (it drains every tick).
@@ -162,6 +171,9 @@ struct Ring {
     head: AtomicUsize,
     tail: AtomicUsize,
     dropped: AtomicUsize,
+    /// A format boundary: `position + 1` of the first sample that may be in a new format (0 = none).
+    /// Set by the producer (only when clear), consumed by the consumer when it reaches it.
+    mark: AtomicUsize,
 }
 
 impl Ring {
@@ -173,7 +185,15 @@ impl Ring {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             dropped: AtomicUsize::new(0),
+            mark: AtomicUsize::new(0),
         }
+    }
+
+    /// Producer: the next sample written may be in a different format than the ones before it. Only
+    /// the first unconsumed boundary is kept (two format changes within one worker tick don't happen).
+    fn mark_boundary(&self) {
+        let pos = self.head.load(Ordering::Relaxed);
+        let _ = self.mark.compare_exchange(0, pos.wrapping_add(1), Ordering::Release, Ordering::Relaxed);
     }
 
     /// Producer: append `n` samples given by `sample(i)`; what doesn't fit is dropped.
@@ -193,11 +213,16 @@ impl Ring {
         }
     }
 
-    /// Consumer: move everything available onto the end of `out`.
-    fn drain_into(&self, out: &mut Vec<f32>) {
+    /// Consumer: move what is available onto the end of `out`, stopping at a format boundary. Returns
+    /// true when it stopped at (and consumed) one: what follows may be in a different format.
+    fn drain_into(&self, out: &mut Vec<f32>) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
+        // `head` before `mark`: a mark set before the samples we see is then visible too.
         let head = self.head.load(Ordering::Acquire);
-        let n = head.wrapping_sub(tail).min(self.buf.len());
+        let mark = self.mark.load(Ordering::Acquire);
+        let avail = head.wrapping_sub(tail).min(self.buf.len());
+        let to_mark = (mark != 0).then(|| mark.wrapping_sub(1).wrapping_sub(tail)).filter(|d| *d <= avail);
+        let n = to_mark.unwrap_or(avail);
         out.reserve(n);
         for i in 0..n {
             if let Some(slot) = self.buf.get(tail.wrapping_add(i) & self.mask) {
@@ -205,7 +230,17 @@ impl Ring {
             }
         }
         self.tail.store(tail.wrapping_add(n), Ordering::Release);
+        if to_mark.is_some() {
+            // The producer only sets a clear mark, so nothing races this store.
+            self.mark.store(0, Ordering::Release);
+        }
+        to_mark.is_some()
     }
+}
+
+/// Frames in one IO cycle: the shortest buffer with data sets it.
+fn frame_count<P: Plane>(planes: &[P]) -> usize {
+    planes.iter().filter(|p| !p.samples().is_empty()).map(|p| p.samples().len() / p.channels()).min().unwrap_or(0)
 }
 
 /// Mix Core Audio buffers (each interleaved with its own channel count) down to mono into `ring`,
@@ -213,7 +248,7 @@ impl Ring {
 fn mix_to_mono<P: Plane>(planes: &[P], ring: &Ring) {
     let live = || planes.iter().filter(|p| !p.samples().is_empty());
     let total_ch: usize = live().map(|p| p.channels()).sum();
-    let frames = live().map(|p| p.samples().len() / p.channels()).min().unwrap_or(0);
+    let frames = frame_count(planes);
     if total_ch == 0 || frames == 0 {
         return;
     }
@@ -328,11 +363,145 @@ fn own_process_object() -> Option<AudioObjectID> {
 
 // ---- the tap ----
 
+/// One IO cycle's input timestamp, as far as boundary detection needs it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Cycle {
+    sample: f64,
+    host: u64,
+    frames: usize,
+}
+
+/// How far the rate an IO cycle's timestamps imply may stray from the expected rate before it counts
+/// as a format change (the closest common rates, 44.1 and 48 kHz, are 8 % apart).
+const RATE_TOLERANCE: f64 = 0.04;
+
+/// What an IO cycle's timestamp says against the cycle before it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Step {
+    /// The device timeline jumped: IO restarted (device or format change, sleep/wake, an overload).
+    Jump,
+    /// Continuous, at this rate (Hz) as the timestamps imply.
+    Rate(f64),
+    /// Nothing to go on (host time didn't advance).
+    Unknown,
+}
+
+fn step(prev: Cycle, now: Cycle, host_hz: f64) -> Step {
+    if (now.sample - (prev.sample + prev.frames as f64)).abs() > 1.0 {
+        return Step::Jump;
+    }
+    let ds = now.sample - prev.sample;
+    if ds <= 0.0 || now.host <= prev.host || host_hz <= 0.0 {
+        return Step::Unknown;
+    }
+    Step::Rate(ds / ((now.host - prev.host) as f64 / host_hz))
+}
+
+/// Whether `rate` is clearly not `expected`.
+fn off_rate(rate: f64, expected: f64) -> bool {
+    expected > 0.0 && (rate / expected - 1.0).abs() > RATE_TOLERANCE
+}
+
+/// What to do at a format boundary, before resampling anything after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtBoundary {
+    /// Still `current`: carry on.
+    Same,
+    /// Now at this rate: flush the old resampler and start one at the new rate.
+    Retune(u32),
+    /// Core Audio's rate property and the IO timestamps disagree (the property hasn't caught up) or
+    /// no cycle after the boundary has been measured yet: hold the audio and look again next tick.
+    Wait,
+}
+
+/// Decide at a boundary from the rate property (`prop`), the rate the IO timestamps imply since the
+/// boundary (`implied`) and whether the boundary has waited [`BOUNDARY_HOLD`] already (then the
+/// property alone decides).
+fn at_boundary(current: u32, prop: Option<u32>, implied: Option<f64>, timed_out: bool) -> AtBoundary {
+    let by_prop = |p: Option<u32>| match p {
+        Some(p) if p != current => AtBoundary::Retune(p),
+        _ => AtBoundary::Same,
+    };
+    if timed_out {
+        return by_prop(prop);
+    }
+    match (prop, implied) {
+        (Some(p), Some(i)) if !off_rate(i, p as f64) => by_prop(Some(p)),
+        (None, Some(i)) if !off_rate(i, current as f64) => AtBoundary::Same,
+        _ => AtBoundary::Wait,
+    }
+}
+
+/// Longest a boundary holds audio back waiting for the rate property to agree with the IO timestamps.
+const BOUNDARY_HOLD: Duration = Duration::from_secs(1);
+
 /// Shared between the worker and the Core Audio IO thread.
 struct Ctx {
     ring: Ring,
     /// IO callbacks so far (liveness: a tap whose device stopped calling back is reopened).
     callbacks: AtomicU64,
+    /// Host clock ticks per second.
+    host_hz: f64,
+    /// The rate the IO timestamps are expected to imply (Hz); a cycle clearly off it is a boundary.
+    expected_rate: AtomicU32,
+    /// The rate the latest continuous cycle implied (f64 bits; 0 = unknown since the last jump).
+    implied_rate: AtomicU64,
+    /// IO thread only: the previous cycle (`prev_frames == 0`: none yet).
+    prev_sample: AtomicU64,
+    prev_host: AtomicU64,
+    prev_frames: AtomicUsize,
+    /// Format boundaries seen (diagnostics).
+    boundaries: AtomicU64,
+}
+
+impl Ctx {
+    fn new(rate: u32) -> Self {
+        Self {
+            ring: Ring::new(rate as usize * RING_SECS),
+            callbacks: AtomicU64::new(0),
+            host_hz: unsafe { objc2_core_audio::AudioGetHostClockFrequency() },
+            expected_rate: AtomicU32::new(rate),
+            implied_rate: AtomicU64::new(0),
+            prev_sample: AtomicU64::new(0),
+            prev_host: AtomicU64::new(0),
+            prev_frames: AtomicUsize::new(0),
+            boundaries: AtomicU64::new(0),
+        }
+    }
+
+    /// IO thread: note this cycle's timestamp, marking the ring when it starts a new stretch.
+    fn observe(&self, ts: &AudioTimeStamp, frames: usize) {
+        if frames == 0 || !ts.mFlags.contains(AudioTimeStampFlags::SampleHostTimeValid) {
+            return;
+        }
+        let now = Cycle { sample: ts.mSampleTime, host: ts.mHostTime, frames };
+        let prev_frames = self.prev_frames.load(Ordering::Relaxed);
+        if prev_frames > 0 {
+            let prev = Cycle {
+                sample: f64::from_bits(self.prev_sample.load(Ordering::Relaxed)),
+                host: self.prev_host.load(Ordering::Relaxed),
+                frames: prev_frames,
+            };
+            let boundary = match step(prev, now, self.host_hz) {
+                Step::Jump => {
+                    self.implied_rate.store(0, Ordering::Relaxed);
+                    true
+                }
+                Step::Rate(r) => {
+                    self.implied_rate.store(r.to_bits(), Ordering::Relaxed);
+                    off_rate(r, self.expected_rate.load(Ordering::Relaxed) as f64)
+                }
+                Step::Unknown => false,
+            };
+            if boundary {
+                self.ring.mark_boundary();
+                self.boundaries.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.prev_sample.store(now.sample.to_bits(), Ordering::Relaxed);
+        self.prev_host.store(now.host, Ordering::Relaxed);
+        self.prev_frames.store(frames, Ordering::Relaxed);
+    }
 }
 
 type IoProc = unsafe extern "C" fn(
@@ -362,7 +531,7 @@ unsafe extern "C" fn io_proc(
     _device: AudioObjectID,
     _now: NonNull<AudioTimeStamp>,
     input: NonNull<AudioBufferList>,
-    _input_time: NonNull<AudioTimeStamp>,
+    input_time: NonNull<AudioTimeStamp>,
     _output: NonNull<AudioBufferList>,
     _output_time: NonNull<AudioTimeStamp>,
     client: *mut c_void,
@@ -373,6 +542,8 @@ unsafe extern "C" fn io_proc(
     // `mBuffers` is a C flexible array: take the pointer from the list, not from the 1-element field.
     let first = unsafe { std::ptr::addr_of!((*list).mBuffers) }.cast::<AudioBuffer>();
     let bufs: &[AudioBuffer] = unsafe { std::slice::from_raw_parts(first, n) };
+    // Before the samples go in: a boundary marks where they start.
+    ctx.observe(unsafe { input_time.as_ref() }, frame_count(bufs));
     mix_to_mono(bufs, &ctx.ring);
     ctx.callbacks.fetch_add(1, Ordering::Relaxed);
     0
@@ -401,6 +572,19 @@ fn is_stalled(silent_for: Duration, device_alive: bool, sources_playing: bool) -
     silent_for > STALL && (!device_alive || sources_playing)
 }
 
+/// `kAudioDevicePropertyDeviceIsAlive`: only a readable non-zero value is alive.
+fn is_alive(prop: Option<u32>) -> bool {
+    prop.is_some_and(|v| v != 0)
+}
+
+/// Silence (16 kHz samples) to emit before a block of `block` samples so the block ends at real time
+/// (`real` samples since the start) when the stream has fallen more than [`PAD_AFTER_MS`] behind;
+/// `block == 0` pads up to now.
+fn silence_before(real: u64, emitted: u64, block: u64) -> usize {
+    let behind = real.saturating_sub(emitted + block);
+    if behind > PAD_AFTER_MS * RATE / 1000 { behind as usize } else { 0 }
+}
+
 /// True when a rate known at open time is now known to be different (unreadable is not a change).
 fn rate_changed(opened: Option<u32>, now: Option<u32>) -> bool {
     matches!((opened, now), (Some(a), Some(b)) if a != b)
@@ -422,8 +606,9 @@ struct Tap {
 }
 
 impl Tap {
+    /// An unreadable `DeviceIsAlive` (the aggregate was destroyed or invalidated) counts as dead.
     fn device_alive(&self) -> bool {
-        get::<u32>(self.agg, kAudioDevicePropertyDeviceIsAlive, None) != Some(0)
+        is_alive(get::<u32>(self.agg, kAudioDevicePropertyDeviceIsAlive, None))
     }
 
     /// Whether any process this tap listens to is playing.
@@ -442,9 +627,34 @@ impl Tap {
         unsafe { self.ctx.as_ref() }
     }
 
-    fn drain_into(&self, out: &mut Vec<f32>) {
+    /// Drain up to the next format boundary; true when it stopped at one.
+    fn drain_into(&self, out: &mut Vec<f32>) -> bool {
+        self.ctx().is_some_and(|c| c.ring.drain_into(out))
+    }
+
+    fn boundaries(&self) -> u64 {
+        self.ctx().map_or(0, |c| c.boundaries.load(Ordering::Relaxed))
+    }
+
+    /// The rate audio arrives at now (the device's, else the tap's), as at open.
+    fn rate_now(&self) -> Option<u32> {
+        device_rate(self.agg).or_else(|| tap_rate(self.tap))
+    }
+
+    /// The rate the IO timestamps implied most recently (unknown right after a timeline jump).
+    fn implied_rate(&self) -> Option<f64> {
+        self.ctx().map(|c| f64::from_bits(c.implied_rate.load(Ordering::Relaxed))).filter(|r| *r > 0.0)
+    }
+
+    /// After a boundary: resample at `rate` from now on, and expect the IO timestamps to imply what
+    /// they imply now (so a device whose timestamps run slightly off doesn't flag every cycle).
+    fn settle(&mut self, rate: u32) {
+        self.rate = rate;
+        self.opened_tap_rate = tap_rate(self.tap);
+        self.opened_device_rate = device_rate(self.agg);
+        let expect = self.implied_rate().map_or(rate, |r| r.round() as u32);
         if let Some(c) = self.ctx() {
-            c.ring.drain_into(out);
+            c.expected_rate.store(expect, Ordering::Relaxed);
         }
     }
 
@@ -488,8 +698,10 @@ fn any(o: &NSObject) -> &AnyObject {
     o
 }
 
-/// Tap `objects` (or, with `exclude`, every process except them) and start receiving audio.
-fn open_tap(objects: &[AudioObjectID], exclude: bool) -> anyhow::Result<Tap> {
+/// Tap `objects` (or, with `exclude`, every process except them) and start receiving audio, unless
+/// `stop` is set by then: creating the tap can block (the first one waits on the permission prompt),
+/// and a tap that finishes opening after Stop must never start capturing.
+fn open_tap(objects: &[AudioObjectID], exclude: bool, stop: &AtomicBool) -> anyhow::Result<Tap> {
     let mut tap = Tap {
         tap: kAudioObjectUnknown,
         agg: kAudioObjectUnknown,
@@ -563,16 +775,18 @@ fn open_tap(objects: &[AudioObjectID], exclude: bool) -> anyhow::Result<Tap> {
         .opened_device_rate
         .or(tap.opened_tap_rate)
         .ok_or_else(|| anyhow::anyhow!("tap has no usable sample rate"))?;
-    tap.ctx = Box::into_raw(Box::new(Ctx {
-        ring: Ring::new(tap.rate as usize * RING_SECS),
-        callbacks: AtomicU64::new(0),
-    }));
+    tap.ctx = Box::into_raw(Box::new(Ctx::new(tap.rate)));
     // `extern "C"` and `extern "C-unwind"` share the calling convention; only unwinding differs, and
     // `io_proc` never unwinds (a panic aborts at its boundary).
     let proc: AudioDeviceIOProc = Some(unsafe { std::mem::transmute::<IoProc, IoProcUnwind>(io_proc as IoProc) });
     status("AudioDeviceCreateIOProcID", unsafe {
         AudioDeviceCreateIOProcID(tap.agg, proc, tap.ctx.cast(), NonNull::from(&mut tap.proc_id))
     })?;
+    // Last moment before IO starts: a Stop that came in while the tap was opening wins (the tap is
+    // torn down by its Drop without ever having captured).
+    if stop.load(Ordering::SeqCst) {
+        anyhow::bail!("{STOPPED}");
+    }
     status("AudioDeviceStart", unsafe { AudioDeviceStart(tap.agg, tap.proc_id) })?;
     Ok(tap)
 }
@@ -606,10 +820,11 @@ impl Seen {
     }
 }
 
-fn all_sound(seen: &Seen, loud: bool) -> (Option<Tap>, CaptureMode) {
+fn all_sound(seen: &Seen, loud: bool, stop: &AtomicBool) -> (Option<Tap>, CaptureMode) {
     let exclude: Vec<AudioObjectID> = seen.own.into_iter().collect();
-    match open_tap(&exclude, true) {
+    match open_tap(&exclude, true, stop) {
         Ok(t) => (Some(t), CaptureMode::AllSound),
+        Err(_) if stop.load(Ordering::SeqCst) => (None, CaptureMode::MicOnly),
         Err(e) => {
             if loud {
                 tracing::warn!(error = %e, "all-sound tap failed; recording the mic only");
@@ -621,22 +836,25 @@ fn all_sound(seen: &Seen, loud: bool) -> (Option<Tap>, CaptureMode) {
     }
 }
 
-/// Open the capture for `target`. `loud` logs failures as warnings (retries log quietly).
-fn connect(target: Target, seen: &Seen, loud: bool) -> (Option<Tap>, CaptureMode) {
+/// Open the capture for `target`. `loud` logs failures as warnings (retries log quietly). Opens
+/// nothing once `stop` is set.
+fn connect(target: Target, seen: &Seen, loud: bool, stop: &AtomicBool) -> (Option<Tap>, CaptureMode) {
     match target {
-        Target::AllSound => all_sound(seen, loud),
+        _ if stop.load(Ordering::SeqCst) => (None, CaptureMode::MicOnly),
+        Target::AllSound => all_sound(seen, loud, stop),
         Target::Teams if !seen.teams_running => (None, CaptureMode::MicOnly),
         // Teams is running but hasn't opened audio yet: nothing to tap until it does (rechecked).
         Target::Teams if seen.teams.is_empty() => (None, CaptureMode::TeamsOnly),
-        Target::Teams => match open_tap(&seen.teams, false) {
+        Target::Teams => match open_tap(&seen.teams, false, stop) {
             Ok(t) => (Some(t), CaptureMode::TeamsOnly),
+            Err(_) if stop.load(Ordering::SeqCst) => (None, CaptureMode::MicOnly),
             Err(e) => {
                 if loud {
                     tracing::warn!(error = %e, "Teams tap failed; capturing all computer sound");
                 } else {
                     tracing::debug!(error = %e, "Teams tap failed again");
                 }
-                all_sound(seen, loud)
+                all_sound(seen, loud, stop)
             }
         },
     }
@@ -686,6 +904,16 @@ fn decide(c: &Check) -> Action {
     }
 }
 
+fn resampler(rate: u32) -> Option<Resampler16k> {
+    match Resampler16k::new(rate) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            tracing::warn!(error = %e, rate, "cannot resample Teams audio");
+            None
+        }
+    }
+}
+
 /// The current capture: tap (if any), its resampler and liveness bookkeeping.
 struct Conn {
     tap: Option<Tap>,
@@ -693,38 +921,68 @@ struct Conn {
     resampler: Option<Resampler16k>,
     callbacks: u64,
     last_io: Instant,
+    /// Stopped at a format boundary (since then): nothing after it is resampled until its rate is known.
+    boundary: Option<Instant>,
 }
 
 impl Conn {
     fn new(tap: Option<Tap>, mode: CaptureMode) -> Self {
-        let resampler = tap.as_ref().and_then(|t| match Resampler16k::new(t.rate) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                tracing::warn!(error = %e, rate = t.rate, "cannot resample Teams audio");
-                None
-            }
-        });
-        Self { tap, mode, resampler, callbacks: 0, last_io: Instant::now() }
+        let resampler = tap.as_ref().and_then(|t| resampler(t.rate));
+        Self { tap, mode, resampler, callbacks: 0, last_io: Instant::now(), boundary: None }
     }
 
-    /// Move what the IO thread delivered through the resampler into `out`.
+    /// Move what the IO thread delivered through the resampler into `out`. At a format boundary the
+    /// rate is settled before anything after it is resampled: a new rate flushes the old resampler and
+    /// starts one at the new rate, so new-rate audio is never resampled at the old rate.
     fn pump(&mut self, raw: &mut Vec<f32>, out: &mut Vec<f32>) {
-        let Some(t) = &self.tap else { return };
+        let Some(t) = self.tap.as_mut() else { return };
         let n = t.callbacks();
         if n != self.callbacks {
             self.callbacks = n;
             self.last_io = Instant::now();
         }
-        raw.clear();
-        t.drain_into(raw);
-        if let Some(r) = self.resampler.as_mut() {
-            let _ = r.push(raw, out);
+        // Each pass ends at a boundary or at the end of what has arrived; a few is plenty per tick.
+        for _ in 0..4 {
+            if let Some(since) = self.boundary {
+                match at_boundary(t.rate, t.rate_now(), t.implied_rate(), since.elapsed() >= BOUNDARY_HOLD) {
+                    AtBoundary::Wait => return,
+                    AtBoundary::Same => t.settle(t.rate),
+                    AtBoundary::Retune(rate) => {
+                        tracing::info!(
+                            from = t.rate,
+                            to = rate,
+                            boundaries = t.boundaries(),
+                            "Teams audio rate changed; resampling at the new rate"
+                        );
+                        if let Some(r) = self.resampler.as_mut() {
+                            let _ = r.finish(out);
+                        }
+                        self.resampler = resampler(rate);
+                        t.settle(rate);
+                    }
+                }
+                self.boundary = None;
+            }
+            raw.clear();
+            let at_boundary = t.drain_into(raw);
+            if let Some(r) = self.resampler.as_mut() {
+                let _ = r.push(raw, out);
+            }
+            if !at_boundary {
+                return;
+            }
+            self.boundary = Some(Instant::now());
         }
     }
 
-    /// Pump and flush the resampler's tail before this capture is replaced.
+    /// Flush the resampler's tail before this capture is replaced. What is still queued is pumped only
+    /// when it is known to be at the resampler's rate; otherwise it is dropped (never resampled at the
+    /// wrong rate).
     fn finish(&mut self, raw: &mut Vec<f32>, out: &mut Vec<f32>) {
-        self.pump(raw, out);
+        let same_rate = self.tap.as_ref().is_some_and(|t| t.rate_now() == Some(t.rate) && !t.format_changed());
+        if same_rate && self.boundary.is_none() {
+            self.pump(raw, out);
+        }
         if let Some(r) = self.resampler.as_mut() {
             let _ = r.finish(out);
         }
@@ -762,7 +1020,7 @@ impl AudioSource for TeamsTap {
         let thread = std::thread::Builder::new().name("wren-teams-audio".into()).spawn(move || {
             let started = Instant::now();
             let mut seen = look();
-            let (tap, mode) = connect(target, &seen, true);
+            let (tap, mode) = connect(target, &seen, true, &stop);
             let mut conn = Conn::new(tap, mode);
             {
                 let late = late_thread.lock();
@@ -784,20 +1042,24 @@ impl AudioSource for TeamsTap {
                 *emitted += samples.len() as u64;
                 tx.send(AudioBlock { samples, stream_pos_ms: pos }).is_ok()
             };
+            // Audio that arrives after a stall (slow open, reconnect) keeps its real time: the gap
+            // before it is filled with silence first, as in `mic.rs`.
+            let emit = |samples: Vec<f32>, emitted: &mut u64| {
+                let real = started.elapsed().as_millis() as u64 * RATE / 1000;
+                let gap = silence_before(real, *emitted, samples.len() as u64);
+                (gap == 0 || send(vec![0.0; gap], emitted)) && send(samples, emitted)
+            };
             'run: while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(TICK);
                 conn.pump(&mut raw, &mut out);
-                if !out.is_empty() && !send(std::mem::take(&mut out), &mut emitted) {
+                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted) {
                     break 'run;
                 }
                 // Keep up with real time when nothing (or too little) arrives.
-                let real = started.elapsed().as_millis() as u64;
-                let have = emitted * 1000 / RATE;
-                if real > have + PAD_AFTER_MS {
-                    let missing = ((real - have) * RATE / 1000) as usize;
-                    if !send(vec![0.0; missing], &mut emitted) {
-                        break 'run;
-                    }
+                let real = started.elapsed().as_millis() as u64 * RATE / 1000;
+                let gap = silence_before(real, emitted, 0);
+                if gap > 0 && !send(vec![0.0; gap], &mut emitted) {
+                    break 'run;
                 }
 
                 let (format_changed, stalled) = if last_health.elapsed() >= HEALTH_CHECK {
@@ -840,7 +1102,7 @@ impl AudioSource for TeamsTap {
                         }
                         conn.finish(&mut raw, &mut out);
                         drop(conn.tap.take());
-                        let (t, m) = connect(target, &now, loud);
+                        let (t, m) = connect(target, &now, loud, &stop);
                         if m == CaptureMode::AllSound && conn.mode != CaptureMode::AllSound {
                             last_upgrade = Instant::now();
                         }
@@ -848,7 +1110,7 @@ impl AudioSource for TeamsTap {
                     }
                     Action::TryTeams => {
                         last_upgrade = Instant::now();
-                        match open_tap(&now.teams, false) {
+                        match open_tap(&now.teams, false, &stop) {
                             Ok(t) => {
                                 tracing::info!("Teams tap opened; leaving the all-sound fallback");
                                 conn.finish(&mut raw, &mut out);
@@ -869,7 +1131,7 @@ impl AudioSource for TeamsTap {
                         let _ = mode_tx.send(conn.mode);
                     }
                 }
-                if !out.is_empty() && !send(std::mem::take(&mut out), &mut emitted) {
+                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted) {
                     break 'run;
                 }
             }
@@ -889,9 +1151,20 @@ impl AudioSource for TeamsTap {
     }
 
     fn stop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::SeqCst);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // Creating a tap can block inside Core Audio (the permission prompt, a wedged coreaudiod):
+            // never let that hang Stop or quitting. Wait briefly, then leave the thread to finish on
+            // its own; it checks the flag before starting IO, so it never starts capturing after this.
+            let until = Instant::now() + STOP_JOIN;
+            while !t.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                tracing::warn!("Teams audio capture didn't stop in time; leaving it to finish on its own");
+            }
         }
     }
 }
@@ -936,6 +1209,236 @@ pub fn open_system_audio_settings() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stop flag that is never set.
+    static RUN: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn ring_stops_at_a_boundary_and_consumes_it() {
+        let ring = Ring::new(16);
+        ring.push_with(3, |i| i as f32);
+        ring.mark_boundary();
+        ring.push_with(2, |i| 10.0 + i as f32);
+        // A second boundary before the first is consumed is not kept.
+        ring.mark_boundary();
+        ring.push_with(1, |_| 20.0);
+        let mut out = Vec::new();
+        assert!(ring.drain_into(&mut out), "stopped at the boundary");
+        assert_eq!(out, vec![0.0, 1.0, 2.0]);
+        out.clear();
+        assert!(!ring.drain_into(&mut out));
+        assert_eq!(out, vec![10.0, 11.0, 20.0]);
+    }
+
+    #[test]
+    fn ring_boundary_with_nothing_before_it() {
+        let ring = Ring::new(16);
+        ring.mark_boundary();
+        ring.push_with(2, |i| i as f32);
+        let mut out = Vec::new();
+        assert!(ring.drain_into(&mut out));
+        assert!(out.is_empty());
+        assert!(!ring.drain_into(&mut out));
+        assert_eq!(out, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn ring_boundary_not_yet_reached_is_kept() {
+        let ring = Ring::new(16);
+        ring.push_with(2, |i| i as f32);
+        let mut out = Vec::new();
+        assert!(!ring.drain_into(&mut out));
+        ring.mark_boundary();
+        ring.push_with(1, |_| 5.0);
+        out.clear();
+        assert!(ring.drain_into(&mut out));
+        assert!(out.is_empty(), "nothing between the last drain and the boundary");
+        assert!(!ring.drain_into(&mut out));
+        assert_eq!(out, vec![5.0]);
+    }
+
+    const HZ: f64 = 24_000_000.0; // Apple silicon host clock
+
+    fn cycle(sample: f64, secs: f64, frames: usize) -> Cycle {
+        Cycle { sample, host: (secs * HZ) as u64, frames }
+    }
+
+    #[test]
+    fn steps_find_jumps_and_implied_rates() {
+        let a = cycle(0.0, 1.0, 480);
+        // 480 frames in 10 ms: 48 kHz.
+        let Step::Rate(r) = step(a, cycle(480.0, 1.010, 480), HZ) else { panic!() };
+        assert!((r - 48_000.0).abs() < 1.0);
+        // Same frames, 10.88 ms: 44.1 kHz.
+        let Step::Rate(r) = step(a, cycle(480.0, 1.0 + 480.0 / 44_100.0, 480), HZ) else { panic!() };
+        assert!(off_rate(r, 48_000.0) && !off_rate(r, 44_100.0));
+        // IO restarted: the timeline starts over.
+        assert_eq!(step(a, cycle(0.0, 1.5, 480), HZ), Step::Jump);
+        assert_eq!(step(a, cycle(10_000.0, 1.2, 480), HZ), Step::Jump);
+        // Host time didn't move: nothing to say.
+        assert_eq!(step(a, cycle(480.0, 1.0, 480), HZ), Step::Unknown);
+        assert!(!off_rate(48_100.0, 48_000.0), "clock drift is not a format change");
+    }
+
+    #[test]
+    fn boundary_waits_for_property_and_timestamps_to_agree() {
+        // Rate changed and the property already says so.
+        assert_eq!(at_boundary(48_000, Some(24_000), Some(24_010.0), false), AtBoundary::Retune(24_000));
+        // A jump (overload, restart) at the same rate.
+        assert_eq!(at_boundary(48_000, Some(48_000), Some(47_990.0), false), AtBoundary::Same);
+        // The timestamps already run at 24 kHz but the property still says 48: hold.
+        assert_eq!(at_boundary(48_000, Some(48_000), Some(24_000.0), false), AtBoundary::Wait);
+        // No cycle measured since the jump yet: hold.
+        assert_eq!(at_boundary(48_000, Some(24_000), None, false), AtBoundary::Wait);
+        // Property unreadable: the timestamps decide whether it's still the same rate.
+        assert_eq!(at_boundary(48_000, None, Some(48_000.0), false), AtBoundary::Same);
+        assert_eq!(at_boundary(48_000, None, Some(16_000.0), false), AtBoundary::Wait);
+        // Held long enough: the property decides.
+        assert_eq!(at_boundary(48_000, Some(48_000), Some(24_000.0), true), AtBoundary::Same);
+        assert_eq!(at_boundary(48_000, Some(16_000), None, true), AtBoundary::Retune(16_000));
+        assert_eq!(at_boundary(48_000, None, None, true), AtBoundary::Same);
+    }
+
+    #[test]
+    fn resampler_restarts_at_a_rate_boundary() {
+        // 0.5 s at 48 kHz, a boundary, 0.5 s at 24 kHz: 16 kHz output is 0.5 s + 0.5 s, not the
+        // 0.25 s the 24 kHz half would shrink to through a 48 kHz resampler.
+        let ring = Ring::new(65_536);
+        ring.push_with(24_000, |_| 0.1);
+        ring.mark_boundary();
+        ring.push_with(12_000, |_| 0.1);
+        let mut current = Resampler16k::new(48_000).unwrap();
+        let (mut raw, mut out) = (Vec::new(), Vec::new());
+        assert!(ring.drain_into(&mut raw));
+        current.push(&raw, &mut out).unwrap();
+        assert_eq!(at_boundary(48_000, Some(24_000), Some(24_000.0), false), AtBoundary::Retune(24_000));
+        current.finish(&mut out).unwrap();
+        let mut current = Resampler16k::new(24_000).unwrap();
+        raw.clear();
+        assert!(!ring.drain_into(&mut raw));
+        current.push(&raw, &mut out).unwrap();
+        current.finish(&mut out).unwrap();
+        assert_eq!(out.len(), 16_000);
+    }
+
+    #[test]
+    fn silence_goes_before_late_audio() {
+        let pad = (PAD_AFTER_MS * RATE / 1000) as usize;
+        // On time: nothing to pad.
+        assert_eq!(silence_before(16_000, 14_400, 1_600), 0);
+        // Slightly behind (under the threshold): nothing.
+        assert_eq!(silence_before(16_000 + pad as u64, 14_400, 1_600), 0);
+        // 2 s stall, then a 100 ms block: 2 s of silence first so the block ends at real time.
+        assert_eq!(silence_before(48_000, 14_400, 1_600), 48_000 - 14_400 - 1_600);
+        // Nothing arrived: pad up to now.
+        assert_eq!(silence_before(48_000, 14_400, 0), 48_000 - 14_400);
+        // Ahead of real time (a burst): never negative.
+        assert_eq!(silence_before(1_000, 5_000, 1_600), 0);
+    }
+
+    #[test]
+    fn unreadable_device_is_dead() {
+        assert!(is_alive(Some(1)));
+        assert!(!is_alive(Some(0)));
+        assert!(!is_alive(None), "an error reading DeviceIsAlive means the aggregate is gone");
+    }
+
+    #[test]
+    fn stop_is_bounded_when_the_worker_is_stuck() {
+        let stop = Arc::new(AtomicBool::new(false));
+        // A worker stuck in Core Audio (e.g. tap creation waiting on the permission prompt).
+        let stuck = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(6)));
+        let mut tap = TeamsTap { target: Target::Teams, stop: stop.clone(), thread: Some(stuck) };
+        let t0 = Instant::now();
+        tap.stop();
+        assert!(t0.elapsed() < STOP_JOIN + Duration::from_millis(500), "stop took {:?}", t0.elapsed());
+        assert!(stop.load(Ordering::SeqCst));
+        // A worker that ends promptly is joined.
+        let quick = std::thread::spawn(|| ());
+        let mut tap = TeamsTap { target: Target::Teams, stop: Arc::new(AtomicBool::new(false)), thread: Some(quick) };
+        let t0 = Instant::now();
+        tap.stop();
+        assert!(t0.elapsed() < Duration::from_millis(500));
+        assert!(tap.thread.is_none());
+    }
+
+    #[test]
+    fn nothing_connects_once_stopped() {
+        let stopped = AtomicBool::new(true);
+        let seen = Seen { teams_running: true, teams: vec![1], own: None };
+        let (tap, mode) = connect(Target::Teams, &seen, true, &stopped);
+        assert!(tap.is_none());
+        assert_eq!(mode, CaptureMode::MicOnly);
+        assert!(connect(Target::AllSound, &seen, true, &stopped).0.is_none());
+    }
+
+    #[test]
+    #[ignore = "live: creates a Core Audio tap"]
+    fn live_tap_opened_after_stop_never_starts() {
+        let stopped = AtomicBool::new(true);
+        let own: Vec<AudioObjectID> = own_process_object().into_iter().collect();
+        let err = open_tap(&own, true, &stopped).err().expect("refused");
+        eprintln!("opening after stop: {err}");
+        assert_eq!(err.to_string(), STOPPED);
+        // And a healthy private aggregate reports itself alive (DeviceIsAlive reads 1).
+        let tap = open_tap(&own, true, &RUN).expect("all-sound tap");
+        let alive = get::<u32>(tap.agg, kAudioDevicePropertyDeviceIsAlive, None);
+        eprintln!("healthy aggregate DeviceIsAlive = {alive:?}");
+        assert_eq!(alive, Some(1));
+        assert!(tap.device_alive());
+    }
+
+    #[test]
+    #[ignore = "live: plays a tone; changes a private aggregate's rate; needs System Audio Recording permission"]
+    fn live_aggregate_rate_change_is_resampled_at_the_new_rate() {
+        let wav = std::env::temp_dir().join(format!("wren-tone-{}.wav", uuid::Uuid::new_v4()));
+        tone_wav(&wav, 9.0);
+        let mut play = std::process::Command::new("/usr/bin/afplay").arg(&wav).spawn().unwrap();
+        let pid = play.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let obj = loop {
+            if let Some(p) = audio_processes().into_iter().find(|p| p.pid == pid) {
+                break p.object;
+            }
+            assert!(Instant::now() < deadline, "afplay never registered with Core Audio");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut conn = Conn::new(Some(open_tap(&[obj], false, &RUN).expect("process tap")), CaptureMode::TeamsOnly);
+        let opened = conn.tap.as_ref().unwrap().rate;
+        let other = if opened == 48_000 { 24_000 } else { 48_000 };
+        let (mut raw, mut out) = (Vec::new(), Vec::new());
+        let run = |conn: &mut Conn, raw: &mut Vec<f32>, out: &mut Vec<f32>, ms: u64| {
+            let end = Instant::now() + Duration::from_millis(ms);
+            while Instant::now() < end {
+                std::thread::sleep(TICK);
+                conn.pump(raw, out);
+            }
+        };
+        run(&mut conn, &mut raw, &mut out, 2_000);
+        let before = out.split_off(0);
+        // What a Bluetooth headset switching to hands-free looks like to the IO proc.
+        set_nominal_rate(conn.tap.as_ref().unwrap().agg, other as f64);
+        run(&mut conn, &mut raw, &mut out, 3_000);
+        let t = conn.tap.as_ref().unwrap();
+        let (now_rate, boundaries, implied, changed) = (t.rate, t.boundaries(), t.implied_rate(), t.format_changed());
+        drop(conn);
+        let _ = play.kill();
+        let _ = play.wait();
+        let _ = std::fs::remove_file(&wav);
+        let after = &out[out.len().saturating_sub(32_000)..];
+        let (f_before, f_after) = (frequency(&before[8_000..], 16_000.0), frequency(after, 16_000.0));
+        eprintln!(
+            "aggregate {opened} -> {other} Hz: resampling at {now_rate} Hz, {boundaries} boundaries, implied {implied:?}, \
+             format changed {changed}; tone before {f_before:.0} Hz, after {f_after:.0} Hz, {} / {} samples",
+            before.len(),
+            out.len()
+        );
+        assert_eq!(now_rate, other, "resampler follows the new rate");
+        assert!(out.len() >= 16_000 * 5 / 2, "no audio lost across the switch");
+        assert!(!changed, "no reconnect needed");
+        assert!((f_before - 1_000.0).abs() < 30.0);
+        assert!((f_after - 1_000.0).abs() < 30.0, "tone keeps its pitch after the rate change");
+    }
 
     fn p(object: u32, pid: i32, ppid: i32, bundle: &str) -> AudioProc {
         AudioProc { object, pid, ancestors: if ppid > 0 { vec![ppid] } else { vec![] }, bundle_id: bundle.into() }
@@ -1216,7 +1719,7 @@ mod tests {
         }
         if !seen.teams.is_empty() {
             // Liveness relies on the tap calling back even while Teams is silent.
-            let tap = open_tap(&seen.teams, false).expect("Teams tap");
+            let tap = open_tap(&seen.teams, false, &RUN).expect("Teams tap");
             let first = tap.callbacks();
             std::thread::sleep(Duration::from_millis(4_000));
             let calls = tap.callbacks() - first;
@@ -1266,7 +1769,7 @@ mod tests {
             assert!(Instant::now() < deadline, "afplay never registered with Core Audio");
             std::thread::sleep(Duration::from_millis(50));
         };
-        let tap = open_tap(&[obj], false).expect("process tap");
+        let tap = open_tap(&[obj], false, &RUN).expect("process tap");
         let rate = tap.rate;
         let end = Instant::now() + Duration::from_millis(1_500);
         let mut raw = Vec::new();
@@ -1275,8 +1778,10 @@ mod tests {
             tap.drain_into(&mut raw);
         }
         let callbacks = tap.callbacks();
+        let (boundaries, implied) = (tap.boundaries(), tap.implied_rate());
         drop(tap);
-        eprintln!("{callbacks} IO callbacks in 1.5 s");
+        eprintln!("{callbacks} IO callbacks in 1.5 s, {boundaries} boundaries, implied rate {implied:?}");
+        assert!(boundaries <= 1, "a steady tap doesn't flag format boundaries");
         let _ = play.kill();
         let _ = play.wait();
         let _ = std::fs::remove_file(&wav);
@@ -1321,17 +1826,20 @@ mod tests {
         assert_eq!(src.start(tx, mtx).unwrap(), CaptureMode::AllSound);
         let mut play = std::process::Command::new("/usr/bin/afplay").arg(&wav).spawn().unwrap();
         // A second, bare tap to watch what Core Audio reports.
-        let probe = open_tap(&own_process_object().into_iter().collect::<Vec<_>>(), true).expect("probe tap");
+        let probe = open_tap(&own_process_object().into_iter().collect::<Vec<_>>(), true, &RUN).expect("probe tap");
         let before = collect(&rx, 2_500);
         set_nominal_rate(device, other as f64);
         let switched = collect(&rx, 4_000);
         eprintln!(
-            "probe tap after switch: tap {:?} Hz, device {:?} Hz (opened at {:?} / {:?}), format changed {}",
+            "probe tap after switch: tap {:?} Hz, device {:?} Hz (opened at {:?} / {:?}), format changed {}, {} boundaries, implied {:?} Hz, alive {}",
             tap_rate(probe.tap),
             device_rate(probe.agg),
             probe.opened_tap_rate,
             probe.opened_device_rate,
-            probe.format_changed()
+            probe.format_changed(),
+            probe.boundaries(),
+            probe.implied_rate(),
+            probe.device_alive()
         );
         drop(probe);
         set_nominal_rate(device, original as f64);
@@ -1375,7 +1883,7 @@ mod tests {
             assert!(Instant::now() < deadline, "afplay never registered with Core Audio");
             std::thread::sleep(Duration::from_millis(50));
         };
-        let mut conn = Conn::new(Some(open_tap(&[obj], false).expect("process tap")), CaptureMode::TeamsOnly);
+        let mut conn = Conn::new(Some(open_tap(&[obj], false, &RUN).expect("process tap")), CaptureMode::TeamsOnly);
         let (mut raw, mut out) = (Vec::new(), Vec::new());
         std::thread::sleep(Duration::from_millis(1_000));
         conn.pump(&mut raw, &mut out);
