@@ -26,6 +26,10 @@ const TICK: Duration = Duration::from_millis(100);
 const PAD_AFTER_MS: u64 = 300;
 /// How often to look for Teams appearing, restarting or quitting.
 const RECHECK: Duration = Duration::from_secs(5);
+/// While on the all-sound fallback, how often to try Teams-only again.
+const UPGRADE_RETRY: Duration = Duration::from_secs(30);
+/// Longest Stop waits for the capture thread.
+const STOP_JOIN: Duration = Duration::from_secs(2);
 
 /// Which target to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,14 +149,17 @@ impl AudioSource for TeamsLoopback {
             let mut emitted: u64 = 0; // samples
             let mut bytes: VecDeque<u8> = VecDeque::new();
             let mut last_check = Instant::now();
+            let mut last_upgrade = Instant::now();
             while !stop.load(Ordering::Relaxed) {
                 match &client {
                     Some(c) => {
                         let _ = c.event.wait_for_event(TICK.as_millis() as u32);
                         if c.capture.read_from_device_to_deque(&mut bytes).is_err() {
+                            // Device change, Teams quitting: reconnect now rather than at the next recheck.
                             tracing::warn!("Teams audio capture stopped; reconnecting");
                             client = None;
                             pid = None;
+                            last_check = Instant::now() - RECHECK;
                         }
                     }
                     None => std::thread::sleep(TICK),
@@ -184,7 +191,22 @@ impl AudioSource for TeamsLoopback {
                 if target == Target::Teams && last_check.elapsed() >= RECHECK {
                     last_check = Instant::now();
                     let now_pid = teams_pid();
-                    if now_pid != pid || client.is_none() && now_pid.is_some() {
+                    // Reconnect when Teams appears, restarts or quits, when capture was lost, and keep
+                    // retrying Teams-only after falling back to all computer sound.
+                    let lost = client.is_none() && (now_pid.is_some() || mode != CaptureMode::MicOnly);
+                    if mode == CaptureMode::AllSound && now_pid == pid && !lost {
+                        // Fell back to all sound: every 30 s, try Teams-only again; swap only if it opens.
+                        if last_upgrade.elapsed() >= UPGRADE_RETRY {
+                            last_upgrade = Instant::now();
+                            if let Some(p) = now_pid {
+                                if let Ok(c) = open_client(p, true) {
+                                    client = Some(c);
+                                    mode = CaptureMode::TeamsOnly;
+                                    let _ = mode_tx.send(mode);
+                                }
+                            }
+                        }
+                    } else if now_pid != pid || lost {
                         let (c, m, p) = connect(Target::Teams);
                         client = c;
                         pid = p;
@@ -213,7 +235,17 @@ impl AudioSource for TeamsLoopback {
     fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // WASAPI process-loopback activation can, rarely, never complete (the wasapi crate waits on
+            // it without a timeout). Never let that hang Stop or quitting: wait briefly, then leave it.
+            let until = Instant::now() + STOP_JOIN;
+            while !t.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                tracing::warn!("Teams audio capture didn't stop in time; leaving it to finish on its own");
+            }
         }
     }
 }

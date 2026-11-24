@@ -191,6 +191,9 @@ pub fn tiptap_to_markdown(doc: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "event", rename_all = "camelCase")]
 pub enum NoteEvent {
+    /// A run began (sent before Claude's first token, so the page shows "Writing…" at once).
+    #[serde(rename_all = "camelCase")]
+    Started { meeting_id: String, length: Length },
     #[serde(rename_all = "camelCase")]
     Delta { meeting_id: String, length: Length, text: String },
     Done { note: NoteRow },

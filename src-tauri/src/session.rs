@@ -848,7 +848,10 @@ impl SessionLoop {
     fn stop(&mut self, intent: Intent) {
         let Some(a) = self.active.take() else { return };
         let env = self.env.clone();
-        let Some(rec) = env.recorder() else { return };
+        let Some(rec) = env.recorder() else {
+            crate::meetings::dictation_hook(false, Instant::now());
+            return;
+        };
         // Spec §7: the target is the window in front when the dictation stops — read before stopping
         // (finishing the WAV takes a moment, and focus can move meanwhile).
         let target = env.foreground();

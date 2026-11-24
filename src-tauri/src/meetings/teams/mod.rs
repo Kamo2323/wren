@@ -55,8 +55,11 @@ pub fn spawn_watcher(
         let mut slow_logged = false;
         while !stop.load(Ordering::Relaxed) {
             let t0 = Instant::now();
-            let at_ms = clock();
-            let obs = match reader.snapshot() {
+            let before = clock();
+            let snap = reader.snapshot();
+            // A tree walk can take a few hundred ms: stamp the read at its middle, not its start.
+            let at_ms = before + (clock().saturating_sub(before)) / 2;
+            let obs = match snap {
                 Some((tree, title)) => {
                     let mut o = parse(&tree, &title);
                     o.at_ms = at_ms;

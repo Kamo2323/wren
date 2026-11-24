@@ -219,6 +219,10 @@ pub fn run() {
                     Ok(n) => tracing::warn!(meetings = n, "meetings interrupted by the last shutdown"),
                     Err(err) => tracing::warn!(error = %err, "could not mark interrupted meetings"),
                 }
+                // A crash leaves WAV headers up to 10 s behind the audio: fix them so ▶ plays everything.
+                for id in store.interrupted_with_audio().unwrap_or_default() {
+                    meetings::capture::wav::repair_meeting_audio(&paths.meeting_dir(&id));
+                }
             }
             let updates_dir = paths.updates_dir();
             let logs_dir = paths.logs_dir();
@@ -391,10 +395,20 @@ pub fn run() {
                     tray::show_main(app);
                 }
             }
+            // Cmd+Q, Dock → Quit, the app menu: with a meeting recording, ask first (spec §5.5).
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                let recording = app.try_state::<meetings::commands::Meetings>().is_some_and(|m| m.0.active().is_some());
+                if recording && !meetings::commands::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                    tray::show_main(app);
+                    let _ = tauri::Emitter::emit(app, meetings::commands::EVENT_CONFIRM_QUIT, ());
+                }
+            }
             if let tauri::RunEvent::Exit = event {
-                // A meeting still recording ends properly (short drain) rather than "interrupted".
+                // A meeting still recording ends properly (short drain, no paid notes request) rather
+                // than "interrupted".
                 if let Some(m) = app.try_state::<meetings::commands::Meetings>() {
-                    m.0.stop_within(std::time::Duration::from_secs(3));
+                    m.0.stop_for_quit(std::time::Duration::from_secs(3));
                 }
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {

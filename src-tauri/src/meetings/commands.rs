@@ -22,6 +22,8 @@ pub const NOTE_EVENT: &str = "meeting://note";
 static GENERATING: parking_lot::Mutex<Vec<(String, Length)>> = parking_lot::Mutex::new(Vec::new());
 /// Quit was chosen while a meeting records: the page asks "Stop meeting notes and quit?".
 pub const EVENT_CONFIRM_QUIT: &str = "meeting://confirm-quit";
+/// Set once the user confirmed "Stop meeting notes and quit?" (lets the exit through).
+pub static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Stop waits this long for queued clips before marking the rest "[not transcribed]".
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// When quitting, wait less.
@@ -134,7 +136,11 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
     let app_ev = app.clone();
     svc.set_listener(Arc::new(move |e: MeetingEvent| {
         if let MeetingEvent::Status { active } = &e {
-            crate::tray::set_meeting_state(&app_ev, active.as_ref().map(|a| a.status));
+            // Queued, never waited on: tray setters hop to the main thread, which may itself be waiting
+            // on the recorder (quit, a sync command) — waiting here would deadlock.
+            let status = active.as_ref().map(|a| a.status);
+            let a = app_ev.clone();
+            let _ = app_ev.run_on_main_thread(move || crate::tray::set_meeting_state(&a, status));
         }
         let _ = app_ev.emit(EVENT, e);
     }));
@@ -159,6 +165,14 @@ fn claude_model(app: &AppHandle) -> String {
     if m == "claude-sonnet-5-5" { m } else { crate::meetings::claude::DEFAULT_MODEL.to_string() }
 }
 
+/// Removes a (meeting, length) from `GENERATING` however the run ends (error, panic, spawn failure).
+struct Generating(String, Length);
+impl Drop for Generating {
+    fn drop(&mut self) {
+        GENERATING.lock().retain(|(i, l)| !(*i == self.0 && *l == self.1));
+    }
+}
+
 /// Start writing a note in the background; false if one for this meeting and length is already running.
 pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
     {
@@ -168,8 +182,11 @@ pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
         }
         g.push((id.clone(), len));
     }
+    let guard = Generating(id.clone(), len);
+    let _ = app.emit(NOTE_EVENT, crate::meetings::enhance::NoteEvent::Started { meeting_id: id.clone(), length: len });
     let app = app.clone();
     let spawned = std::thread::Builder::new().name("wren-notes".into()).spawn(move || {
+        let _guard = guard;
         let state = app.state::<AppState>();
         let (model, me) = (claude_model(&app), meeting_name(&app));
         let _ = crate::meetings::enhance::generate(
@@ -183,7 +200,6 @@ pub fn spawn_enhance(app: &AppHandle, id: String, len: Length) -> bool {
                 let _ = app.emit(NOTE_EVENT, e);
             },
         );
-        GENERATING.lock().retain(|(i, l)| !(*i == id && *l == len));
     });
     spawned.is_ok()
 }
@@ -247,19 +263,27 @@ fn svc(m: &Option<State<'_, Meetings>>) -> Result<Arc<MeetingService>, String> {
     m.as_ref().map(|s| s.0.clone()).ok_or_else(|| "Meetings aren't available: the speech engine didn't start.".into())
 }
 
-#[tauri::command]
-pub fn meeting_start(app: AppHandle, title: Option<String>) -> Result<MeetingRow, String> {
-    svc(&app.try_state::<Meetings>())?.start(title)
+/// Run blocking meeting work off the main thread (opening audio, waiting for the recorder).
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn meeting_pause(app: AppHandle) -> Result<(), String> {
-    svc(&app.try_state::<Meetings>())?.pause()
+pub async fn meeting_start(app: AppHandle, title: Option<String>) -> Result<MeetingRow, String> {
+    let s = svc(&app.try_state::<Meetings>())?;
+    blocking(move || s.start(title)).await
 }
 
 #[tauri::command]
-pub fn meeting_resume(app: AppHandle) -> Result<(), String> {
-    svc(&app.try_state::<Meetings>())?.resume()
+pub async fn meeting_pause(app: AppHandle) -> Result<(), String> {
+    let s = svc(&app.try_state::<Meetings>())?;
+    blocking(move || s.pause()).await
+}
+
+#[tauri::command]
+pub async fn meeting_resume(app: AppHandle) -> Result<(), String> {
+    let s = svc(&app.try_state::<Meetings>())?;
+    blocking(move || s.resume()).await
 }
 
 #[tauri::command]
@@ -273,8 +297,9 @@ pub async fn meeting_stop(app: AppHandle) -> Result<Option<String>, String> {
 pub fn meeting_stop_and_quit(app: AppHandle) {
     std::thread::spawn(move || {
         if let Some(m) = app.try_state::<Meetings>() {
-            m.0.stop_within(QUIT_DRAIN_TIMEOUT);
+            m.0.stop_for_quit(QUIT_DRAIN_TIMEOUT);
         }
+        QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
         app.exit(0);
     });
 }
@@ -291,11 +316,13 @@ pub fn meeting_list(state: State<'_, AppState>) -> Result<Vec<MeetingRow>, Strin
 
 #[tauri::command]
 pub fn meeting_get(state: State<'_, AppState>, id: String) -> Result<Option<MeetingDetail>, String> {
+    valid_id(&id)?;
     detail(&state.store, &id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn meeting_update(state: State<'_, AppState>, id: String, title: Option<String>, my_notes: Option<String>) -> Result<(), String> {
+    valid_id(&id)?;
     state.store.meeting_update(&id, title.as_deref(), my_notes.as_deref(), None, None).map_err(|e| e.to_string())
 }
 
@@ -307,30 +334,34 @@ pub fn meeting_rename_speaker(
     from: Option<String>,
     to: String,
 ) -> Result<usize, String> {
+    valid_id(&id)?;
     state.store.segment_rename(&id, segment_id, from.as_deref(), &to).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn meeting_delete(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    if app.try_state::<Meetings>().and_then(|m| m.0.active()).is_some_and(|a| a.id == id) {
+    valid_id(&id)?;
+    if app.try_state::<Meetings>().is_some_and(|m| m.0.is_busy(&id)) {
         return Err("Stop this meeting before deleting it.".into());
     }
     state.store.meeting_delete(&id, &state.paths.meetings_dir()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn meeting_audio_clip(
+pub async fn meeting_audio_clip(
     state: State<'_, AppState>,
     id: String,
     source: Source,
     start_ms: u64,
     end_ms: u64,
 ) -> Result<Option<String>, String> {
+    valid_id(&id)?;
     let file = match source {
         Source::Me => "me.wav",
         Source::Them => "them.wav",
     };
-    clip_data_url(&state.paths.meeting_dir(&id).join(file), start_ms, end_ms).map_err(|_| "Couldn't read that recording.".to_string())
+    let path = state.paths.meeting_dir(&id).join(file);
+    blocking(move || clip_data_url(&path, start_ms, end_ms).map_err(|_| "Couldn't read that recording.".to_string())).await
 }
 
 #[tauri::command]
@@ -359,6 +390,7 @@ pub fn open_system_audio_settings() {
 /// nothing is sent. Returns whether a run started.
 #[tauri::command]
 pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, length: Length, regenerate: bool) -> Result<bool, String> {
+    valid_id(&id)?;
     if !regenerate && state.store.notes(&id).map_err(|e| e.to_string())?.iter().any(|n| n.length == length) {
         return Ok(false);
     }
@@ -378,8 +410,8 @@ pub struct KeyStatus {
 }
 
 #[tauri::command]
-pub fn claude_key_status() -> KeyStatus {
-    KeyStatus { saved: crate::meetings::claude::KeyStore::system().get().is_some() }
+pub async fn claude_key_status() -> Result<KeyStatus, String> {
+    blocking(|| Ok(KeyStatus { saved: crate::meetings::claude::KeyStore::system().get().is_some() })).await
 }
 
 /// Check the pasted key with a tiny request, then save it. The key is never returned to the page.
@@ -404,8 +436,8 @@ pub async fn claude_key_save(key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn claude_key_remove() -> Result<(), String> {
-    crate::meetings::claude::KeyStore::system().remove()
+pub async fn claude_key_remove() -> Result<(), String> {
+    blocking(|| crate::meetings::claude::KeyStore::system().remove()).await
 }
 
 #[derive(Debug, Clone, Serialize)]

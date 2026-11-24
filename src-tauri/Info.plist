@@ -9,7 +9,7 @@
   <key>NSAppleEventsUsageDescription</key>
   <string>Wren pastes dictated text into the app you are typing in.</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>14.2</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSHighResolutionCapable</key>
