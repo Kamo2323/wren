@@ -40,7 +40,6 @@ type CGEventFlags = u64;
 const K_CG_SESSION_EVENT_TAP: u32 = 1;
 const K_CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
 const K_CG_EVENT_TAP_OPTION_DEFAULT: u32 = 0;
-const K_CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 
 const K_CG_EVENT_KEY_DOWN: u32 = 10;
 const K_CG_EVENT_KEY_UP: u32 = 11;
@@ -439,25 +438,25 @@ unsafe extern "C" fn event_tap_callback(
 }
 
 fn create_event_tap(ctx_ptr: *mut c_void) -> Option<CFMachPortRef> {
+    // Require Accessibility and an active (Default) tap. Never fall back to ListenOnly: on macOS
+    // 15+, ListenOnly returns non-null without Input Monitoring permission yet only delivers events
+    // while Wren itself is focused, silently masking a missing Accessibility grant.
+    if !accessibility_trusted(false) {
+        return None;
+    }
     let mask: CGEventMask =
         (1u64 << K_CG_EVENT_KEY_DOWN) | (1u64 << K_CG_EVENT_KEY_UP) | (1u64 << K_CG_EVENT_FLAGS_CHANGED);
-    // Prefer Default (active) tap so a single Accessibility grant suffices; fall back to ListenOnly.
-    for opts in [K_CG_EVENT_TAP_OPTION_DEFAULT, K_CG_EVENT_TAP_OPTION_LISTEN_ONLY] {
-        let tap = unsafe {
-            CGEventTapCreate(
-                K_CG_SESSION_EVENT_TAP,
-                K_CG_HEAD_INSERT_EVENT_TAP,
-                opts,
-                mask,
-                event_tap_callback,
-                ctx_ptr,
-            )
-        };
-        if !tap.is_null() {
-            return Some(tap);
-        }
-    }
-    None
+    let tap = unsafe {
+        CGEventTapCreate(
+            K_CG_SESSION_EVENT_TAP,
+            K_CG_HEAD_INSERT_EVENT_TAP,
+            K_CG_EVENT_TAP_OPTION_DEFAULT,
+            mask,
+            event_tap_callback,
+            ctx_ptr,
+        )
+    };
+    (!tap.is_null()).then_some(tap)
 }
 
 /// Owned observer tokens removed from `NSWorkspace` / `NSDistributedNotificationCenter` on drop.
