@@ -1,6 +1,6 @@
 # Wren — handoff and decision log
 
-## Status (2026-11-24) — Meetings feature: research done, design questions with Maximilian
+## Status (2026-11-24) — Meetings feature: spec drafted, awaiting approval
 
 ### Completed
 - Reverse-engineered Granola (static only; couldn't log in) and Notion AI Meeting Notes (static, no recording started):
@@ -16,7 +16,7 @@
 - Enhancement uses his Anthropic API credit (Claude API, default model `claude-opus-5-5`; Rust has no official SDK, so raw HTTPS via reqwest).
 
 ### Next step
-- Waiting on his answers to the approach questions (why/what for, local vs cloud live transcription, speaker names, auto-detect, audio retention), then write `docs/superpowers/specs/2026-11-24-meetings-design.md`, get approval, plan, build, council.
+- Spec: `docs/superpowers/specs/2026-11-24-meetings-design.md` (builder-checked). His answers: manual start only (no auto-detect), local Whisper, Teams active-speaker names, keep audio 24 h, Short/Medium/Long enhanced notes. Open: muted-in-Teams speech, consent notice. Then approval → writing-plans → build on a feature branch → council → release.
 
 Wren is Maximilian's free, local dictation app for Windows and macOS Apple Silicon (a Willow / Glaido replacement).
 
