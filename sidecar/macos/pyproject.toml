@@ -1,0 +1,20 @@
+# Wren speech sidecar for macOS (Apple Silicon): mlx-whisper on Metal + Silero VAD via faster-whisper.
+# Kept separate from ../pyproject.toml so Windows' CUDA uv.lock is never disturbed.
+# The runtime venv is built from this file and uv.lock by scripts/setup-runtime.sh into
+# ~/Library/Application Support/Wren/runtime/.venv.
+[project]
+name = "wren-sidecar-macos"
+version = "0.1.0"
+description = "Wren speech engine sidecar for macOS Apple Silicon (mlx-whisper + Silero VAD)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mlx-whisper>=0.4.2",
+    "faster-whisper==1.2.1",
+    "numpy>=2,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false

@@ -63,11 +63,11 @@ def parse(line: str | bytes) -> dict[str, Any]:
 # ------------------------------------------------------------------------------------ constructors
 
 
-def ready(*, model: str, device: str, compute: str, vram_mb: int) -> dict[str, Any]:
+def ready(*, model: str, device: str, compute: str, vram_mb: int, engine: str = ENGINE) -> dict[str, Any]:
     return {
         "v": VERSION,
         "type": "ready",
-        "engine": ENGINE,
+        "engine": engine,
         "model": model,
         "device": device,
         "compute": compute,

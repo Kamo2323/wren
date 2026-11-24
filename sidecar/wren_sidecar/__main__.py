@@ -111,7 +111,11 @@ def main(argv: list[str] | None = None) -> int:
     handler.transcriber = transcriber
     out.send(
         protocol.ready(
-            model=transcriber.name, device=transcriber.device, compute=transcriber.compute, vram_mb=transcriber.vram_mb
+            model=transcriber.name,
+            device=transcriber.device,
+            compute=transcriber.compute,
+            vram_mb=transcriber.vram_mb,
+            engine=getattr(transcriber, "engine_name", protocol.ENGINE),
         )
     )
 

@@ -179,6 +179,7 @@ pub const MAIN_SHOW_FALLBACK_MS: u64 = 1_500;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiConstants {
+    pub platform: &'static str,
     pub retention_hours: i64,
     pub typing_wpm_default: u32,
     pub popup_window_w: f64,
@@ -196,6 +197,7 @@ pub struct UiConstants {
 
 pub fn ui_constants() -> UiConstants {
     UiConstants {
+        platform: if cfg!(target_os = "macos") { "macos" } else { "windows" },
         retention_hours: RETENTION_HOURS,
         typing_wpm_default: TYPING_WPM_DEFAULT,
         popup_window_w: POPUP_WINDOW_W,

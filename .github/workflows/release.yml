@@ -21,26 +21,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release:
-    name: Build Windows installer & publish release
+  prepare:
+    name: Compute release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      build_id: ${{ steps.meta.outputs.build_id }}
+    steps:
+      - name: Verify signing key secret is configured
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY repository secret. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Compute version and release notes
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          VER="$(node scripts/ci-release-meta.mjs bump --run-number "$RUN_NUMBER" --version "$INPUT_VERSION" | tr -d '\r\n')"
+          if [ -z "$VER" ]; then
+            echo "Failed to compute version" >&2
+            exit 1
+          fi
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          BUILD_ID="ci-${VER}-${SHORT_SHA}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+          PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1 || true)"
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS="$(git log --no-merges --pretty=format:'- %s' "${PREV_TAG}..HEAD" || true)"
+          else
+            COMMITS="$(git log --no-merges -n 5 --pretty=format:'- %s' || true)"
+          fi
+          if [ -z "$COMMITS" ]; then
+            COMMITS="Maintenance update."
+          fi
+          printf '%s\n' "$COMMITS" > release-notes.md
+          echo "Release version: $VER (tag v$VER, build $BUILD_ID)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
+  build-windows:
+    name: Build Windows installer
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}\src-tauri\target
     steps:
-      - name: Verify signing key secret is configured
-        shell: pwsh
-        env:
-          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
-        run: |
-          if ($env:HAS_KEY -ne 'true') {
-            Write-Error 'Missing TAURI_SIGNING_PRIVATE_KEY repository secret. Add it under Settings -> Secrets and variables -> Actions.'
-            exit 1
-          }
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -63,36 +112,25 @@ jobs:
           node scripts/unit-tests.mjs
 
       - name: Stamp release version
-        id: meta
         shell: pwsh
         env:
-          INPUT_VERSION: ${{ inputs.version }}
-          RUN_NUMBER: ${{ github.run_number }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $ver = (node scripts/ci-release-meta.mjs bump --run-number $env:RUN_NUMBER --version "$env:INPUT_VERSION").Trim()
-          if (-not $ver) { throw 'Failed to compute version' }
-          $shortSha = (git rev-parse --short HEAD).Trim()
-          $buildId = "ci-$ver-$shortSha"
-          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "tag=v$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Release version: $ver (tag v$ver, build $buildId)"
+          node scripts/ci-release-meta.mjs bump --version "$env:VERSION" | Out-Null
 
       - name: Build Windows NSIS installer
         shell: pwsh
         env:
-          WREN_BUILD_ID: ${{ steps.meta.outputs.build_id }}
+          WREN_BUILD_ID: ${{ needs.prepare.outputs.build_id }}
         run: |
           npx tauri build --bundles nsis
 
-      - name: Sign installer and write latest.json
-        id: sign
+      - name: Sign Windows installer
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $ver = $env:VERSION
           $installerName = "Wren_${ver}_x64-setup.exe"
@@ -100,56 +138,152 @@ jobs:
           if (-not (Test-Path -LiteralPath $installerPath)) {
             throw "Expected installer not found at $installerPath"
           }
-
           npx tauri signer sign --app-version $ver $installerPath
-          $sigPath = "$installerPath.sig"
-          if (-not (Test-Path -LiteralPath $sigPath)) {
-            throw "Expected signature not found at $sigPath"
+          if (-not (Test-Path -LiteralPath "$installerPath.sig")) {
+            throw "Expected signature not found at $installerPath.sig"
           }
+          New-Item -ItemType Directory -Force -Path dist-release-win | Out-Null
+          Copy-Item -LiteralPath $installerPath -Destination dist-release-win\
+          Copy-Item -LiteralPath "$installerPath.sig" -Destination dist-release-win\
 
-          # Collect commit summaries since the last release tag for clean in-app notes.
-          $prevTag = (git tag --list 'v*' --sort=-v:refname | Select-Object -First 1)
-          $range = if ($prevTag) { "$prevTag..HEAD" } else { "-n 5" }
-          $commits = if ($prevTag) {
-            git log --no-merges --pretty=format:"- %s" $range
-          } else {
-            git log --no-merges -n 5 --pretty=format:"- %s"
-          }
-          $notesText = if ($commits) { ($commits -join "`n").Trim() } else { "Maintenance update." }
-          $notesPath = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          $manifestPath = Join-Path $env:RUNNER_TEMP 'latest.json'
-          Set-Content -Path $notesPath -Value $notesText -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: dist-release-win/*
 
-          node scripts/ci-release-meta.mjs manifest `
-            --version $ver `
-            --repo $env:REPO `
-            --installer $installerName `
-            --sig-file $sigPath `
-            --notes-file $notesPath `
-            --out $manifestPath
+  build-macos:
+    name: Build macOS Apple Silicon app
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-          "installer=$installerPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "sig=$sigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "notes=$notesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "manifest=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: 'npm'
 
-      - name: Publish GitHub Release
-        shell: pwsh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend unit tests
+        run: node scripts/unit-tests.mjs
+
+      - name: Stamp release version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/ci-release-meta.mjs bump --version "$VERSION" >/dev/null
+
+      - name: Build macOS app bundle
+        env:
+          WREN_BUILD_ID: ${{ needs.prepare.outputs.build_id }}
+        run: npx tauri build --target aarch64-apple-darwin --bundles app
+
+      - name: Package DMG, updater archive & sign
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          BUNDLE_DIR="$CARGO_TARGET_DIR/aarch64-apple-darwin/release/bundle"
+          APP_DIR="$BUNDLE_DIR/macos/Wren.app"
+          if [ ! -d "$APP_DIR" ]; then
+            echo "Expected Wren.app not found at $APP_DIR" >&2
+            exit 1
+          fi
+          # Ad-hoc sign so Gatekeeper/local launches work cleanly without paid Apple Developer ID.
+          codesign --force --deep --sign - "$APP_DIR"
+          codesign --verify --deep --strict "$APP_DIR"
+
+          mkdir -p dist-release-mac
+          ARCHIVE_NAME="Wren_${VERSION}_aarch64.app.tar.gz"
+          ARCHIVE_PATH="dist-release-mac/$ARCHIVE_NAME"
+          COPYFILE_DISABLE=1 tar -czf "$ARCHIVE_PATH" -C "$BUNDLE_DIR/macos" "Wren.app"
+          npx tauri signer sign --app-version "$VERSION" "$ARCHIVE_PATH"
+          if [ ! -f "$ARCHIVE_PATH.sig" ]; then
+            echo "Expected signature not found at $ARCHIVE_PATH.sig" >&2
+            exit 1
+          fi
+
+          # Package a Finder-free DMG wrapping the signed Wren.app + /Applications symlink.
+          DMG_STAGE="$(mktemp -d)"
+          ditto "$APP_DIR" "$DMG_STAGE/Wren.app"
+          ln -s /Applications "$DMG_STAGE/Applications"
+          hdiutil create -volname "Wren" -srcfolder "$DMG_STAGE" -ov -format UDZO "dist-release-mac/Wren_${VERSION}_aarch64.dmg"
+          rm -rf "$DMG_STAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: dist-release-mac/*
+
+  publish:
+    name: Publish unified GitHub Release
+    needs: [prepare, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Build unified latest.json and publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          INSTALLER: ${{ steps.sign.outputs.installer }}
-          SIG: ${{ steps.sign.outputs.sig }}
-          NOTES: ${{ steps.sign.outputs.notes }}
-          MANIFEST: ${{ steps.sign.outputs.manifest }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
-          if (gh release view $env:TAG 2>$null) {
-            gh release upload $env:TAG $env:INSTALLER $env:SIG $env:MANIFEST --clobber
-            gh release edit $env:TAG --title "Wren v$env:VERSION" --notes-file $env:NOTES --latest
-          } else {
-            gh release create $env:TAG $env:INSTALLER $env:SIG $env:MANIFEST `
-              --title "Wren v$env:VERSION" `
-              --notes-file $env:NOTES `
+          WIN_NAME="Wren_${VERSION}_x64-setup.exe"
+          WIN_FILE="release-artifacts/windows-release/$WIN_NAME"
+          WIN_SIG="${WIN_FILE}.sig"
+
+          MAC_ARCHIVE_NAME="Wren_${VERSION}_aarch64.app.tar.gz"
+          MAC_ARCHIVE="release-artifacts/macos-release/$MAC_ARCHIVE_NAME"
+          MAC_SIG="${MAC_ARCHIVE}.sig"
+          MAC_DMG="release-artifacts/macos-release/Wren_${VERSION}_aarch64.dmg"
+          NOTES="release-artifacts/release-notes/release-notes.md"
+          MANIFEST="release-artifacts/latest.json"
+
+          node scripts/ci-release-meta.mjs manifest \
+            --version "$VERSION" \
+            --repo "$REPO" \
+            --installer "$WIN_NAME" \
+            --sig-file "$WIN_SIG" \
+            --mac-installer "$MAC_ARCHIVE_NAME" \
+            --mac-sig-file "$MAC_SIG" \
+            --mac-platform darwin-aarch64 \
+            --notes-file "$NOTES" \
+            --out "$MANIFEST"
+
+          FILES=("$WIN_FILE" "$WIN_SIG" "$MAC_ARCHIVE" "$MAC_SIG" "$MANIFEST")
+          if [ -f "$MAC_DMG" ]; then
+            FILES+=("$MAC_DMG")
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh release edit "$TAG" --title "Wren v$VERSION" --notes-file "$NOTES" --latest
+          else
+            gh release create "$TAG" "${FILES[@]}" \
+              --title "Wren v$VERSION" \
+              --notes-file "$NOTES" \
               --latest
-          }
+          fi

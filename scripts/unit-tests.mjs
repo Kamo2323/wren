@@ -171,10 +171,13 @@ test("computeTimeSavedMs and appName match Rust behaviour", () => {
   assert.equal(computeTimeSavedMs(10, 600_000, 52), 0);
   assert.equal(computeTimeSavedMs(52, 0, 0), 60_000);
   assert.equal(appName("T3 Code (Beta).exe"), "T3 Code");
+  assert.equal(appName("T3 Code (Beta)"), "T3 Code");
   assert.equal(appName("claude.exe"), "Claude");
+  assert.equal(appName("Google Chrome"), "Chrome");
+  assert.equal(appName("Safari.app"), "Safari");
 });
 
-test("ci-release-meta computes versions, stamps Cargo.toml, and builds latest.json", () => {
+test("ci-release-meta computes versions, stamps Cargo.toml, and builds multi-platform latest.json", () => {
   assert.equal(computeVersion("0.1.0", { runNumber: "7", explicitVersion: "" }), "0.1.7");
   assert.equal(computeVersion("0.1.0", { runNumber: "7", explicitVersion: "v0.2.0" }), "0.2.0");
   assert.throws(() => computeVersion("0.1.0", { runNumber: "0", explicitVersion: "" }));
@@ -187,6 +190,8 @@ test("ci-release-meta computes versions, stamps Cargo.toml, and builds latest.js
     repo: "Kamo2323/wren",
     installer: "Wren_0.1.7_x64-setup.exe",
     signature: "  SIGDATA  \n",
+    macInstaller: "Wren_0.1.7_aarch64.app.tar.gz",
+    macSignature: "  MACSIG  \n",
     notes: "  - Fix bug  ",
     pubDate: "2026-11-23T03:00:00Z",
   });
@@ -196,6 +201,11 @@ test("ci-release-meta computes versions, stamps Cargo.toml, and builds latest.js
   assert.equal(
     manifest.platforms["windows-x86_64"].url,
     "https://github.com/Kamo2323/wren/releases/download/v0.1.7/Wren_0.1.7_x64-setup.exe",
+  );
+  assert.equal(manifest.platforms["darwin-aarch64"].signature, "MACSIG");
+  assert.equal(
+    manifest.platforms["darwin-aarch64"].url,
+    "https://github.com/Kamo2323/wren/releases/download/v0.1.7/Wren_0.1.7_aarch64.app.tar.gz",
   );
 });
 

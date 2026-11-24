@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -33,6 +34,8 @@
       "../sidecar/wren_sidecar/**/*.py",
       "../sidecar/pyproject.toml",
       "../sidecar/uv.lock",
+      "../sidecar/macos/pyproject.toml",
+      "../sidecar/macos/uv.lock",
       "../sidecar/assets/**/*"
     ],
     "windows": {
@@ -40,6 +43,9 @@
         "installMode": "currentUser",
         "template": "installer/installer.nsi"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0"
     },
     "icon": [
       "icons/32x32.png",

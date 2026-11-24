@@ -19,6 +19,7 @@ export type PopupState =
 export type PopupKind = PopupState["kind"];
 
 export interface UiConstants {
+  platform: "windows" | "macos";
   retentionHours: number;
   typingWpmDefault: number;
   popupWindowW: number;

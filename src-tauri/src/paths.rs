@@ -33,15 +33,28 @@ impl Paths {
         if let Ok(home) = std::env::var("WREN_HOME") {
             return Self::under(Path::new(&home));
         }
-        let roaming = std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Wren");
-        let local = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("Wren");
-        Self { roaming, local }
+        #[cfg(target_os = "macos")]
+        {
+            let base = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Library")
+                .join("Application Support")
+                .join("Wren");
+            return Self { roaming: base.clone(), local: base };
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let roaming = std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Wren");
+            let local = std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("Wren");
+            Self { roaming, local }
+        }
     }
 
     /// Both roots under one folder (tests, portable runs).
@@ -76,7 +89,14 @@ impl Paths {
     }
     /// Python interpreter inside the sidecar venv.
     pub fn runtime_python(&self) -> PathBuf {
-        self.runtime_dir().join(".venv").join("Scripts").join("python.exe")
+        #[cfg(windows)]
+        {
+            self.runtime_dir().join(".venv").join("Scripts").join("python.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            self.runtime_dir().join(".venv").join("bin").join("python")
+        }
     }
     pub fn logs_dir(&self) -> PathBuf {
         self.local.join("logs")
@@ -107,9 +127,12 @@ mod tests {
 
     #[test]
     fn under_keeps_everything_inside_the_root() {
-        let p = Paths::under(Path::new("C:/tmp/wren-test"));
-        assert!(p.settings_file().starts_with("C:/tmp/wren-test"));
-        assert!(p.db_file().starts_with("C:/tmp/wren-test"));
+        let p = Paths::under(Path::new("/tmp/wren-test"));
+        assert!(p.settings_file().starts_with("/tmp/wren-test"));
+        assert!(p.db_file().starts_with("/tmp/wren-test"));
+        #[cfg(windows)]
         assert!(p.runtime_python().ends_with("python.exe"));
+        #[cfg(not(windows))]
+        assert!(p.runtime_python().ends_with("python"));
     }
 }

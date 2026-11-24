@@ -4,7 +4,9 @@
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
+#[cfg(not(target_os = "macos"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::updater::{EVENT_OPEN_UPDATES, UpdateStatus};
@@ -30,7 +32,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id("wren")
         .tooltip("Wren")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // On macOS, clicking the menu bar icon opens the menu; on Windows left-click opens Wren.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main(app),
             "pause" => {
@@ -48,6 +51,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
+            #[cfg(not(target_os = "macos"))]
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -56,6 +60,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             {
                 show_main(tray.app_handle());
             }
+            #[cfg(target_os = "macos")]
+            let _ = (tray, event);
         });
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -74,18 +80,34 @@ pub fn arm_first_show() {
     FIRST_SHOW_PENDING.store(true, Ordering::SeqCst);
 }
 
+#[cfg(target_os = "macos")]
+fn activate_macos_app(app: &AppHandle) {
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    let _ = app.run_on_main_thread(|| {
+        if let Some(mtm) = objc2_foundation::MainThreadMarker::new() {
+            let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+            #[allow(deprecated)]
+            ns_app.activateIgnoringOtherApps(true);
+        }
+    });
+}
+
 /// Show the main window the first time, once. Later calls (and calls when Wren started hidden) do
 /// nothing, so the page can call it freely.
 pub fn first_show(app: &AppHandle) {
     if FIRST_SHOW_PENDING.swap(false, Ordering::SeqCst)
         && let Some(win) = app.get_webview_window(MAIN_LABEL)
     {
+        #[cfg(target_os = "macos")]
+        activate_macos_app(app);
         let _ = win.show();
     }
 }
 
 pub fn show_main(app: &AppHandle) {
     FIRST_SHOW_PENDING.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    activate_macos_app(app);
     if let Some(win) = app.get_webview_window(MAIN_LABEL) {
         let _ = win.unminimize();
         let _ = win.show();

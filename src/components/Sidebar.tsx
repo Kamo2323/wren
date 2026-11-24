@@ -100,9 +100,13 @@ function UpdatePill({ update, onInstall }: { update: UpdateStatus; onInstall: ()
 export function engineWords(s: EngineStatus): { tone: "ok" | "busy" | "warn" | "bad"; text: string; detail?: string } {
   switch (s.state) {
     case "ready":
-      return s.device === "cpu"
-        ? { tone: "warn", text: "Ready · slower", detail: "The graphics card isn't available, so speech runs slower" }
-        : { tone: "ok", text: "Ready", detail: "Running on your graphics card" };
+      if (s.device === "cpu") {
+        return { tone: "warn", text: "Ready · slower", detail: "Running on processor, so speech runs slower" };
+      }
+      if (s.device === "mlx") {
+        return { tone: "ok", text: "Ready", detail: "Running on Apple Silicon" };
+      }
+      return { tone: "ok", text: "Ready", detail: "Running on your graphics card" };
     case "warming":
       return { tone: "busy", text: "Warming up" };
     case "starting":

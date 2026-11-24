@@ -1,8 +1,10 @@
-// CI helper for stamping the release version and writing Tauri's standard `latest.json` manifest.
+// CI helper for stamping the release version and writing Tauri's standard `latest.json` manifest
+// for both Windows (`windows-x86_64`) and macOS (`darwin-aarch64`).
 //
 //   node scripts/ci-release-meta.mjs bump --run-number 12 [--version 0.2.0]
 //   node scripts/ci-release-meta.mjs manifest --version 0.1.12 --repo Kamo2323/wren \
-//     --installer Wren_0.1.12_x64-setup.exe --sig-file path/to/file.sig \
+//     --installer Wren_0.1.12_x64-setup.exe --sig-file path/to/win.sig \
+//     [--mac-installer Wren_0.1.12_aarch64.app.tar.gz --mac-sig-file path/to/mac.sig] \
 //     --notes-file path/to/notes.md --out path/to/latest.json
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -41,20 +43,45 @@ export function stampCargoVersion(cargoToml, version) {
   return out.join(eol);
 }
 
-export function buildManifest({ version, repo, installer, signature, notes, pubDate }) {
+export function buildManifest({
+  version,
+  repo,
+  installer,
+  signature,
+  macInstaller,
+  macSignature,
+  macPlatform = "darwin-aarch64",
+  notes,
+  pubDate,
+}) {
   const cleanVer = version.trim().replace(/^v/i, "");
-  const cleanSig = signature.trim();
-  if (!cleanSig) throw new Error("Signature is empty");
+  const platforms = {};
+
+  if (installer && signature) {
+    const cleanSig = signature.trim();
+    if (!cleanSig) throw new Error("Signature is empty");
+    platforms["windows-x86_64"] = {
+      signature: cleanSig,
+      url: `https://github.com/${repo}/releases/download/v${cleanVer}/${encodeURIComponent(installer)}`,
+    };
+  }
+  if (macInstaller && macSignature) {
+    const cleanMacSig = macSignature.trim();
+    if (!cleanMacSig) throw new Error("macOS signature is empty");
+    platforms[macPlatform] = {
+      signature: cleanMacSig,
+      url: `https://github.com/${repo}/releases/download/v${cleanVer}/${encodeURIComponent(macInstaller)}`,
+    };
+  }
+  if (Object.keys(platforms).length === 0) {
+    throw new Error("At least one platform installer and signature is required");
+  }
+
   return {
     version: cleanVer,
     notes: (notes ?? "").trim(),
     pub_date: pubDate ?? new Date().toISOString(),
-    platforms: {
-      "windows-x86_64": {
-        signature: cleanSig,
-        url: `https://github.com/${repo}/releases/download/v${cleanVer}/${encodeURIComponent(installer)}`,
-      },
-    },
+    platforms,
   };
 }
 
@@ -99,13 +126,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 
     process.stdout.write(`${nextVersion}\n`);
   } else if (cmd === "manifest") {
-    const signature = readFileSync(args["sig-file"], "utf8");
+    const signature = args["sig-file"] ? readFileSync(args["sig-file"], "utf8") : "";
+    const macSignature = args["mac-sig-file"] ? readFileSync(args["mac-sig-file"], "utf8") : "";
     const notes = args["notes-file"] ? readFileSync(args["notes-file"], "utf8") : "";
     const manifest = buildManifest({
       version: args.version,
       repo: args.repo,
       installer: args.installer,
       signature,
+      macInstaller: args["mac-installer"],
+      macSignature,
+      macPlatform: args["mac-platform"] || "darwin-aarch64",
       notes,
     });
     writeFileSync(args.out, `${JSON.stringify(manifest, null, 2)}\n`);

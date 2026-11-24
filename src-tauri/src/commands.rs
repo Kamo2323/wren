@@ -42,8 +42,15 @@ fn set_autostart(app: &AppHandle, on: bool) -> Result<(), String> {
     let launcher = app.autolaunch();
     let r = if on { launcher.enable() } else { launcher.disable() };
     r.map_err(|err| {
-        tracing::warn!(error = %err, "cannot change start with Windows");
-        "Wren couldn't change starting with Windows.".to_string()
+        tracing::warn!(error = %err, "cannot change start at login");
+        #[cfg(target_os = "macos")]
+        {
+            "Wren couldn't change starting at login.".to_string()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            "Wren couldn't change starting with Windows.".to_string()
+        }
     })
 }
 
@@ -104,11 +111,65 @@ pub fn set_window_theme(app: AppHandle, theme: Option<String>) {
     }
 }
 
-/// Extract and cache a real Windows app icon PNG data URL for a process name (e.g. `"claude.exe"`).
+/// Extract and cache a real OS app icon PNG data URL for a process/app name.
 #[tauri::command(async)]
 pub fn app_icon(process_name: String) -> Option<String> {
     crate::app_icons::icon_data_url(&process_name)
 }
+
+/// On macOS, returns whether Accessibility permission is granted (needed for Fn + Control, ⌘V paste,
+/// and the correction watcher). If permission was just granted after launch, installs the hotkey
+/// immediately so no restart is needed. Always `true` on Windows.
+#[tauri::command]
+pub fn accessibility_status(app: AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let trusted = crate::hotkey::accessibility_trusted(false);
+        if trusted
+            && let Some(services) = app.try_state::<Services>()
+            && !services.env.has_hotkey()
+        {
+            services.session.send(Msg::ReinstallHook);
+        }
+        trusted
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        true
+    }
+}
+
+/// On macOS, prompts for Accessibility (if needed) and opens System Settings → Privacy & Security →
+/// Accessibility. Also reinstalls the hotkey if permission is already granted.
+#[tauri::command]
+pub fn open_accessibility_settings(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::hotkey::accessibility_trusted(true) {
+            if let Some(services) = app.try_state::<Services>() {
+                services.session.send(Msg::ReinstallHook);
+            }
+            return Ok(());
+        }
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(ACCESSIBILITY_SETTINGS_URI, None::<&str>)
+            .map_err(|err| {
+                tracing::warn!(error = %err, "cannot open Accessibility settings");
+                "Couldn't open Accessibility settings.".to_string()
+            })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub const ACCESSIBILITY_SETTINGS_URI: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 // ---- history, stats and dictionary (Task 4) ----
 // Errors come back as the store's message (British English, no dictated text).
@@ -266,7 +327,10 @@ pub fn popup_open_mic_settings(app: AppHandle) -> Result<(), String> {
     })
 }
 
-/// Windows Settings → Privacy → Microphone.
+/// OS Microphone privacy settings URI.
+#[cfg(target_os = "macos")]
+pub const MIC_SETTINGS_URI: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+#[cfg(not(target_os = "macos"))]
 pub const MIC_SETTINGS_URI: &str = "ms-settings:privacy-microphone";
 
 /// The popup reports where the pill is (logical px inside the popup window), so only the pill takes
@@ -354,6 +418,7 @@ pub fn other_apps_in(names: impl IntoIterator<Item = String>) -> Vec<String> {
     out
 }
 
+#[cfg(windows)]
 fn running_process_names() -> Vec<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -372,6 +437,22 @@ fn running_process_names() -> Vec<String> {
             more = Process32NextW(snap, &mut pe).is_ok();
         }
         let _ = CloseHandle(snap);
+    }
+    names
+}
+
+#[cfg(target_os = "macos")]
+fn running_process_names() -> Vec<String> {
+    use objc2_app_kit::NSWorkspace;
+    let mut names = Vec::new();
+    let apps = NSWorkspace::sharedWorkspace().runningApplications();
+    for app in apps.iter() {
+        if let Some(name) = app.localizedName() {
+            names.push(name.to_string());
+        }
+        if let Some(exe) = app.executableURL().and_then(|u| u.lastPathComponent()) {
+            names.push(exe.to_string());
+        }
     }
     names
 }
@@ -437,6 +518,9 @@ mod tests {
     #[test]
     fn the_process_list_can_be_read() {
         let names = running_process_names();
+        #[cfg(windows)]
         assert!(names.iter().any(|n| n.to_lowercase().ends_with(".exe")), "{} names", names.len());
+        #[cfg(target_os = "macos")]
+        assert!(!names.is_empty(), "expected at least one running macOS application");
     }
 }

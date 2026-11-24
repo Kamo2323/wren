@@ -3,12 +3,14 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { EngineStatus, Settings as SettingsData, UpdateStatus } from "./lib/types";
 import {
+  accessibilityStatus,
   engineStatus,
   getSettings,
   mainReady,
   onEngineStatus,
   onOpenUpdates,
   onUpdateStatus,
+  openAccessibilitySettings,
   otherAppsRunning,
   saveSettings,
   setWindowTheme,
@@ -17,6 +19,7 @@ import {
   updateInstall,
   updateStatus,
 } from "./lib/api";
+import { useConstants } from "./lib/useConstants";
 import {
   applyDomTheme,
   normalizeThemePreference,
@@ -28,7 +31,7 @@ import {
 } from "./lib/theme";
 import { Sidebar, type PageId } from "./components/Sidebar";
 import { ToastProvider, useToast } from "./components/Toast";
-import { OthersBanner } from "./components/Banner";
+import { AccessibilityBanner, OthersBanner } from "./components/Banner";
 import { Moon, Sun } from "./components/Icon";
 import Home from "./pages/Home";
 import History from "./pages/History";
@@ -67,8 +70,11 @@ function AppShell() {
   const [typingWpm, setTypingWpm] = useState<number | undefined>(undefined);
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => readCachedTheme());
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => applyDomTheme(readCachedTheme(), false));
+  const constants = useConstants();
   const [others, setOthers] = useState<string[]>([]);
   const [bannerHiddenFor, setBannerHiddenFor] = useState<string | null>(null);
+  const [accessibilityOk, setAccessibilityOk] = useState(true);
+  const [accessibilityDismissed, setAccessibilityDismissed] = useState(false);
   const [settled, setSettled] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<{ group: "engine" | "updates"; at: number } | null>(null);
   const updateRef = useRef<UpdateStatus>(update);
@@ -144,14 +150,20 @@ function AppShell() {
   }, [checkForUpdate]);
 
   useEffect(() => {
-    const check = () =>
+    const check = () => {
       void otherAppsRunning()
         .then(setOthers)
         .catch(() => setOthers([]));
+      if (constants.platform === "macos") {
+        void accessibilityStatus()
+          .then(setAccessibilityOk)
+          .catch(() => setAccessibilityOk(true));
+      }
+    };
     check();
     window.addEventListener("focus", check);
     return () => window.removeEventListener("focus", check);
-  }, []);
+  }, [constants.platform]);
 
   useEffect(() => {
     const onHash = () => {
@@ -199,6 +211,7 @@ function AppShell() {
 
   const othersKey = others.join(",");
   const showBanner = others.length > 0 && bannerHiddenFor !== othersKey;
+  const showAccessibilityBanner = constants.platform === "macos" && !accessibilityOk && !accessibilityDismissed;
 
   return (
     <div className={`shell ${settled ? "is-settled" : ""}`}>
@@ -211,6 +224,12 @@ function AppShell() {
         onInstallUpdate={() => void installUpdate()}
       />
       <main className="panel" ref={panelRef}>
+        {showAccessibilityBanner && (
+          <AccessibilityBanner
+            onAllow={() => void openAccessibilitySettings().catch(() => {})}
+            onDismiss={() => setAccessibilityDismissed(true)}
+          />
+        )}
         {showBanner && (
           <OthersBanner
             names={others}

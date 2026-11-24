@@ -24,9 +24,13 @@ pub struct EngineSettings {
 
 impl Default for EngineSettings {
     fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        let (model, compute_type) = ("large-v3-turbo-q4", "q4");
+        #[cfg(not(target_os = "macos"))]
+        let (model, compute_type) = ("large-v3-turbo", "int8_float16");
         Self {
-            model: "large-v3-turbo".into(),
-            compute_type: "int8_float16".into(),
+            model: model.into(),
+            compute_type: compute_type.into(),
             beam_size: 1,
             language: "en".into(),
             vad_filter: true,

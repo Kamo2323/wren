@@ -83,9 +83,12 @@ impl Output {
 
 /// A release build has no console of its own; print into the one that started us, if any.
 pub fn attach_console() {
-    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
-    unsafe {
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        unsafe {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
     }
 }
 
@@ -175,11 +178,22 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
     // The warm-up clip is a bundled synthetic voice, not the user's speech, so showing it is fine.
     let heard_line = format!("        heard: {:?}", out.final_text);
     log.line(heard_line);
-    if device != "cuda" {
+    #[cfg(target_os = "macos")]
+    let accelerated = device == "mlx";
+    #[cfg(not(target_os = "macos"))]
+    let accelerated = device == "cuda";
+    if !accelerated {
+        #[cfg(target_os = "macos")]
+        return Err(format!("ready on {device}, not Apple Silicon MLX (CPU fallback)"));
+        #[cfg(not(target_os = "macos"))]
         return Err(format!("ready on {device}, not CUDA (CPU fallback)"));
     }
     if !missing.is_empty() {
         return Err(format!("the warm-up clip did not give the expected words (missing {missing:?})"));
     }
-    Ok(format!("{model} ready on {device} in {ready_ms} ms ({vram_mb} MB VRAM); warm-up clip transcribed in {took} ms"))
+    #[cfg(target_os = "macos")]
+    let mem_label = "MB RAM";
+    #[cfg(not(target_os = "macos"))]
+    let mem_label = "MB VRAM";
+    Ok(format!("{model} ready on {device} in {ready_ms} ms ({vram_mb} {mem_label}); warm-up clip transcribed in {took} ms"))
 }

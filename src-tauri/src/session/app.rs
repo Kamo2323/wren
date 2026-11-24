@@ -18,7 +18,7 @@ use crate::constants::{
     STARTUP_ERROR_POPUP_DELAY_MS,
 };
 use crate::engine::{Engine, EngineError, EngineStatus, TranscribeRequest, TranscribeResult};
-use crate::hotkey::HotkeyService;
+use crate::hotkey::{HotkeyEvent, HotkeyService};
 use crate::paste::{self, ForegroundInfo, PasteResult};
 use crate::settings::{EngineSettings, Settings};
 use crate::store::Store;
@@ -42,6 +42,8 @@ pub struct AppEnv {
     /// engine instead of failing on the old one.
     swapping: AtomicBool,
     hotkey: Mutex<Option<HotkeyService>>,
+    /// Kept so `Reinstall` can start the hotkey after launch (e.g. once macOS Accessibility is granted).
+    hotkey_tx: Sender<HotkeyEvent>,
     /// Wren's own window handles, read once on the main thread at start-up.
     own_windows: Vec<isize>,
     /// Correction watcher and pre-paste check (Task 9).
@@ -68,6 +70,10 @@ impl AppEnv {
 
     pub fn watcher(&self) -> &Watcher {
         &self.watcher
+    }
+
+    pub fn has_hotkey(&self) -> bool {
+        self.hotkey.lock().is_some()
     }
 
     /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
@@ -144,12 +150,33 @@ impl Env for AppEnv {
         let _ = self.app.emit(EVENT_HISTORY_CHANGED, ());
     }
     fn hotkey(&self, cmd: HotkeyCmd) {
-        let guard = self.hotkey.lock();
-        let Some(h) = guard.as_ref() else { return };
+        let mut guard = self.hotkey.lock();
         match cmd {
-            HotkeyCmd::ForceIdle => h.force_idle(),
-            HotkeyCmd::SetPaused(paused) => h.set_paused(paused),
-            HotkeyCmd::Reinstall => h.reinstall(),
+            HotkeyCmd::Reinstall => {
+                if let Some(h) = guard.as_ref() {
+                    h.reinstall();
+                } else {
+                    match HotkeyService::start(self.hotkey_tx.clone()) {
+                        Ok(h) => {
+                            tracing::info!("hotkey installed after reinstall request");
+                            *guard = Some(h);
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "still cannot install hotkey");
+                        }
+                    }
+                }
+            }
+            HotkeyCmd::ForceIdle => {
+                if let Some(h) = guard.as_ref() {
+                    h.force_idle();
+                }
+            }
+            HotkeyCmd::SetPaused(paused) => {
+                if let Some(h) = guard.as_ref() {
+                    h.set_paused(paused);
+                }
+            }
         }
     }
     fn play(&self, sound: Sound) {
@@ -268,19 +295,29 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
 
     // Hotkey (its events go straight to the session).
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
-    let hotkey = match HotkeyService::start(hotkey_tx) {
+    let hotkey = match HotkeyService::start(hotkey_tx.clone()) {
         Ok(h) => Some(h),
         Err(err) => {
+            #[cfg(target_os = "macos")]
+            tracing::error!(error = %err, "cannot install the Fn+Control hotkey");
+            #[cfg(not(target_os = "macos"))]
             tracing::error!(error = %err, "cannot install the Ctrl+Win hotkey");
             None
         }
     };
     let hotkey_failed = hotkey.is_none();
 
-    let own_windows = app
+    #[cfg(windows)]
+    let own_windows: Vec<isize> = app
         .webview_windows()
         .values()
         .filter_map(|w| w.hwnd().ok().map(|h| h.0 as isize))
+        .collect();
+    #[cfg(target_os = "macos")]
+    let own_windows: Vec<isize> = app
+        .webview_windows()
+        .values()
+        .filter_map(|w| w.ns_window().ok().map(|p| p as isize))
         .collect();
     let env = Arc::new(AppEnv {
         app: app.clone(),
@@ -290,6 +327,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         engine_swap: Mutex::new(()),
         swapping: AtomicBool::new(false),
         hotkey: Mutex::new(hotkey),
+        hotkey_tx,
         own_windows,
         watcher: Watcher::new(),
         prepaste: prepaste::Checker::start().map_err(|e| tracing::warn!(error = %e, "no pre-paste check")).ok(),
@@ -316,7 +354,14 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         // Say so once the popup page has loaded.
         let session = session.clone();
         let message = if hotkey_failed {
-            "Wren couldn't set up Ctrl + Win. Restart Wren to try again."
+            #[cfg(target_os = "macos")]
+            {
+                "Wren needs Accessibility permission for Fn + Control. Open Wren to allow it."
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                "Wren couldn't set up Ctrl + Win. Restart Wren to try again."
+            }
         } else {
             "Wren can't use your microphone."
         };
@@ -360,16 +405,42 @@ pub fn tick_wav(freq_hz: f32) -> Vec<u8> {
 }
 
 fn play_tick(sound: Sound) {
-    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     static START: OnceLock<Vec<u8>> = OnceLock::new();
     static STOP: OnceLock<Vec<u8>> = OnceLock::new();
     let bytes = match sound {
         Sound::Start => START.get_or_init(|| tick_wav(SOUND_START_HZ)),
         Sound::Stop => STOP.get_or_init(|| tick_wav(SOUND_STOP_HZ)),
     };
-    // SND_MEMORY reads the WAV from this (static, so always alive) buffer; SND_ASYNC returns at once.
-    unsafe {
-        let _ = PlaySoundW(windows::core::PCWSTR(bytes.as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    #[cfg(windows)]
+    {
+        use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+        // SND_MEMORY reads the WAV from this (static, so always alive) buffer; SND_ASYNC returns at once.
+        unsafe {
+            let _ = PlaySoundW(
+                windows::core::PCWSTR(bytes.as_ptr() as *const u16),
+                None,
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::AnyThread;
+        use objc2_app_kit::NSSound;
+        use objc2_foundation::NSData;
+        // Keep the latest NSSound alive in a mutex so async playback completes cleanly without leak.
+        static ACTIVE: Mutex<Option<usize>> = Mutex::new(None);
+        let data = NSData::with_bytes(bytes);
+        if let Some(snd) = NSSound::initWithData(NSSound::alloc(), &data) {
+            let _ = snd.play();
+            let raw = objc2::rc::Retained::into_raw(snd) as usize;
+            let prev = ACTIVE.lock().replace(raw);
+            if let Some(old) = prev {
+                unsafe {
+                    let _ = objc2::rc::Retained::from_raw(old as *mut NSSound);
+                }
+            }
+        }
     }
 }
 

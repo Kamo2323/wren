@@ -276,6 +276,37 @@ for (const [hash, what] of [
   const text = await page.locator(".empty--error").textContent();
   check(`${hash}: load error state`, text.includes(`Couldn't load ${what}`) && text.includes("Try again"), text.slice(0, 40));
 }
+
+// Platform adaptation: macOS uses fn + Control, ⌘F, Start at login, Accessibility banner when untrusted; Windows keeps Ctrl + Win.
+await page.goto(`${base}/index.html?platform=macos&accessibility=0#settings`);
+await page.waitForSelector("#set-dictation");
+check("macOS Accessibility banner appears when permission is missing", (await page.locator(".banner").textContent())?.includes("Accessibility permission needed"));
+check("macOS Settings uses Start at login and macOS default", await page.evaluate(() => {
+  const t = document.body.textContent ?? "";
+  return t.includes("Start at login") && t.includes("macOS default") && t.includes("this Mac");
+}));
+await page.goto(`${base}/index.html?platform=macos#history`);
+await page.waitForSelector(".search__kbd");
+check("macOS History shows ⌘F shortcut badge", (await page.locator(".search__kbd").textContent())?.trim() === "⌘F");
+await page.goto(`${base}/popup.html?state=handsfree&platform=macos&hold=1`);
+await page.waitForSelector(".hint");
+check("macOS popup hands-free hint says fn + Control", await page.evaluate(() => {
+  const t = document.querySelector(".hint")?.textContent ?? "";
+  return t.includes("fn") && t.includes("Control");
+}));
+await page.goto(`${base}/index.html?platform=windows#settings`);
+await page.waitForSelector("#set-dictation");
+check("Windows Settings preserves Start with Windows and Windows default", await page.evaluate(() => {
+  const t = document.body.textContent ?? "";
+  return t.includes("Start with Windows") && t.includes("Windows default") && t.includes("this PC");
+}));
+await page.goto(`${base}/popup.html?state=handsfree&platform=windows&hold=1`);
+await page.waitForSelector(".hint");
+check("Windows popup hands-free hint preserves Ctrl + Win", await page.evaluate(() => {
+  const t = document.querySelector(".hint")?.textContent ?? "";
+  return t.includes("Ctrl") && t.includes("Win");
+}));
+
 await browser.close();
 server.close();
 console.log(failed ? `${failed} check(s) failed` : "all checks passed");

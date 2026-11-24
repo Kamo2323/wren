@@ -61,8 +61,51 @@ fn gpu_used_mb() -> Option<u64> {
 fn pythons(pids: &[u32]) -> Vec<u32> {
     pids.iter()
         .copied()
-        .filter(|&p| process_image(p).is_some_and(|i| i.file_name().is_some_and(|n| n.eq_ignore_ascii_case("python.exe"))))
+        .filter(|&p| {
+            process_image(p).is_some_and(|i| {
+                i.file_name().is_some_and(|n| {
+                    #[cfg(windows)]
+                    {
+                        n.eq_ignore_ascii_case("python.exe")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        n.to_string_lossy().to_ascii_lowercase().starts_with("python")
+                    }
+                })
+            })
+        })
         .collect()
+}
+
+fn force_kill_pid(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+fn real_local_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Wren")
+    }
+    #[cfg(not(windows))]
+    {
+        Paths::resolve().local
+    }
 }
 
 #[test]
@@ -77,12 +120,12 @@ fn engine_round_trip_on_the_real_model() {
         serde_json::from_str(&std::fs::read_to_string(fixtures_dir.join("manifest.json")).expect("run scripts/make-test-wavs.ps1"))
             .unwrap();
 
-    let real_local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Wren");
+    let real_local = real_local_dir();
     let tmp = std::env::temp_dir().join(format!("wren-roundtrip-{}", uuid::Uuid::new_v4()));
     let paths = Paths { roaming: tmp.join("roaming"), local: real_local };
     let mut cfg = EngineConfig::from_paths(&paths, &EngineSettings::default());
     cfg.log_file = tmp.join("logs").join("sidecar.log");
-    assert!(cfg.python.is_file(), "runtime missing: run scripts/setup-runtime.ps1 ({})", cfg.python.display());
+    assert!(cfg.python.is_file(), "runtime missing: run setup-runtime script ({})", cfg.python.display());
 
     let gpu_before = gpu_used_mb();
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -92,7 +135,10 @@ fn engine_round_trip_on_the_real_model() {
     let ready_ms = t0.elapsed().as_millis();
     println!("READY in {ready_ms} ms: {ready:?}");
     let EngineStatus::Ready { device, .. } = &ready else { unreachable!() };
+    #[cfg(windows)]
     assert_eq!(device, "cuda", "expected the GPU on this PC");
+    #[cfg(target_os = "macos")]
+    assert_eq!(device, "mlx", "expected Apple Silicon MLX on this Mac");
     let gpu_ready = gpu_used_mb();
 
     // ---- every fixture, RUNS_PER_FIXTURE times
@@ -162,9 +208,13 @@ fn engine_round_trip_on_the_real_model() {
     let budget = Duration::from_millis(SIDECAR_RESTART_BACKOFF_MS[0] + RELAUNCH_BUDGET_MS);
     let pids = engine.process_ids();
     let py = pythons(&pids);
+    #[cfg(windows)]
     assert_eq!(py.len(), 2, "launcher + interpreter in the job: {pids:?}");
+    #[cfg(not(windows))]
+    assert!(!py.is_empty(), "python sidecar process in group: {pids:?}");
+    let target_py = *py.last().unwrap();
     let t = Instant::now();
-    assert!(std::process::Command::new("taskkill").args(["/F", "/PID", &py[1].to_string()]).output().unwrap().status.success());
+    assert!(force_kill_pid(target_py), "failed to kill sidecar pid {target_py}");
     let mut timeline = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut again = None;
@@ -231,7 +281,7 @@ fn job_host() {
     if std::env::var("WREN_JOB_HOST").as_deref() != Ok("1") {
         return;
     }
-    let real_local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Wren");
+    let real_local = real_local_dir();
     let tmp = std::env::temp_dir().join(format!("wren-jobhost-{}", uuid::Uuid::new_v4()));
     let paths = Paths { roaming: tmp.join("roaming"), local: real_local };
     let mut cfg = EngineConfig::from_paths(&paths, &EngineSettings::default());
@@ -275,11 +325,14 @@ fn killing_wren_kills_the_sidecar() {
         }
     }
     let py = pythons(&pids);
+    #[cfg(windows)]
     assert_eq!(py.len(), 2, "host's sidecar launcher + interpreter: {pids:?}");
+    #[cfg(not(windows))]
+    assert!(!py.is_empty(), "host's sidecar python process: {pids:?}");
     let gpu_loaded = gpu_used_mb();
     // Kill only the host, not its tree: anything that survives is an orphan.
     let t = Instant::now();
-    assert!(std::process::Command::new("taskkill").args(["/F", "/PID", &host.id().to_string()]).output().unwrap().status.success());
+    assert!(force_kill_pid(host.id()), "failed to kill host pid {}", host.id());
     let _ = host.wait();
     let deadline = Instant::now() + Duration::from_secs(5);
     while pids.iter().any(|&p| process_is_running(p)) && Instant::now() < deadline {

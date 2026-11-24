@@ -1,6 +1,7 @@
-//! Extracts real 32x32 Windows executable icons as PNG data URLs, cached per process name.
-//! Uses only Win32 Shell/GDI APIs already linked by `windows` and a minimal pure-Rust stored-DEFLATE
-//! PNG encoder (zero extra dependencies, works offline).
+//! Extracts real 32×32 OS app icons as PNG data URLs, cached per process/app name.
+//! - Windows: Win32 Shell/GDI (`SHGetFileInfoW` + `GetIconInfo` + `GetDIBits`).
+//! - macOS: `NSWorkspace.sharedWorkspace.iconForFile:` rasterised via `NSBitmapImageRep`.
+//! Uses a minimal pure-Rust stored-DEFLATE PNG encoder (zero extra dependencies, works offline).
 
 use base64::Engine;
 use parking_lot::Mutex;
@@ -14,7 +15,8 @@ fn cache() -> &'static Mutex<HashMap<String, Option<String>>> {
     ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Returns a `data:image/png;base64,...` icon for `process_name` (e.g. `"claude.exe"`), or `None`.
+/// Returns a `data:image/png;base64,...` icon for `process_name` (e.g. `"claude.exe"` on Windows,
+/// `"Claude"` / `"Safari"` on macOS), or `None`.
 pub fn icon_data_url(process_name: &str) -> Option<String> {
     let trimmed = process_name.trim();
     if trimmed.is_empty() {
@@ -25,13 +27,11 @@ pub fn icon_data_url(process_name: &str) -> Option<String> {
         return hit.clone();
     }
 
-    let result = find_exe_path(trimmed).and_then(|p| extract_icon_png(&p)).map(|bytes| {
+    let result = find_app_path(trimmed).and_then(|p| extract_icon_png(&p)).map(|bytes| {
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         format!("data:image/png;base64,{b64}")
     });
 
-    // Only cache positive hits permanently; negative lookups stay cached too unless the process
-    // isn't running yet, so we cap the cache cleanly and avoid repeated disk scans.
     let mut guard = cache().lock();
     if guard.len() > 256 {
         guard.clear();
@@ -40,291 +40,405 @@ pub fn icon_data_url(process_name: &str) -> Option<String> {
     result
 }
 
-/// Locate the executable path for a process file name (running processes first, then common Windows dirs).
-fn find_exe_path(process_name: &str) -> Option<PathBuf> {
-    let needle = if process_name.to_lowercase().ends_with(".exe") {
-        process_name.to_lowercase()
-    } else {
-        format!("{}.exe", process_name.to_lowercase())
-    };
+#[cfg(windows)]
+use win_icons::{extract_icon_png, find_app_path};
+#[cfg(target_os = "macos")]
+use mac_icons::{extract_icon_png, find_app_path};
 
-    if let Some(p) = find_running_process_path(&needle) {
-        return Some(p);
-    }
+#[cfg(windows)]
+mod win_icons {
+    use super::*;
 
-    // Check PATH entries directly.
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(&needle);
-            if candidate.is_file() {
-                return Some(candidate);
+    pub fn find_app_path(process_name: &str) -> Option<PathBuf> {
+        let needle = if process_name.to_lowercase().ends_with(".exe") {
+            process_name.to_lowercase()
+        } else {
+            format!("{}.exe", process_name.to_lowercase())
+        };
+
+        if let Some(p) = find_running_process_path(&needle) {
+            return Some(p);
+        }
+
+        if let Some(path_var) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(&needle);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
-    }
 
-    // Check standard Windows directories (shallow: depth 0..=2) so closed apps still resolve icons.
-    let mut roots: Vec<PathBuf> = Vec::new();
-    for var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "WINDIR"] {
-        if let Some(v) = std::env::var_os(var) {
-            let base = PathBuf::from(v);
-            if var == "LOCALAPPDATA" {
-                roots.push(base.join("Programs"));
-                roots.push(base.join("Microsoft").join("WindowsApps"));
-                roots.push(base.clone());
-            } else if var == "WINDIR" {
-                roots.push(base.join("System32"));
-                roots.push(base);
-            } else {
-                roots.push(base);
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "WINDIR"] {
+            if let Some(v) = std::env::var_os(var) {
+                let base = PathBuf::from(v);
+                if var == "LOCALAPPDATA" {
+                    roots.push(base.join("Programs"));
+                    roots.push(base.join("Microsoft").join("WindowsApps"));
+                    roots.push(base.clone());
+                } else if var == "WINDIR" {
+                    roots.push(base.join("System32"));
+                    roots.push(base);
+                } else {
+                    roots.push(base);
+                }
             }
         }
-    }
 
-    for root in roots {
-        if let Some(found) = find_in_dir(&root, &needle, 2) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn find_in_dir(dir: &Path, needle_lower: &str, depth: usize) -> Option<PathBuf> {
-    let direct = dir.join(needle_lower);
-    if direct.is_file() {
-        return Some(direct);
-    }
-    if depth == 0 {
-        return None;
-    }
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten().take(160) {
-        let Ok(ft) = entry.file_type() else { continue };
-        let path = entry.path();
-        if ft.is_file() {
-            if entry
-                .file_name()
-                .to_str()
-                .is_some_and(|n| n.eq_ignore_ascii_case(needle_lower))
-            {
-                return Some(path);
-            }
-        } else if ft.is_dir() && depth > 1 {
-            if let Some(found) = find_in_dir(&path, needle_lower, depth - 1) {
+        for root in roots {
+            if let Some(found) = find_in_dir(&root, &needle, 2) {
                 return Some(found);
             }
         }
+        None
     }
-    None
-}
 
-fn find_running_process_path(needle_lower: &str) -> Option<PathBuf> {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
-    };
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    fn find_in_dir(dir: &Path, needle_lower: &str, depth: usize) -> Option<PathBuf> {
+        let direct = dir.join(needle_lower);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        if depth == 0 {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten().take(160) {
+            let Ok(ft) = entry.file_type() else { continue };
+            let path = entry.path();
+            if ft.is_file() {
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(needle_lower))
+                {
+                    return Some(path);
+                }
+            } else if ft.is_dir() && depth > 1 {
+                if let Some(found) = find_in_dir(&path, needle_lower, depth - 1) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
 
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-        let mut pe = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+    fn find_running_process_path(needle_lower: &str) -> Option<PathBuf> {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+        };
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+            let mut pe = PROCESSENTRY32W {
+                dwSize: size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut found: Option<PathBuf> = None;
+            let mut more = Process32FirstW(snap, &mut pe).is_ok();
+            while more {
+                let len = pe.szExeFile.iter().position(|c| *c == 0).unwrap_or(pe.szExeFile.len());
+                let exe_name = String::from_utf16_lossy(&pe.szExeFile[..len]);
+                if exe_name.eq_ignore_ascii_case(needle_lower) {
+                    if let Ok(proc_handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pe.th32ProcessID) {
+                        let mut buf = [0u16; 1024];
+                        let mut size = buf.len() as u32;
+                        if QueryFullProcessImageNameW(
+                            proc_handle,
+                            PROCESS_NAME_WIN32,
+                            PWSTR(buf.as_mut_ptr()),
+                            &mut size,
+                        )
+                        .is_ok()
+                            && size > 0
+                        {
+                            let p = PathBuf::from(String::from_utf16_lossy(&buf[..size as usize]));
+                            if p.is_file() {
+                                found = Some(p);
+                            }
+                        }
+                        let _ = CloseHandle(proc_handle);
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                more = Process32NextW(snap, &mut pe).is_ok();
+            }
+            let _ = CloseHandle(snap);
+            found
+        }
+    }
+
+    pub fn extract_icon_png(exe_path: &Path) -> Option<Vec<u8>> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+        };
+        use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+        use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
+
+        struct IconGuard(HICON);
+        impl Drop for IconGuard {
+            fn drop(&mut self) {
+                if !self.0.is_invalid() {
+                    unsafe {
+                        let _ = DestroyIcon(self.0);
+                    }
+                }
+            }
+        }
+        struct BitmapGuard(HBITMAP);
+        impl Drop for BitmapGuard {
+            fn drop(&mut self) {
+                if !self.0.is_invalid() {
+                    unsafe {
+                        let _ = DeleteObject(HGDIOBJ(self.0.0));
+                    }
+                }
+            }
+        }
+        struct DcGuard(HDC);
+        impl Drop for DcGuard {
+            fn drop(&mut self) {
+                if !self.0.is_invalid() {
+                    unsafe {
+                        let _ = DeleteDC(self.0);
+                    }
+                }
+            }
+        }
+
+        let wide: Vec<u16> = exe_path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut shfi = SHFILEINFOW::default();
+        let res = unsafe {
+            SHGetFileInfoW(
+                PCWSTR(wide.as_ptr()),
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut shfi),
+                size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            )
+        };
+        if res == 0 || shfi.hIcon.is_invalid() {
+            return None;
+        }
+        let _icon = IconGuard(shfi.hIcon);
+
+        let mut info = ICONINFO::default();
+        if unsafe { GetIconInfo(shfi.hIcon, &mut info) }.is_err() {
+            return None;
+        }
+        let _color = BitmapGuard(info.hbmColor);
+        let _mask = BitmapGuard(info.hbmMask);
+
+        if info.hbmColor.is_invalid() {
+            return None;
+        }
+
+        let mut bm = BITMAP::default();
+        let got = unsafe {
+            GetObjectW(
+                HGDIOBJ(info.hbmColor.0),
+                size_of::<BITMAP>() as i32,
+                Some(&mut bm as *mut BITMAP as *mut core::ffi::c_void),
+            )
+        };
+        if got == 0 || bm.bmWidth <= 0 || bm.bmHeight <= 0 || bm.bmWidth > 256 || bm.bmHeight > 256 {
+            return None;
+        }
+
+        let width = bm.bmWidth as u32;
+        let height = bm.bmHeight as u32;
+        let dc = DcGuard(unsafe { CreateCompatibleDC(None) });
+        if dc.0.is_invalid() {
+            return None;
+        }
+
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        let mut found: Option<PathBuf> = None;
-        let mut more = Process32FirstW(snap, &mut pe).is_ok();
-        while more {
-            let len = pe.szExeFile.iter().position(|c| *c == 0).unwrap_or(pe.szExeFile.len());
-            let exe_name = String::from_utf16_lossy(&pe.szExeFile[..len]);
-            if exe_name.eq_ignore_ascii_case(needle_lower) {
-                if let Ok(proc_handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pe.th32ProcessID) {
-                    let mut buf = [0u16; 1024];
-                    let mut size = buf.len() as u32;
-                    if QueryFullProcessImageNameW(
-                        proc_handle,
-                        PROCESS_NAME_WIN32,
-                        PWSTR(buf.as_mut_ptr()),
-                        &mut size,
-                    )
-                    .is_ok()
-                        && size > 0
-                    {
-                        let p = PathBuf::from(String::from_utf16_lossy(&buf[..size as usize]));
-                        if p.is_file() {
-                            found = Some(p);
-                        }
-                    }
-                    let _ = CloseHandle(proc_handle);
-                }
-                if found.is_some() {
-                    break;
-                }
-            }
-            more = Process32NextW(snap, &mut pe).is_ok();
-        }
-        let _ = CloseHandle(snap);
-        found
-    }
-}
 
-/// Extract the Shell large icon (32x32) from `exe_path` and encode it as an RGBA PNG.
-fn extract_icon_png(exe_path: &Path) -> Option<Vec<u8>> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows::core::PCWSTR;
-    use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
-    };
-    use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
-    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
-
-    struct IconGuard(HICON);
-    impl Drop for IconGuard {
-        fn drop(&mut self) {
-            if !self.0.is_invalid() {
-                unsafe {
-                    let _ = DestroyIcon(self.0);
-                }
-            }
-        }
-    }
-    struct BitmapGuard(HBITMAP);
-    impl Drop for BitmapGuard {
-        fn drop(&mut self) {
-            if !self.0.is_invalid() {
-                unsafe {
-                    let _ = DeleteObject(HGDIOBJ(self.0.0));
-                }
-            }
-        }
-    }
-    struct DcGuard(HDC);
-    impl Drop for DcGuard {
-        fn drop(&mut self) {
-            if !self.0.is_invalid() {
-                unsafe {
-                    let _ = DeleteDC(self.0);
-                }
-            }
-        }
-    }
-
-    let wide: Vec<u16> = exe_path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut shfi = SHFILEINFOW::default();
-    let res = unsafe {
-        SHGetFileInfoW(
-            PCWSTR(wide.as_ptr()),
-            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
-            Some(&mut shfi),
-            size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_LARGEICON,
-        )
-    };
-    if res == 0 || shfi.hIcon.is_invalid() {
-        return None;
-    }
-    let _icon = IconGuard(shfi.hIcon);
-
-    let mut info = ICONINFO::default();
-    if unsafe { GetIconInfo(shfi.hIcon, &mut info) }.is_err() {
-        return None;
-    }
-    let _color = BitmapGuard(info.hbmColor);
-    let _mask = BitmapGuard(info.hbmMask);
-
-    if info.hbmColor.is_invalid() {
-        return None;
-    }
-
-    let mut bm = BITMAP::default();
-    let got = unsafe {
-        GetObjectW(
-            HGDIOBJ(info.hbmColor.0),
-            size_of::<BITMAP>() as i32,
-            Some(&mut bm as *mut BITMAP as *mut core::ffi::c_void),
-        )
-    };
-    if got == 0 || bm.bmWidth <= 0 || bm.bmHeight <= 0 || bm.bmWidth > 256 || bm.bmHeight > 256 {
-        return None;
-    }
-
-    let width = bm.bmWidth as u32;
-    let height = bm.bmHeight as u32;
-    let dc = DcGuard(unsafe { CreateCompatibleDC(None) });
-    if dc.0.is_invalid() {
-        return None;
-    }
-
-    let mut bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width as i32,
-            biHeight: -(height as i32), // top-down
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let mut bgra = vec![0u8; (width * height * 4) as usize];
-    let lines = unsafe {
-        GetDIBits(
-            dc.0,
-            info.hbmColor,
-            0,
-            height,
-            Some(bgra.as_mut_ptr() as *mut core::ffi::c_void),
-            &mut bmi,
-            DIB_RGB_COLORS,
-        )
-    };
-    if lines == 0 {
-        return None;
-    }
-
-    // Legacy icons have alpha=0 across all pixels and store transparency in `hbmMask`.
-    let has_alpha = bgra.chunks_exact(4).any(|px| px[3] != 0);
-    if !has_alpha && !info.hbmMask.is_invalid() {
-        let mut mask_bgra = vec![0u8; (width * height * 4) as usize];
-        let mask_lines = unsafe {
+        let mut bgra = vec![0u8; (width * height * 4) as usize];
+        let lines = unsafe {
             GetDIBits(
                 dc.0,
-                info.hbmMask,
+                info.hbmColor,
                 0,
                 height,
-                Some(mask_bgra.as_mut_ptr() as *mut core::ffi::c_void),
+                Some(bgra.as_mut_ptr() as *mut core::ffi::c_void),
                 &mut bmi,
                 DIB_RGB_COLORS,
             )
         };
-        if mask_lines > 0 {
-            for (px, m) in bgra.chunks_exact_mut(4).zip(mask_bgra.chunks_exact(4)) {
-                px[3] = if m[0] == 0 { 255 } else { 0 };
-            }
-        } else {
-            for px in bgra.chunks_exact_mut(4) {
-                px[3] = 255;
+        if lines == 0 {
+            return None;
+        }
+
+        let has_alpha = bgra.chunks_exact(4).any(|px| px[3] != 0);
+        if !has_alpha && !info.hbmMask.is_invalid() {
+            let mut mask_bgra = vec![0u8; (width * height * 4) as usize];
+            let mask_lines = unsafe {
+                GetDIBits(
+                    dc.0,
+                    info.hbmMask,
+                    0,
+                    height,
+                    Some(mask_bgra.as_mut_ptr() as *mut core::ffi::c_void),
+                    &mut bmi,
+                    DIB_RGB_COLORS,
+                )
+            };
+            if mask_lines > 0 {
+                for (px, m) in bgra.chunks_exact_mut(4).zip(mask_bgra.chunks_exact(4)) {
+                    px[3] = if m[0] == 0 { 255 } else { 0 };
+                }
+            } else {
+                for px in bgra.chunks_exact_mut(4) {
+                    px[3] = 255;
+                }
             }
         }
+
+        let mut rgba = Vec::with_capacity(bgra.len());
+        for px in bgra.chunks_exact(4) {
+            rgba.push(px[2]);
+            rgba.push(px[1]);
+            rgba.push(px[0]);
+            rgba.push(px[3]);
+        }
+
+        Some(encode_rgba_png(width, height, &rgba))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac_icons {
+    use super::*;
+    use objc2::AnyThread;
+    use objc2_app_kit::{
+        NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSGraphicsContext,
+        NSWorkspace,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+
+    pub fn find_app_path(process_name: &str) -> Option<PathBuf> {
+        let raw = process_name.trim();
+        let clean = raw
+            .strip_suffix(".app")
+            .or_else(|| raw.strip_suffix(".exe"))
+            .unwrap_or(raw);
+        let needle = clean.to_lowercase();
+
+        // 1. Check currently running macOS apps (exact localized name, executable name, or bundle ID).
+        let ws = NSWorkspace::sharedWorkspace();
+        let running = ws.runningApplications();
+        for app in running.iter() {
+            let loc_match = app
+                .localizedName()
+                .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
+            let bundle_match = app
+                .bundleIdentifier()
+                .is_some_and(|b| b.to_string().eq_ignore_ascii_case(raw));
+            let exe_match = app
+                .executableURL()
+                .and_then(|u| u.lastPathComponent())
+                .is_some_and(|n| n.to_string().eq_ignore_ascii_case(clean));
+            if (loc_match || bundle_match || exe_match)
+                && let Some(url) = app.bundleURL()
+                && let Some(p) = url.path()
+            {
+                let pb = PathBuf::from(p.to_string());
+                if pb.exists() {
+                    return Some(pb);
+                }
+            }
+        }
+
+        // 2. Check standard macOS Application folders so closed apps still resolve their real icon.
+        let mut dirs = vec![
+            PathBuf::from("/Applications"),
+            PathBuf::from("/System/Applications"),
+            PathBuf::from("/System/Applications/Utilities"),
+            PathBuf::from("/System/Library/CoreServices"),
+        ];
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join("Applications"));
+        }
+
+        let app_filename = format!("{needle}.app");
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten().take(250) {
+                let name = entry.file_name();
+                let Some(s) = name.to_str() else { continue };
+                if s.eq_ignore_ascii_case(&app_filename) {
+                    return Some(entry.path());
+                }
+            }
+        }
+        None
     }
 
-    // Convert BGRA -> RGBA for PNG.
-    let mut rgba = Vec::with_capacity(bgra.len());
-    for px in bgra.chunks_exact(4) {
-        rgba.push(px[2]);
-        rgba.push(px[1]);
-        rgba.push(px[0]);
-        rgba.push(px[3]);
-    }
+    pub fn extract_icon_png(app_path: &Path) -> Option<Vec<u8>> {
+        let path_str = app_path.to_str()?;
+        let ns_path = NSString::from_str(path_str);
+        let ws = NSWorkspace::sharedWorkspace();
+        let icon = ws.iconForFile(&ns_path);
 
-    Some(encode_rgba_png(width, height, &rgba))
+        // Render at 64x64 for crisp Retina icons (displayed at 28-32 logical px).
+        let size: isize = 64;
+        let color_space = NSString::from_str("NSCalibratedRGBColorSpace");
+        let rep = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(),
+                std::ptr::null_mut(),
+                size,
+                size,
+                8,
+                4,
+                true,
+                false,
+                &color_space,
+                NSBitmapFormat::empty(),
+                size * 4,
+                32,
+            )
+        }?;
+        let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+        let prev = NSGraphicsContext::currentContext();
+        NSGraphicsContext::setCurrentContext(Some(&ctx));
+        let target = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size as f64, size as f64));
+        let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        icon.drawInRect_fromRect_operation_fraction(target, zero, NSCompositingOperation::SourceOver, 1.0);
+        ctx.flushGraphics();
+        NSGraphicsContext::setCurrentContext(prev.as_deref());
+
+        let props = NSDictionary::new();
+        let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props) }?;
+        let bytes = data.to_vec();
+        (!bytes.is_empty()).then_some(bytes)
+    }
 }
 
 /// Encode an RGBA buffer as a valid uncompressed (stored-DEFLATE) PNG with zero external crates.
+#[cfg(any(windows, test))]
 pub(crate) fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     assert_eq!(rgba.len(), (width * height * 4) as usize);
     let stride = (width * 4) as usize;
@@ -369,6 +483,7 @@ pub(crate) fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(any(windows, test))]
 fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());
     out.extend_from_slice(kind);
@@ -379,6 +494,7 @@ fn push_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&(!crc).to_be_bytes());
 }
 
+#[cfg(any(windows, test))]
 fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
@@ -393,6 +509,7 @@ fn crc32_update(mut crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
+#[cfg(any(windows, test))]
 fn adler32(data: &[u8]) -> u32 {
     const MOD: u32 = 65_521;
     let (mut a, mut b) = (1u32, 0u32);
@@ -420,12 +537,23 @@ mod tests {
         assert_eq!(decoded.rgba(), &rgba);
     }
 
+    #[cfg(windows)]
     #[test]
     fn extracts_icon_from_windows_explorer() {
         let url = icon_data_url("explorer.exe");
         assert!(
             url.as_deref().is_some_and(|s| s.starts_with("data:image/png;base64,")),
             "expected PNG data URL for explorer.exe, got {url:?}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn extracts_icon_from_macos_finder() {
+        let url = icon_data_url("Finder");
+        assert!(
+            url.as_deref().is_some_and(|s| s.starts_with("data:image/png;base64,")),
+            "expected PNG data URL for Finder, got {url:?}"
         );
     }
 

@@ -156,17 +156,26 @@ def models_dir() -> Path:
     env = os.environ.get("WREN_MODELS_DIR")
     if env:
         return Path(env)
-    return Path(os.environ.get("LOCALAPPDATA", ".")) / "Wren" / "models"
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", ".")) / "Wren" / "models"
+    return Path.home() / "Library" / "Application Support" / "Wren" / "models"
 
 
 @pytest.fixture(scope="module")
 def handler():
+    from wren_sidecar import mlx_backend
     from wren_sidecar.engine import EngineConfig, load_transcriber
 
-    name = os.environ.get("WREN_TEST_MODEL", "large-v3-turbo")
-    if not (models_dir() / name / "model.bin").is_file():
-        pytest.skip(f"model {name} not found under {models_dir()}")
-    cfg = EngineConfig(models_dir=models_dir(), model=name)
+    if mlx_backend.is_apple_silicon():
+        name = os.environ.get("WREN_TEST_MODEL", "large-v3-turbo-q4")
+        if not mlx_backend.has_mlx_weights(models_dir() / name):
+            pytest.skip(f"MLX model {name} not found under {models_dir()}")
+        cfg = EngineConfig(models_dir=models_dir(), model=name, compute="q4")
+    else:
+        name = os.environ.get("WREN_TEST_MODEL", "large-v3-turbo")
+        if not (models_dir() / name / "model.bin").is_file():
+            pytest.skip(f"model {name} not found under {models_dir()}")
+        cfg = EngineConfig(models_dir=models_dir(), model=name)
     transcriber = load_transcriber(cfg, log=lambda level, msg: None)
     return Handler(transcriber=transcriber)
 
@@ -221,16 +230,21 @@ def test_speech_fixture_transcribes(handler):
 
 
 def test_cuda_failure_falls_back_to_cpu_model(monkeypatch, tmp_path):
-    from wren_sidecar import cuda
+    from wren_sidecar import cuda, mlx_backend
     from wren_sidecar.engine import EngineConfig, load_transcriber
 
     if not (models_dir() / "small.en" / "model.bin").is_file():
         pytest.skip("small.en not installed")
-    monkeypatch.setattr(cuda, "cuda_problem", lambda: "no CUDA GPU found")
+    if mlx_backend.is_apple_silicon():
+        monkeypatch.setattr(mlx_backend, "mlx_problem", lambda: "Metal GPU unavailable")
+        expected_reason = "Metal GPU unavailable"
+    else:
+        monkeypatch.setattr(cuda, "cuda_problem", lambda: "no CUDA GPU found")
+        expected_reason = "no CUDA GPU found"
     logs = []
     t = load_transcriber(EngineConfig(models_dir=models_dir()), log=lambda lvl, msg: logs.append((lvl, msg)))
     assert (t.name, t.device, t.compute) == ("small.en", "cpu", "int8")
-    assert any(lvl == "warn" and "CPU" in msg and "no CUDA GPU found" in msg for lvl, msg in logs)
+    assert any(lvl == "warn" and "CPU" in msg and expected_reason in msg for lvl, msg in logs)
     silent = write_wav(tmp_path / "s.wav", [0] * 16000)
     res = Handler(t).handle({"v": 1, "type": "transcribe", "id": "c1", "audio_path": str(silent), "bias_terms": [], "prompt": ""})[0]
     assert res["type"] == "result" and res["text"] == ""

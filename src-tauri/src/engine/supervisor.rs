@@ -352,7 +352,11 @@ impl Supervisor {
     fn launch(self: &Arc<Self>, force_cpu: bool) -> Result<Running> {
         let cfg = &self.cfg;
         if !cfg.python.is_file() {
-            bail!("the speech runtime is not installed ({} is missing; run scripts\\setup-runtime.ps1)", cfg.python.display());
+            #[cfg(windows)]
+            let setup_cmd = "scripts\\setup-runtime.ps1";
+            #[cfg(not(windows))]
+            let setup_cmd = "scripts/setup-runtime.sh";
+            bail!("the speech runtime is not installed ({} is missing; run {setup_cmd})", cfg.python.display());
         }
         if !cfg.sidecar_dir.join("wren_sidecar").join("__main__.py").is_file() {
             bail!("the speech engine files are missing from {}", cfg.sidecar_dir.display());
@@ -383,6 +387,12 @@ impl Supervisor {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             const CREATE_SUSPENDED: u32 = 0x0000_0004;
             cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Put the sidecar in its own process group so shutdown/kill tears down any children too.
+            cmd.process_group(0);
         }
         let mut child = cmd.spawn().context("cannot launch the speech engine")?;
         let pid = child.id();
@@ -503,13 +513,17 @@ fn open_sidecar_log(path: &std::path::Path) -> Result<std::fs::File> {
     Ok(f)
 }
 
-// ------------------------------------------------------------------------------------- Windows
+// ------------------------------------------------------------------------------------- Process lifecycle
 
-/// A Job Object with KILL_ON_JOB_CLOSE: when Wren exits (or crashes) the handle closes and Windows
-/// kills every process in it.
+/// Windows: a Job Object with KILL_ON_JOB_CLOSE (when Wren exits or crashes, Windows kills every
+/// process in it). Unix/macOS: tracks the sidecar's process group (`pgid`) and sends `SIGKILL` to
+/// the whole group on terminate/drop (and closing stdin already makes the sidecar `os._exit(0)`).
+#[cfg(windows)]
 struct Job(Option<isize>);
+#[cfg(not(windows))]
+struct Job(Mutex<Option<i32>>);
 
-// Kernel object handles may be used from any thread.
+// Kernel object handles / pgid mutex may be used from any thread.
 unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
 
@@ -529,7 +543,14 @@ mod win {
 
 impl Job {
     fn none() -> Self {
-        Job(None)
+        #[cfg(windows)]
+        {
+            Job(None)
+        }
+        #[cfg(not(windows))]
+        {
+            Job(Mutex::new(None))
+        }
     }
 
     #[cfg(windows)]
@@ -554,7 +575,7 @@ impl Job {
 
     #[cfg(not(windows))]
     fn new() -> Result<Self> {
-        Ok(Job(None))
+        Ok(Job(Mutex::new(None)))
     }
 
     #[cfg(windows)]
@@ -571,7 +592,8 @@ impl Job {
     }
 
     #[cfg(not(windows))]
-    fn assign(&self, _child: &Child) -> Result<()> {
+    fn assign(&self, child: &Child) -> Result<()> {
+        *self.0.lock() = Some(child.id() as i32);
         Ok(())
     }
 
@@ -579,6 +601,14 @@ impl Job {
         #[cfg(windows)]
         if let Some(job) = self.handle() {
             let _ = unsafe { win::TerminateJobObject(job, 1) };
+        }
+        #[cfg(unix)]
+        if let Some(pgid) = self.0.lock().take()
+            && pgid > 0
+        {
+            unsafe {
+                let _ = libc::kill(-pgid, libc::SIGKILL);
+            }
         }
     }
 
@@ -605,6 +635,13 @@ impl Job {
                 return list.ids[..(list.listed as usize).min(64)].iter().map(|&id| id as u32).collect();
             }
         }
+        #[cfg(unix)]
+        if let Some(pgid) = *self.0.lock()
+            && pgid > 0
+            && super::process_is_running(pgid as u32)
+        {
+            return vec![pgid as u32];
+        }
         Vec::new()
     }
 }
@@ -616,6 +653,8 @@ impl Drop for Job {
             // KILL_ON_JOB_CLOSE: closing the last handle kills whatever is left.
             let _ = unsafe { win::CloseHandle(job) };
         }
+        #[cfg(not(windows))]
+        self.terminate();
     }
 }
 
@@ -702,8 +741,22 @@ for line in sys.stdin:
 "#;
 
     fn runtime_python() -> Option<PathBuf> {
+        #[cfg(windows)]
         let real = std::env::var_os("LOCALAPPDATA")
             .map(|l| PathBuf::from(l).join("Wren").join("runtime").join(".venv").join("Scripts").join("python.exe"));
+        #[cfg(target_os = "macos")]
+        let real = std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+                .join("Wren")
+                .join("runtime")
+                .join(".venv")
+                .join("bin")
+                .join("python")
+        });
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let real: Option<PathBuf> = None;
         [Some(Paths::resolve().runtime_python()), real].into_iter().flatten().find(|p| p.is_file())
     }
 
@@ -752,11 +805,17 @@ for line in sys.stdin:
         None
     }
 
-    /// The python.exe pids among `pids`, launcher first.
+    /// The python pids among `pids`, launcher first.
     fn pythons(pids: &[u32]) -> Vec<u32> {
         pids.iter()
             .copied()
-            .filter(|&p| super::super::process_image(p).is_some_and(|i| i.file_name().is_some_and(|n| n.eq_ignore_ascii_case("python.exe"))))
+            .filter(|&p| {
+                super::super::process_image(p).is_some_and(|i| {
+                    i.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.eq_ignore_ascii_case("python.exe") || n.to_ascii_lowercase().starts_with("python"))
+                })
+            })
             .collect()
     }
 
@@ -774,15 +833,24 @@ for line in sys.stdin:
         assert_eq!(f.engine.transcribe(req("early", "a.wav"), Duration::from_secs(1)), Err(EngineError::NotReady));
         let ready = wait_for(&f.status_rx, Duration::from_secs(15), is_ready).expect("ready");
         assert_eq!(ready, EngineStatus::Ready { model: "ok".into(), device: "cuda".into(), vram_mb: 7 });
-        let r = f.engine.transcribe(req("d1", r"C:\x\a.wav"), Duration::from_secs(5)).unwrap();
+        let sample_path = PathBuf::from("x").join("a.wav");
+        let r = f.engine.transcribe(req("d1", &sample_path.to_string_lossy()), Duration::from_secs(5)).unwrap();
         assert_eq!((r.text.as_str(), r.speech_ms, r.infer_ms, r.segments.len()), ("heard a.wav Wren", 1000, 5, 1));
         assert!(matches!(f.engine.transcribe(req("d2", "bad.wav"), Duration::from_secs(5)), Err(EngineError::BadAudio(_))));
         assert!(matches!(f.engine.transcribe(req("d3", "oom.wav"), Duration::from_secs(5)), Err(EngineError::Oom(_))));
         assert!(f.engine.ping(Duration::from_secs(5)));
 
         let pids = f.engine.process_ids();
-        assert!(pids.len() >= 2, "venv launcher + interpreter (+ conhost), all in the job: {pids:?}");
-        assert_eq!(pythons(&pids).len(), 2, "launcher and interpreter");
+        #[cfg(windows)]
+        {
+            assert!(pids.len() >= 2, "venv launcher + interpreter (+ conhost), all in the job: {pids:?}");
+            assert_eq!(pythons(&pids).len(), 2, "launcher and interpreter");
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(!pids.is_empty(), "sidecar pid tracked: {pids:?}");
+            assert!(!pythons(&pids).is_empty(), "python process tracked: {pids:?}");
+        }
         assert!(pids.iter().all(|&p| process_is_running(p)));
         let log = std::fs::read_to_string(f.dir.join("logs").join("sidecar.log")).unwrap();
         assert!(log.contains("--- sidecar launch"));
@@ -796,10 +864,18 @@ for line in sys.stdin:
         let Some(f) = fake("ok") else { return };
         wait_for(&f.status_rx, Duration::from_secs(15), is_ready).expect("ready");
         let pids = f.engine.process_ids();
-        let interpreter = pythons(&pids)[1];
+        let py_pids = pythons(&pids);
+        let interpreter = *py_pids.last().expect("python pid");
         let t0 = Instant::now();
-        let out = std::process::Command::new("taskkill").args(["/F", "/PID", &interpreter.to_string()]).output().unwrap();
-        assert!(out.status.success());
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("taskkill").args(["/F", "/PID", &interpreter.to_string()]).output().unwrap();
+            assert!(out.status.success());
+        }
+        #[cfg(unix)]
+        {
+            assert_eq!(unsafe { libc::kill(interpreter as libc::pid_t, libc::SIGKILL) }, 0);
+        }
         // Review r1: the crash must show at once, not only after the back-off.
         std::thread::sleep(Duration::from_millis(200));
         assert!(!is_ready(&f.engine.status()), "status still Ready 200 ms after the kill: {:?}", f.engine.status());

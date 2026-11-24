@@ -92,34 +92,63 @@ export function formatNumber(n: number): string {
 
 const APP_NAMES: Record<string, string> = {
   "claude.exe": "Claude",
+  claude: "Claude",
   "t3 code (beta).exe": "T3 Code",
+  "t3 code (beta)": "T3 Code",
   "t3-code.exe": "T3 Code",
   "t3code.exe": "T3 Code",
   "code.exe": "VS Code",
+  "visual studio code": "VS Code",
   "cursor.exe": "Cursor",
+  cursor: "Cursor",
   "outlook.exe": "Outlook",
   "olk.exe": "Outlook",
+  "microsoft outlook": "Outlook",
   "windowsterminal.exe": "Terminal",
   "wt.exe": "Terminal",
+  terminal: "Terminal",
+  iterm2: "iTerm2",
+  ghostty: "Ghostty",
+  warp: "Warp",
   "msedge.exe": "Edge",
+  "microsoft edge": "Edge",
   "chrome.exe": "Chrome",
+  "google chrome": "Chrome",
+  "brave browser": "Brave",
+  safari: "Safari",
+  arc: "Arc",
+  dia: "Dia",
   "firefox.exe": "Firefox",
+  firefox: "Firefox",
   "winword.exe": "Word",
+  "microsoft word": "Word",
   "excel.exe": "Excel",
+  "microsoft excel": "Excel",
   "slack.exe": "Slack",
+  slack: "Slack",
   "discord.exe": "Discord",
+  discord: "Discord",
   "notepad.exe": "Notepad",
+  notes: "Notes",
+  mail: "Mail",
+  messages: "Messages",
+  finder: "Finder",
+  xcode: "Xcode",
+  notion: "Notion",
+  obsidian: "Obsidian",
+  telegram: "Telegram",
   "explorer.exe": "File Explorer",
   "teams.exe": "Teams",
   "ms-teams.exe": "Teams",
+  "microsoft teams": "Teams",
 };
 
-/** Friendly app name from a process name ("claude.exe" → "Claude"). */
+/** Friendly app name from a process name ("claude.exe" → "Claude", "Google Chrome" → "Chrome"). */
 export function appName(process: string): string {
   if (!process) return "";
   const key = process.toLowerCase();
   if (APP_NAMES[key]) return APP_NAMES[key];
-  const base = process.replace(/\.exe$/i, "");
+  const base = process.replace(/\.(exe|app)$/i, "");
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
 

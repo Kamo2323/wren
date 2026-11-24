@@ -403,7 +403,15 @@ export default function Popup() {
   return (
     <div className={`stage ${reduced ? "is-reduced" : ""}`}>
       <div className={`hint ${showHint ? "is-on" : ""}`} aria-hidden={!showHint}>
-        Tap <kbd>Ctrl</kbd> + <kbd>Win</kbd> to finish
+        {constants.platform === "macos" ? (
+          <>
+            Tap <kbd>fn</kbd> + <kbd>Control</kbd> to finish
+          </>
+        ) : (
+          <>
+            Tap <kbd>Ctrl</kbd> + <kbd>Win</kbd> to finish
+          </>
+        )}
       </div>
       <div
         className={`pill pill--${tone} ${shown ? "is-shown" : "is-hidden"} ${clickable ? "is-clickable" : ""}`}

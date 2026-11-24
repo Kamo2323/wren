@@ -46,6 +46,15 @@ const SVG_ICONS: Record<string, string> = {
   explorer: svgUrl(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M4 9.5A2.5 2.5 0 0 1 6.5 7h5.8l2.2 2.4h11A2.5 2.5 0 0 1 28 11.9v11.6a2.5 2.5 0 0 1-2.5 2.5h-19A2.5 2.5 0 0 1 4 23.5v-14z" fill="#F5B942"/><rect x="4" y="11.5" width="24" height="14.5" rx="2.5" fill="#FFD166"/><rect x="10" y="20" width="12" height="3" rx="1.5" fill="#2B6CB0"/></svg>',
   ),
+  safari: svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="sf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#38BDF8"/><stop offset="1" stop-color="#1D4ED8"/></linearGradient></defs><circle cx="16" cy="16" r="13" fill="url(#sf)"/><polygon points="16,16 23,9 18.5,18.5" fill="#EF4444"/><polygon points="16,16 9,23 13.5,13.5" fill="#FFFFFF"/><circle cx="16" cy="16" r="1.4" fill="#E2E8F0"/></svg>',
+  ),
+  finder: svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#3B82F6"/><path d="M16 4h9a3 3 0 0 1 3 3v18a3 3 0 0 1-3 3h-9V4z" fill="#93C5FD"/><path d="M16 9c-1.5 3-2 6-1 8h3" stroke="#1E3A8A" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="11" cy="12" r="1.3" fill="#1E3A8A"/><circle cx="21" cy="12" r="1.3" fill="#1E3A8A"/><path d="M10.5 20.5c3 2.5 8 2.5 11 0" stroke="#1E3A8A" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>',
+  ),
+  notes: svgUrl(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#FEFCE8"/><rect width="32" height="9" rx="7" fill="#FACC15"/><rect y="5" width="32" height="4" fill="#FACC15"/><line x1="6" y1="15" x2="26" y2="15" stroke="#CBD5E1" stroke-width="1.4"/><line x1="6" y1="20" x2="26" y2="20" stroke="#CBD5E1" stroke-width="1.4"/><line x1="6" y1="25" x2="20" y2="25" stroke="#CBD5E1" stroke-width="1.4"/></svg>',
+  ),
 };
 
 const PROCESS_MAP: Record<string, string> = {
@@ -57,22 +66,40 @@ const PROCESS_MAP: Record<string, string> = {
   notepad: "png:notepad",
   "outlook.exe": "png:outlook",
   "olk.exe": "png:outlook",
+  "microsoft outlook": "png:outlook",
   outlook: "png:outlook",
   "code.exe": "svg:code",
+  "visual studio code": "svg:code",
   "cursor.exe": "svg:cursor",
+  cursor: "svg:cursor",
   "t3 code (beta).exe": "svg:t3code",
+  "t3 code (beta)": "svg:t3code",
   "t3-code.exe": "svg:t3code",
   "t3code.exe": "svg:t3code",
   "windowsterminal.exe": "svg:terminal",
   "wt.exe": "svg:terminal",
+  terminal: "svg:terminal",
+  iterm2: "svg:terminal",
+  ghostty: "svg:terminal",
+  warp: "svg:terminal",
   "msedge.exe": "svg:msedge",
+  "microsoft edge": "svg:msedge",
   "chrome.exe": "svg:chrome",
+  "google chrome": "svg:chrome",
+  safari: "svg:safari",
+  finder: "svg:finder",
+  notes: "svg:notes",
   "firefox.exe": "svg:firefox",
+  firefox: "svg:firefox",
   "winword.exe": "svg:winword",
+  "microsoft word": "svg:winword",
   "excel.exe": "svg:excel",
+  "microsoft excel": "svg:excel",
   "discord.exe": "svg:discord",
+  discord: "svg:discord",
   "teams.exe": "svg:teams",
   "ms-teams.exe": "svg:teams",
+  "microsoft teams": "svg:teams",
   "explorer.exe": "svg:explorer",
 };
 

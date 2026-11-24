@@ -17,15 +17,16 @@ const RECENT_HOME_LIMIT = 8;
 let lastStats: Stats | null = null;
 let lastRows: TranscriptionRow[] | null = null;
 
-function EmptyRecent({ kept }: { kept: string }) {
+function EmptyRecent({ kept, isMac }: { kept: string; isMac: boolean }) {
   return (
     <EmptyState
       art={<ChordKeys />}
       title="Hold, speak, let go"
       note={`Your dictations show up here for ${kept}. Click one to copy it again.`}
     >
-      Hold the left Ctrl and Windows keys while you talk. When you let go, Wren types it where your cursor is.
-      Double-tap them for hands-free.
+      {isMac
+        ? "Hold the fn and Control keys while you talk. When you let go, Wren types it where your cursor is. Double-tap them for hands-free."
+        : "Hold the left Ctrl and Windows keys while you talk. When you let go, Wren types it where your cursor is. Double-tap them for hands-free."}
     </EmptyState>
   );
 }
@@ -97,7 +98,7 @@ export default function Home({
         </div>
 
         {rows === null ? null : rows.length === 0 ? (
-          <EmptyRecent kept={kept} />
+          <EmptyRecent kept={kept} isMac={constants.platform === "macos"} />
         ) : (
           <div className="day__cards">
             {rows.map((r) => (

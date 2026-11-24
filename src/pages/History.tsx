@@ -18,6 +18,7 @@ let lastAll: TranscriptionRow[] | null = null;
 
 export default function History() {
   const constants = useConstants();
+  const isMac = constants.platform === "macos";
   const kept = retentionLabel(constants.retentionHours);
   const [query, setQuery] = useState("");
   const [dayFilter, setDayFilter] = useState("all");
@@ -84,11 +85,11 @@ export default function History() {
     };
   }, [load]);
 
-  // Ctrl+F or "/" jumps to the search box
+  // ⌘F / Ctrl+F or "/" jumps to the search box
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-      if ((e.ctrlKey && e.key.toLowerCase() === "f") || (e.key === "/" && !typing)) {
+      if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") || (e.key === "/" && !typing)) {
         e.preventDefault();
         inputRef.current?.focus();
         inputRef.current?.select();
@@ -137,7 +138,9 @@ export default function History() {
       <header className="page-head">
         <div>
           <h1 className="page__title">History</h1>
-          <p className="page__lede">Dictations and their recordings are kept on this PC for {kept}. Click a card to copy it.</p>
+          <p className="page__lede">
+            Dictations and their recordings are kept on {isMac ? "this Mac" : "this PC"} for {kept}. Click a card to copy it.
+          </p>
         </div>
         <span className="keep-note">
           <Clock size={15} strokeWidth={2} aria-hidden="true" /> Deleted after {kept}
@@ -176,7 +179,7 @@ export default function History() {
             </button>
           ) : (
             <kbd className="search__kbd" aria-hidden="true">
-              Ctrl F
+              {isMac ? "⌘F" : "Ctrl F"}
             </kbd>
           )}
         </div>
@@ -242,8 +245,9 @@ export default function History() {
             title={`Nothing from the last ${kept}`}
             note="Your stats are kept for good, even after dictations are deleted."
           >
-            Hold the left Ctrl and Windows keys and speak. Everything you dictate is kept here for {kept}, so you can
-            search it and copy it again.
+            {isMac
+              ? `Hold the fn and Control keys and speak. Everything you dictate is kept here for ${kept}, so you can search it and copy it again.`
+              : `Hold the left Ctrl and Windows keys and speak. Everything you dictate is kept here for ${kept}, so you can search it and copy it again.`}
           </EmptyState>
         )
       ) : (

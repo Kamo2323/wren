@@ -169,6 +169,12 @@ pub fn resolve_sidecar_dir() -> PathBuf {
     }
     let mut candidates = Vec::new();
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        #[cfg(target_os = "macos")]
+        {
+            // Inside Wren.app/Contents/MacOS/wren, Tauri puts resources under ../Resources/.
+            candidates.push(exe_dir.join("..").join("Resources").join("_up_").join("sidecar"));
+            candidates.push(exe_dir.join("..").join("Resources").join("sidecar"));
+        }
         candidates.push(exe_dir.join("_up_").join("sidecar"));
         candidates.push(exe_dir.join("sidecar"));
     }
@@ -255,6 +261,38 @@ pub fn process_image(pid: u32) -> Option<PathBuf> {
     }
 }
 
+/// True if a process with this id is still running (used to prove no sidecar outlives Wren).
+#[cfg(unix)]
+pub fn process_is_running(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if r == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Full path of a running process's executable on macOS via `proc_pidpath`.
+#[cfg(target_os = "macos")]
+pub fn process_image(pid: u32) -> Option<PathBuf> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe extern "C" {
+        fn proc_pidpath(pid: libc::c_int, buffer: *mut libc::c_void, buffersize: u32) -> libc::c_int;
+    }
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+    let len = unsafe { proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+    if len <= 0 {
+        return None;
+    }
+    let s = std::str::from_utf8(&buf[..len as usize]).ok()?;
+    Some(PathBuf::from(s))
+}
+
 impl Drop for Engine {
     fn drop(&mut self) {
         self.inner.shutdown();
@@ -267,18 +305,24 @@ mod tests {
 
     #[test]
     fn args_follow_settings() {
-        let paths = Paths::under(Path::new("C:/tmp/wren-engine-test"));
-        let cfg = EngineConfig::from_paths(&paths, &EngineSettings::default());
+        let paths = Paths::under(Path::new("/tmp/wren-engine-test"));
+        let defaults = EngineSettings::default();
+        let cfg = EngineConfig::from_paths(&paths, &defaults);
         let args = cfg.sidecar_args(false);
         let joined = args.join(" ");
         assert!(joined.starts_with("-s -m wren_sidecar --models-dir "));
-        for want in ["--model large-v3-turbo", "--compute int8_float16", "--beam 1", "--cpu-fallback small.en", "--language en"] {
+        let expected_model = format!("--model {}", defaults.model);
+        let expected_compute = format!("--compute {}", defaults.compute_type);
+        for want in [expected_model.as_str(), expected_compute.as_str(), "--beam 1", "--cpu-fallback small.en", "--language en"] {
             assert!(joined.contains(want), "{want} in {joined}");
         }
         assert!(!joined.contains("--no-vad") && !joined.contains("--condition-on-previous-text"));
         assert!(!joined.contains("--device"));
         assert!(cfg.sidecar_args(true).join(" ").ends_with("--device cpu"));
+        #[cfg(windows)]
         assert!(cfg.python.ends_with("python.exe") && cfg.log_file.ends_with("sidecar.log"));
+        #[cfg(not(windows))]
+        assert!(cfg.python.ends_with("python") && cfg.log_file.ends_with("sidecar.log"));
 
         let s = EngineSettings { vad_filter: false, condition_on_previous_text: true, beam_size: 0, ..EngineSettings::default() };
         let joined = EngineConfig::from_paths(&paths, &s).sidecar_args(false).join(" ");

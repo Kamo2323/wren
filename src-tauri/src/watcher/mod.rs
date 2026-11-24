@@ -16,7 +16,10 @@
 
 pub mod prepaste;
 pub mod track;
+#[cfg(windows)]
 pub mod uia;
+#[cfg(target_os = "macos")]
+pub mod ax_macos;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -36,7 +39,22 @@ use crate::store::Store;
 use track::{EndReason, FocusKey, Reading, WatchEnd};
 
 /// Never watched: what is typed there is commands, not prose.
-pub const TERMINALS: [&str; 5] = ["windowsterminal.exe", "conhost.exe", "cmd.exe", "powershell.exe", "pwsh.exe"];
+pub const TERMINALS: [&str; 14] = [
+    "windowsterminal.exe",
+    "conhost.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "terminal",
+    "iterm2",
+    "iterm",
+    "ghostty",
+    "warp",
+    "alacritty",
+    "wezterm",
+    "wezterm-gui",
+    "kitty",
+];
 
 /// Result of the read-only probe of the Claude desktop app (docs/research/claude-uia-probe.md,
 /// 2 November 2026): the message box read in p95 0 ms (max 1 ms) over 20 reads, well under the
@@ -169,11 +187,21 @@ impl Watcher {
         let slow_apps = self.slow_apps.clone();
         let spawned = std::thread::Builder::new().name("wren-watcher".into()).spawn(move || {
             let started = Instant::now();
+            #[cfg(windows)]
             let _com = uia::ComMta::join();
+            #[cfg(windows)]
             let client = match uia::Uia::new(WATCH_UIA_TIMEOUT_MS) {
                 Ok(c) => c,
                 Err(err) => {
                     tracing::warn!(error = %err, "watcher: no UI Automation");
+                    return;
+                }
+            };
+            #[cfg(target_os = "macos")]
+            let client = match ax_macos::AxClient::new(WATCH_UIA_TIMEOUT_MS) {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::warn!(error = %err, "watcher: no macOS Accessibility client");
                     return;
                 }
             };
@@ -237,9 +265,33 @@ pub fn may_read(focus: &FocusKey, target_pid: u32, expected: Option<&FocusKey>) 
 }
 
 /// One watcher read of the focused element (text bounded to `max_chars + 1`).
+#[cfg(windows)]
 fn read_focused(client: &uia::Uia, target_pid: u32, expected: Option<&FocusKey>, max_chars: usize) -> Reading {
     let t = Instant::now();
     let took = || t.elapsed().as_millis() as u64;
+    let focused = match client.focused() {
+        Ok(f) => f,
+        Err(_) => return Reading::Failed { took_ms: took() },
+    };
+    let focus = FocusKey { pid: focused.facts.pid, runtime_id: focused.runtime_id.clone() };
+    if !may_read(&focus, target_pid, expected) {
+        return Reading::NoText { focus, took_ms: took() };
+    }
+    match client.read_text(&focused, Some(max_chars)) {
+        Ok(Some(text)) => Reading::Text { focus, text, took_ms: took() },
+        Ok(None) => Reading::NoText { focus, took_ms: took() },
+        Err(_) => Reading::Failed { took_ms: took() },
+    }
+}
+
+/// One watcher read of the focused macOS Accessibility element (text bounded to `max_chars + 1`).
+#[cfg(target_os = "macos")]
+fn read_focused(client: &ax_macos::AxClient, target_pid: u32, expected: Option<&FocusKey>, max_chars: usize) -> Reading {
+    let t = Instant::now();
+    let took = || t.elapsed().as_millis() as u64;
+    if !crate::hotkey::accessibility_trusted(false) {
+        return Reading::Failed { took_ms: took() };
+    }
     let focused = match client.focused() {
         Ok(f) => f,
         Err(_) => return Reading::Failed { took_ms: took() },

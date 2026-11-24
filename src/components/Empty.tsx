@@ -1,8 +1,26 @@
-// Empty states for every list: the Ctrl + Win keycaps, or an icon in a soft disc, then a title and a line.
+// Empty states for every list: the OS dictation chord keycaps, or an icon in a soft disc, then a title and a line.
 import type { ReactNode } from "react";
+import { useConstants } from "../lib/useConstants";
 
-/** The dictation chord drawn as two keycaps. */
+/** The dictation chord drawn as two keycaps (`Ctrl + Win` on Windows, `fn + Control` on macOS). */
 export function ChordKeys() {
+  const isMac = useConstants().platform === "macos";
+  if (isMac) {
+    return (
+      <div className="empty__keys" aria-hidden="true">
+        <kbd className="key">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+            <circle cx="8" cy="8" r="6.2" />
+            <ellipse cx="8" cy="8" rx="3" ry="6.2" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+          </svg>
+          fn
+        </kbd>
+        <span className="empty__plus">+</span>
+        <kbd className="key">Control</kbd>
+      </div>
+    );
+  }
   return (
     <div className="empty__keys" aria-hidden="true">
       <kbd className="key">Ctrl</kbd>

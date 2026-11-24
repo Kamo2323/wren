@@ -83,7 +83,8 @@ export function useMicLevel(active: boolean, deviceName: string | null): MicTest
         };
         loop();
       } catch {
-        if (!stopped) setTest({ state: "error", message: "Couldn't open the microphone. Check it's plugged in and allowed in Windows privacy settings." });
+        const osLabel = typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent) ? "macOS" : "Windows";
+        if (!stopped) setTest({ state: "error", message: `Couldn't open the microphone. Check it's plugged in and allowed in ${osLabel} privacy settings.` });
       }
     })();
 

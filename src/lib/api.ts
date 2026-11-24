@@ -78,7 +78,19 @@ const read = <T,>(value: T) => (mockFail ? new Promise<T>((_, no) => setTimeout(
 // ---------- Task 1: app + settings ----------
 
 /** Defaults matching src-tauri/src/constants.rs; used before `get_constants` answers and in mock mode. */
+function detectMockPlatform(): "windows" | "macos" {
+  if (typeof window !== "undefined") {
+    const p = new URLSearchParams(window.location.search).get("platform");
+    if (p === "macos" || p === "windows") return p;
+    if (typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent)) {
+      return "macos";
+    }
+  }
+  return "windows";
+}
+
 export const DEFAULT_CONSTANTS: UiConstants = {
+  platform: detectMockPlatform(),
   retentionHours: 72,
   typingWpmDefault: 52,
   popupWindowW: 360,
@@ -107,6 +119,16 @@ export const saveSettings = (settings: Settings): Promise<void> => {
 
 export const setWindowTheme = (theme: "dark" | "light" | null): Promise<void> =>
   inTauri ? call("set_window_theme", { theme }) : Promise.resolve();
+
+export const accessibilityStatus = (): Promise<boolean> =>
+  inTauri
+    ? call<boolean>("accessibility_status")
+    : Promise.resolve(
+        typeof window === "undefined" || new URLSearchParams(window.location.search).get("accessibility") !== "0",
+      );
+
+export const openAccessibilitySettings = (): Promise<void> =>
+  inTauri ? call("open_accessibility_settings") : Promise.resolve();
 
 export const appIcon = (processName: string): Promise<string | null> =>
   inTauri ? call<string | null>("app_icon", { processName }) : Promise.resolve(null);

@@ -30,3 +30,26 @@ export function OthersBanner({ names, onDismiss, onMore }: { names: string[]; on
     </div>
   );
 }
+
+/** macOS banner shown until Accessibility permission is granted (required for fn + Control & ⌘V). */
+export function AccessibilityBanner({ onAllow, onDismiss }: { onAllow: () => void; onDismiss: () => void }) {
+  return (
+    <div className="banner-wrap">
+      <div className="banner" role="status">
+        <span className="banner__icon" aria-hidden="true">
+          <TriangleAlert size={18} strokeWidth={2.1} />
+        </span>
+        <p className="banner__text">
+          <strong>Accessibility permission needed.</strong> Allow Wren in System Settings → Privacy &amp; Security → Accessibility so{" "}
+          <strong>fn + Control</strong> and pasting work in every app.
+        </p>
+        <button type="button" className="banner__more" onClick={onAllow}>
+          Open Settings
+        </button>
+        <IconButton label="Hide this notice" onClick={onDismiss} className="banner__close">
+          <X size={17} strokeWidth={2.1} />
+        </IconButton>
+      </div>
+    </div>
+  );
+}

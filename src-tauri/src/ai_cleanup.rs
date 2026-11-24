@@ -343,29 +343,52 @@ pub fn loaded_vram_mb(model: &str) -> Option<u64> {
 
 /// `ollama.exe`: on the PATH, or where the Ollama installer puts it.
 fn ollama_exe() -> Option<std::path::PathBuf> {
-    let installed = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Programs").join("Ollama").join("ollama.exe"));
-    if let Some(p) = installed.filter(|p| p.exists()) {
-        return Some(p);
+    #[cfg(windows)]
+    {
+        let installed = std::env::var_os("LOCALAPPDATA")
+            .map(|d| std::path::PathBuf::from(d).join("Programs").join("Ollama").join("ollama.exe"));
+        if let Some(p) = installed.filter(|p| p.exists()) {
+            return Some(p);
+        }
+        std::env::var_os("PATH")
+            .and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("ollama.exe")).find(|p| p.exists()))
     }
-    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("ollama.exe")).find(|p| p.exists()))
+    #[cfg(not(windows))]
+    {
+        if let Some(found) = std::env::var_os("PATH")
+            .and_then(|paths| std::env::split_paths(&paths).map(|d| d.join("ollama")).find(|p| p.is_file()))
+        {
+            return Some(found);
+        }
+        [
+            "/usr/local/bin/ollama",
+            "/opt/homebrew/bin/ollama",
+            "/Applications/Ollama.app/Contents/Resources/ollama",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.is_file())
+    }
 }
 
 /// Downloads `model` with `ollama pull` (no console window). Errors are user-facing.
 pub fn pull(model: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let Some(exe) = ollama_exe() else {
         return Err("Wren couldn't find Ollama. Install it from ollama.com, then try again.".into());
     };
     let t = Instant::now();
-    let mut child = std::process::Command::new(exe)
-        .args(["pull", model])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["pull", model])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|e| {
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().map_err(|e| {
             tracing::warn!(error = %e, "cannot start ollama pull");
             "Wren couldn't start Ollama's download.".to_string()
         })?;

@@ -71,16 +71,9 @@ fn sweep_store(store: &Store, paths: &Paths) {
     }
 }
 
-/// Colour the main window's caption bar, border and title text to match the active Light or Dark
-/// theme (`None` / `"system"` follows Windows). Windows 11 DWM attributes; on Windows 10 the call
-/// fails cleanly and the Tauri window theme still applies.
+/// Colour the main window's chrome/caption to match the active Light or Dark theme (`None` /
+/// `"system"` follows the OS). Windows 11 uses DWM attributes; macOS uses `NSWindow` appearance.
 pub fn apply_window_theme(win: &tauri::WebviewWindow, theme: Option<&str>) {
-    use windows::Win32::Foundation::{COLORREF, HWND};
-    use windows::Win32::Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
-        DWMWA_USE_IMMERSIVE_DARK_MODE,
-    };
-
     let dark = match theme.map(|s| s.to_ascii_lowercase()).as_deref() {
         Some("dark") => {
             let _ = win.set_theme(Some(tauri::Theme::Dark));
@@ -96,41 +89,54 @@ pub fn apply_window_theme(win: &tauri::WebviewWindow, theme: Option<&str>) {
         }
     };
 
-    let Ok(h) = win.hwnd() else { return };
-    let hwnd = HWND(h.0 as *mut core::ffi::c_void);
-    let set_color = |attr, colour: u32| unsafe {
-        let value = COLORREF(colour);
-        DwmSetWindowAttribute(
-            hwnd,
-            attr,
-            &value as *const COLORREF as *const core::ffi::c_void,
-            std::mem::size_of::<COLORREF>() as u32,
-        )
-    };
-    let dark_flag: i32 = if dark { 1 } else { 0 };
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{COLORREF, HWND};
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark_flag as *const i32 as *const core::ffi::c_void,
-            std::mem::size_of::<i32>() as u32,
-        )
-    };
+        };
 
-    // COLORREF is 0x00BBGGRR. Dark matches --ground (#1c232d) / --line (#323e4b) / --ink (#f2f4f7);
-    // Light matches --ground (#fbfcff) / --line (#e1e6ee) / --ink (#1b2738).
-    let (caption, border, text) = if dark {
-        (0x002D_231C, 0x004B_3E32, 0x00F7_F4F2)
-    } else {
-        (0x00FF_FCFB, 0x00EE_E6E1, 0x0038_271B)
-    };
-    let results = [
-        set_color(DWMWA_CAPTION_COLOR, caption),
-        set_color(DWMWA_BORDER_COLOR, border),
-        set_color(DWMWA_TEXT_COLOR, text),
-    ];
-    if let Some(Err(err)) = results.into_iter().find(|r| r.is_err()) {
-        tracing::info!(error = %err, "caption colour not supported (Windows 10?); using window theme only");
+        let Ok(h) = win.hwnd() else { return };
+        let hwnd = HWND(h.0 as *mut core::ffi::c_void);
+        let set_color = |attr, colour: u32| unsafe {
+            let value = COLORREF(colour);
+            DwmSetWindowAttribute(
+                hwnd,
+                attr,
+                &value as *const COLORREF as *const core::ffi::c_void,
+                std::mem::size_of::<COLORREF>() as u32,
+            )
+        };
+        let dark_flag: i32 = if dark { 1 } else { 0 };
+        let _ = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &dark_flag as *const i32 as *const core::ffi::c_void,
+                std::mem::size_of::<i32>() as u32,
+            )
+        };
+
+        // COLORREF is 0x00BBGGRR. Dark matches --ground (#1c232d) / --line (#323e4b) / --ink (#f2f4f7);
+        // Light matches --ground (#fbfcff) / --line (#e1e6ee) / --ink (#1b2738).
+        let (caption, border, text) = if dark {
+            (0x002D_231C, 0x004B_3E32, 0x00F7_F4F2)
+        } else {
+            (0x00FF_FCFB, 0x00EE_E6E1, 0x0038_271B)
+        };
+        let results = [
+            set_color(DWMWA_CAPTION_COLOR, caption),
+            set_color(DWMWA_BORDER_COLOR, border),
+            set_color(DWMWA_TEXT_COLOR, text),
+        ];
+        if let Some(Err(err)) = results.into_iter().find(|r| r.is_err()) {
+            tracing::info!(error = %err, "caption colour not supported (Windows 10?); using window theme only");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dark;
     }
 }
 
@@ -168,7 +174,11 @@ pub fn run() {
         std::process::exit(code);
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(false);
+
+    builder
         // Must be first: a second launch just brings the running Wren forward.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--quit") {
@@ -238,7 +248,10 @@ pub fn run() {
                 let theme = app.state::<AppState>().settings.read().theme.clone();
                 apply_window_theme(&main, theme.as_deref());
             }
-            if !start_hidden && !popup_check {
+            if start_hidden || popup_check {
+                #[cfg(target_os = "macos")]
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            } else {
                 // Shown once the page has painted (it calls `main_ready`), so the first thing seen is
                 // the finished Home page, not an empty canvas filling in. A fallback shows it anyway.
                 tray::arm_first_show();
@@ -271,11 +284,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the main window hides it to the tray; Quit lives in the tray menu.
+            // Closing the main window hides it to the tray/menu bar; Quit lives in the tray menu.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == tray::MAIN_LABEL {
                     api.prevent_close();
                     let _ = window.hide();
+                    #[cfg(target_os = "macos")]
+                    let _ = window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
                 }
             }
         })
@@ -286,6 +301,8 @@ pub fn run() {
             commands::save_settings,
             commands::set_window_theme,
             commands::app_icon,
+            commands::accessibility_status,
+            commands::open_accessibility_settings,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,
@@ -321,7 +338,17 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wren")
-        .run(|app, event| {
+        .run(move |app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Ready = event
+                && (start_hidden || popup_check)
+            {
+                popup::prime_hidden_launch(app);
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { has_visible_windows: false, .. } = event {
+                tray::show_main(app);
+            }
             if let tauri::RunEvent::Exit = event {
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {

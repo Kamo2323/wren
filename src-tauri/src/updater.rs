@@ -36,8 +36,26 @@ pub const EVENT_UPDATE_STATUS: &str = "app://update-status";
 /// No payload: user clicked the tray's update item; front end navigates to Settings → Updates.
 pub const EVENT_OPEN_UPDATES: &str = "tray://open-updates";
 
+#[cfg(windows)]
 const PLATFORM_KEY: &str = "windows-x86_64";
-const PLATFORM_KEY_NSIS: &str = "windows-x86_64-nsis";
+#[cfg(windows)]
+const PLATFORM_KEY_ALT: &str = "windows-x86_64-nsis";
+#[cfg(windows)]
+const ASSET_SUFFIX: &str = "_x64-setup.exe";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLATFORM_KEY: &str = "darwin-aarch64";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PLATFORM_KEY_ALT: &str = "darwin-aarch64-app";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const ASSET_SUFFIX: &str = "_aarch64.app.tar.gz";
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const PLATFORM_KEY: &str = "darwin-x86_64";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const PLATFORM_KEY_ALT: &str = "darwin-x86_64-app";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const ASSET_SUFFIX: &str = "_x64.app.tar.gz";
 
 /// Front-end update state (contract with `src/lib/types.ts` `UpdateStatus`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -389,8 +407,8 @@ impl UpdaterService {
         cleanup_old_updates(&self.updates_dir);
 
         let safe_ver = sanitize_version_for_filename(&pending.version);
-        let final_path = self.updates_dir.join(format!("Wren_{safe_ver}_x64-setup.exe"));
-        let part_path = self.updates_dir.join(format!("Wren_{safe_ver}_x64-setup.exe.part"));
+        let final_path = self.updates_dir.join(format!("Wren_{safe_ver}{ASSET_SUFFIX}"));
+        let part_path = self.updates_dir.join(format!("Wren_{safe_ver}{ASSET_SUFFIX}.part"));
         let _ = std::fs::remove_file(&part_path);
 
         let token = match &pending.source {
@@ -486,12 +504,18 @@ pub fn is_newer_version(current: &str, remote: &str) -> Result<bool, String> {
     Ok(rem > cur)
 }
 
-fn pick_windows_artifact(manifest: &UpdateManifest) -> Result<&PlatformArtifact, String> {
+fn pick_platform_artifact(manifest: &UpdateManifest) -> Result<&PlatformArtifact, String> {
     let art = manifest
         .platforms
         .get(PLATFORM_KEY)
-        .or_else(|| manifest.platforms.get(PLATFORM_KEY_NSIS))
-        .ok_or_else(|| "This release doesn't include a Windows installer.".to_string())?;
+        .or_else(|| manifest.platforms.get(PLATFORM_KEY_ALT))
+        .ok_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "This release doesn't include a macOS build yet.".to_string()
+            } else {
+                "This release doesn't include a Windows installer.".to_string()
+            }
+        })?;
     if art.url.trim().is_empty() || art.signature.trim().is_empty() {
         return Err("This release is missing its installer or signature.".to_string());
     }
@@ -631,7 +655,7 @@ fn evaluate_manifest(
         return Ok(CheckResult::UpToDate);
     }
 
-    let artifact = pick_windows_artifact(&manifest)?;
+    let artifact = pick_platform_artifact(&manifest)?;
     validate_download_url(&artifact.url, config.allow_insecure_localhost)?;
     let signature_b64 = artifact.signature.trim().to_string();
 
@@ -640,8 +664,14 @@ fn evaluate_manifest(
         let asset = wanted
             .as_deref()
             .and_then(|name| rel.assets.iter().find(|a| a.name == name))
-            .or_else(|| rel.assets.iter().find(|a| a.name.ends_with("_x64-setup.exe")))
-            .ok_or_else(|| "This release doesn't have the Windows installer attached.".to_string())?;
+            .or_else(|| rel.assets.iter().find(|a| a.name.ends_with(ASSET_SUFFIX)))
+            .ok_or_else(|| {
+                if cfg!(target_os = "macos") {
+                    "This release doesn't have the macOS app archive attached.".to_string()
+                } else {
+                    "This release doesn't have the Windows installer attached.".to_string()
+                }
+            })?;
         validate_download_url(&asset.url, config.allow_insecure_localhost)?;
         DownloadSource::GitHubAssetApi {
             asset_url: asset.url.clone(),
@@ -855,35 +885,52 @@ pub fn resolve_github_token() -> Option<String> {
 }
 
 fn gh_exe() -> Option<PathBuf> {
-    if let Some(paths) = std::env::var_os("PATH")
-        && let Some(found) = std::env::split_paths(&paths).map(|d| d.join("gh.exe")).find(|p| p.exists())
+    #[cfg(windows)]
     {
-        return Some(found);
+        if let Some(paths) = std::env::var_os("PATH")
+            && let Some(found) = std::env::split_paths(&paths).map(|d| d.join("gh.exe")).find(|p| p.exists())
+        {
+            return Some(found);
+        }
+        let mut candidates = vec![
+            PathBuf::from(r"C:\Program Files\GitHub CLI\gh.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\GitHub CLI\gh.exe"),
+        ];
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join("Programs").join("GitHub CLI").join("gh.exe"));
+        }
+        candidates.into_iter().find(|p| p.exists())
     }
-    let mut candidates = vec![
-        PathBuf::from(r"C:\Program Files\GitHub CLI\gh.exe"),
-        PathBuf::from(r"C:\Program Files (x86)\GitHub CLI\gh.exe"),
-    ];
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local).join("Programs").join("GitHub CLI").join("gh.exe"));
+    #[cfg(not(windows))]
+    {
+        if let Some(paths) = std::env::var_os("PATH")
+            && let Some(found) = std::env::split_paths(&paths).map(|d| d.join("gh")).find(|p| p.is_file())
+        {
+            return Some(found);
+        }
+        ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
     }
-    candidates.into_iter().find(|p| p.exists())
 }
 
 fn gh_auth_token() -> Option<String> {
     use std::io::Read;
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let exe = gh_exe()?;
-    let mut child = std::process::Command::new(exe)
-        .args(["auth", "token"])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["auth", "token"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().ok()?;
 
     let deadline = Instant::now() + Duration::from_millis(UPDATE_GH_TOKEN_TIMEOUT_MS);
     loop {
@@ -986,11 +1033,13 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
     )
 }
 
+#[cfg(windows)]
 fn powershell_exe() -> PathBuf {
     let sys = PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
     if sys.exists() { sys } else { PathBuf::from("powershell.exe") }
 }
 
+#[cfg(windows)]
 fn spawn_install_helper(
     updates_dir: &Path,
     parent_pid: u32,
@@ -1034,6 +1083,159 @@ fn spawn_install_helper(
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+
+    cmd.spawn()
+        .map_err(|e| format!("Couldn't start the update installer: {e}"))?;
+    Ok(())
+}
+
+/// Resolves the enclosing `.app` bundle directory from an executable path
+/// (`.../Wren.app/Contents/MacOS/wren` → `.../Wren.app`), falling back to `/Applications/Wren.app`.
+#[cfg(target_os = "macos")]
+pub fn resolve_macos_app_bundle(exe: Option<&Path>) -> PathBuf {
+    if let Some(mut cur) = exe.map(Path::to_path_buf) {
+        while let Some(parent) = cur.parent() {
+            if cur.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("app")) {
+                return cur;
+            }
+            cur = parent.to_path_buf();
+        }
+    }
+    PathBuf::from("/Applications/Wren.app")
+}
+
+/// POSIX shell helper that waits for Wren to exit cleanly, extracts the verified `.app.tar.gz`,
+/// atomically swaps the `.app` bundle (with rollback on error), clears quarantine attributes,
+/// cleans up, and relaunches Wren (unless `NO_RELAUNCH=1` for tests).
+#[cfg(target_os = "macos")]
+pub fn macos_apply_script_body() -> String {
+    format!(
+        r#"#!/bin/sh
+set -u
+PARENT_PID="$1"
+ARCHIVE_PATH="$2"
+TARGET_APP="$3"
+LOG_PATH="$4"
+NO_RELAUNCH="${{5:-0}}"
+
+log() {{
+  if [ -n "$LOG_PATH" ]; then
+    mkdir -p "$(dirname "$LOG_PATH")" 2>/dev/null || true
+    printf '%s %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$1" >> "$LOG_PATH"
+  fi
+}}
+
+if [ "$PARENT_PID" -gt 0 ] 2>/dev/null; then
+  log "Waiting for Wren (pid $PARENT_PID) to exit..."
+  i=0
+  max=$(( {UPDATE_WAIT_PARENT_SECS} * 4 ))
+  while kill -0 "$PARENT_PID" 2>/dev/null; do
+    if [ "$i" -ge "$max" ]; then
+      log "Wren (pid $PARENT_PID) did not exit in time; forcing stop before install"
+      kill -9 "$PARENT_PID" 2>/dev/null || true
+      sleep 1
+      break
+    fi
+    sleep 0.25
+    i=$((i + 1))
+  done
+fi
+
+sleep 0.3
+log "Extracting update archive: $ARCHIVE_PATH -> $TARGET_APP"
+STAGE_DIR="$(mktemp -d "${{TMPDIR:-/tmp}}/wren-update.XXXXXX")"
+if ! tar -xzf "$ARCHIVE_PATH" -C "$STAGE_DIR" 2>>"$LOG_PATH"; then
+  log "Archive extraction failed"
+  rm -rf "$STAGE_DIR" "$ARCHIVE_PATH" "$0"
+  [ "$NO_RELAUNCH" != "1" ] && open -n "$TARGET_APP" 2>/dev/null || true
+  exit 1
+fi
+
+NEW_APP="$(find "$STAGE_DIR" -maxdepth 2 -name "*.app" -type d | head -n 1)"
+if [ -z "$NEW_APP" ] || [ ! -d "$NEW_APP" ]; then
+  log "No .app bundle found inside archive"
+  rm -rf "$STAGE_DIR" "$ARCHIVE_PATH" "$0"
+  [ "$NO_RELAUNCH" != "1" ] && open -n "$TARGET_APP" 2>/dev/null || true
+  exit 1
+fi
+
+BACKUP_APP="${{TARGET_APP}}.wren-old"
+rm -rf "$BACKUP_APP" 2>/dev/null || true
+if [ -d "$TARGET_APP" ]; then
+  if ! mv "$TARGET_APP" "$BACKUP_APP"; then
+    log "Failed to move existing bundle aside"
+    rm -rf "$STAGE_DIR" "$ARCHIVE_PATH" "$0"
+    [ "$NO_RELAUNCH" != "1" ] && open -n "$TARGET_APP" 2>/dev/null || true
+    exit 1
+  fi
+fi
+
+if mv "$NEW_APP" "$TARGET_APP"; then
+  xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
+  rm -rf "$BACKUP_APP" "$STAGE_DIR" "$ARCHIVE_PATH"
+  log "Installer finished with exit code 0"
+  if [ "$NO_RELAUNCH" != "1" ]; then
+    log "Relaunching $TARGET_APP"
+    open -n "$TARGET_APP" 2>/dev/null || true
+  fi
+else
+  log "Failed to swap new bundle into place; rolling back"
+  [ -d "$BACKUP_APP" ] && mv "$BACKUP_APP" "$TARGET_APP" 2>/dev/null || true
+  rm -rf "$STAGE_DIR" "$ARCHIVE_PATH"
+  [ "$NO_RELAUNCH" != "1" ] && open -n "$TARGET_APP" 2>/dev/null || true
+fi
+
+rm -f "$0" 2>/dev/null || true
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_install_helper(
+    updates_dir: &Path,
+    parent_pid: u32,
+    installer_path: &Path,
+    fallback_exe: Option<&Path>,
+    log_path: &Path,
+) -> Result<(), String> {
+    spawn_macos_install_helper(
+        updates_dir,
+        parent_pid,
+        installer_path,
+        &resolve_macos_app_bundle(fallback_exe),
+        log_path,
+        false,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_macos_install_helper(
+    updates_dir: &Path,
+    parent_pid: u32,
+    archive_path: &Path,
+    target_app: &Path,
+    log_path: &Path,
+    no_relaunch: bool,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+
+    let script_path = updates_dir.join("apply-update.sh");
+    std::fs::write(&script_path, macos_apply_script_body())
+        .map_err(|e| format!("Couldn't prepare the update helper: {e}"))?;
+    let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700));
+
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg(&script_path)
+        .arg(parent_pid.to_string())
+        .arg(archive_path)
+        .arg(target_app)
+        .arg(log_path)
+        .arg(if no_relaunch { "1" } else { "0" })
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
 
     cmd.spawn()
         .map_err(|e| format!("Couldn't start the update installer: {e}"))?;
@@ -1097,6 +1299,7 @@ mod tests {
         assert!(s.contains("$null = $proc.Handle"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn spawn_install_helper_executes_installer_logs_and_cleans_up() {
         let root = std::env::temp_dir().join(format!("wren-upd-helper-test-{}", std::process::id()));
@@ -1112,7 +1315,6 @@ mod tests {
         )
         .unwrap();
 
-        // Spawn a short-lived dummy parent process so the test exercises real Wait-Process + exit.
         let mut dummy_parent = std::process::Command::new("cmd.exe")
             .args(["/C", "exit", "0"])
             .stdin(std::process::Stdio::null())
@@ -1146,6 +1348,69 @@ mod tests {
         assert!(ran.contains("/S") && ran.contains("/UPDATE") && ran.contains("/R"), "unexpected args: {ran}");
         assert!(installer_removed, "installer was not cleaned up");
         assert!(script_removed, "apply-update.ps1 was not cleaned up");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_spawn_install_helper_swaps_bundle_logs_and_cleans_up() {
+        let root = std::env::temp_dir().join(format!("wren-upd-mac-helper-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target_app = root.join("Wren.app");
+        std::fs::create_dir_all(target_app.join("Contents")).unwrap();
+        std::fs::write(target_app.join("Contents").join("version.txt"), "0.1.0").unwrap();
+
+        let src_dir = root.join("src");
+        std::fs::create_dir_all(src_dir.join("Wren.app").join("Contents")).unwrap();
+        std::fs::write(src_dir.join("Wren.app").join("Contents").join("version.txt"), "0.1.4").unwrap();
+
+        let archive = root.join("Wren_0.1.4_aarch64.app.tar.gz");
+        let tar_ok = std::process::Command::new("tar")
+            .args(["-czf", archive.to_str().unwrap(), "-C", src_dir.to_str().unwrap(), "Wren.app"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(tar_ok);
+
+        let log_path = root.join("logs").join("updater.log");
+        let mut dummy_parent = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let parent_pid = dummy_parent.id();
+        spawn_macos_install_helper(&root, parent_pid, &archive, &target_app, &log_path, true).unwrap();
+        let _ = dummy_parent.wait();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if log_path.exists() && !archive.exists() && !root.join("apply-update.sh").exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let new_ver = std::fs::read_to_string(target_app.join("Contents").join("version.txt")).unwrap_or_default();
+        let archive_removed = !archive.exists();
+        let script_removed = !root.join("apply-update.sh").exists();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(log.contains("Installer finished with exit code 0"), "unexpected updater.log:\n{log}");
+        assert_eq!(new_ver, "0.1.4");
+        assert!(archive_removed, "archive was not cleaned up");
+        assert!(script_removed, "apply-update.sh was not cleaned up");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resolve_macos_app_bundle_finds_enclosing_app() {
+        assert_eq!(
+            resolve_macos_app_bundle(Some(Path::new("/Applications/Wren.app/Contents/MacOS/wren"))),
+            PathBuf::from("/Applications/Wren.app")
+        );
+        assert_eq!(
+            resolve_macos_app_bundle(Some(Path::new("/Users/max/Dev/target/debug/wren"))),
+            PathBuf::from("/Applications/Wren.app")
+        );
     }
 
     #[derive(Clone)]
@@ -1225,21 +1490,22 @@ mod tests {
             let b = slot_for_handler.get().unwrap();
             match path {
                 "/releases/latest/download/latest.json" => {
+                    let asset = format!("Wren_0.1.2{ASSET_SUFFIX}");
                     let body = serde_json::json!({
                         "version": "0.1.2",
                         "notes": "Fix microphone warm-up",
                         "pub_date": "2026-11-23T03:00:00Z",
                         "platforms": {
-                            "windows-x86_64": {
+                            PLATFORM_KEY: {
                                 "signature": SAMPLE_SIG_0_1_2,
-                                "url": format!("{b}/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe")
+                                "url": format!("{b}/releases/download/v0.1.2/{asset}")
                             }
                         }
                     })
                     .to_string();
                     (200, vec![("Content-Type".into(), "application/json".into())], body.into_bytes())
                 }
-                "/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe" => {
+                p if p == format!("/releases/download/v0.1.2/Wren_0.1.2{ASSET_SUFFIX}") => {
                     (200, vec![("Content-Type".into(), "application/octet-stream".into())], SAMPLE_PAYLOAD.to_vec())
                 }
                 _ => (404, vec![], vec![]),
@@ -1299,6 +1565,7 @@ mod tests {
                     if auth != Some("Bearer ghp_test_secret") {
                         return (401, vec![], vec![]);
                     }
+                    let asset = format!("Wren_0.1.2{ASSET_SUFFIX}");
                     let body = serde_json::json!({
                         "tag_name": "v0.1.2",
                         "body": "Private release notes",
@@ -1306,7 +1573,7 @@ mod tests {
                         "published_at": "2026-11-23T03:00:00Z",
                         "assets": [
                             { "name": "latest.json", "url": format!("{b}/api/assets/1") },
-                            { "name": "Wren_0.1.2_x64-setup.exe", "url": format!("{b}/api/assets/2") }
+                            { "name": asset, "url": format!("{b}/api/assets/2") }
                         ]
                     })
                     .to_string();
@@ -1323,13 +1590,14 @@ mod tests {
                     if auth.is_some() {
                         return (400, vec![], b"unexpected auth header".to_vec());
                     }
+                    let asset = format!("Wren_0.1.2{ASSET_SUFFIX}");
                     let body = serde_json::json!({
                         "version": "0.1.2",
                         "notes": "Add in-app updater",
                         "platforms": {
-                            "windows-x86_64": {
+                            PLATFORM_KEY: {
                                 "signature": SAMPLE_SIG_0_1_2,
-                                "url": "https://github.com/Kamo2323/wren/releases/download/v0.1.2/Wren_0.1.2_x64-setup.exe"
+                                "url": format!("https://github.com/Kamo2323/wren/releases/download/v0.1.2/{asset}")
                             }
                         }
                     })

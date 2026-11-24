@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from . import cuda, protocol
+from . import cuda, mlx_backend, protocol
 
 SAMPLE_RATE = 16000
 # Clips shorter than this (10 ms) hold no speech; skip the model entirely.
@@ -127,6 +127,8 @@ OOM_MARKERS = (
     "cuda_error_out_of_memory",
     "cublas_status_alloc_failed",
     "cudnn_status_alloc_failed",
+    "insufficient memory",
+    "metal memory",
 )
 
 
@@ -142,6 +144,7 @@ class Transcriber:
         self.name = name
         self.device = device
         self.compute = compute
+        self.engine_name = protocol.ENGINE
         self.vram_mb = 0
         tok = getattr(model, "hf_tokenizer", None)
         if tok is not None:
@@ -199,27 +202,59 @@ def _load(cfg: EngineConfig, name: str, device: str, compute: str) -> Transcribe
     return Transcriber(model, cfg, name=name, device=device, compute=compute)
 
 
-def load_transcriber(cfg: EngineConfig, log: Log, warmup_wav: Path | None = None) -> Transcriber:
-    """CUDA first (unless cfg.device == "cpu"), then the CPU fallback model, int8. Warm-up runs on
-    whichever loaded, so a CUDA failure that only shows at the first decode also falls back."""
+def load_transcriber(cfg: EngineConfig, log: Log, warmup_wav: Path | None = None) -> Any:
+    """Accelerator first (Apple Silicon MLX on macOS arm64, CUDA on Windows/Linux, unless
+    cfg.device == "cpu"), then the CPU fallback model (faster-whisper int8). Warm-up runs on
+    whichever loaded, so a GPU failure that only shows at the first decode also falls back."""
     reason = "CPU requested"
     if cfg.device != "cpu":
-        reason = cuda.cuda_problem() or ""
-        if not reason:
-            before = cuda.gpu_used_mb()
-            t0 = time.perf_counter()
-            try:
-                t = _load(cfg, cfg.model, "cuda", cfg.compute)
-                load_ms = int((time.perf_counter() - t0) * 1000)
-                warm_ms = warmup(t, warmup_wav)
-                after = cuda.gpu_used_mb()
-                t.vram_mb = max(0, after - before) if before is not None and after is not None else 0
-                log("info", f"loaded {cfg.model} on cuda ({cfg.compute}) in {load_ms} ms, warm-up {warm_ms} ms")
-                return t
-            except FileNotFoundError:
-                reason = f"model {cfg.model} is not installed"
-            except Exception as e:  # noqa: BLE001
-                reason = "out of GPU memory" if is_oom(e) else f"CUDA load failed ({type(e).__name__})"
+        if mlx_backend.is_apple_silicon():
+            reason = mlx_backend.mlx_problem() or ""
+            if not reason:
+                t0 = time.perf_counter()
+                try:
+                    folder = mlx_backend.resolve_mlx_model_dir(cfg.models_dir, cfg.model)
+                    t = mlx_backend.MlxTranscriber(
+                        folder,
+                        cfg,
+                        name=folder.name,
+                        compute=cfg.compute,
+                        build_prompt_fn=build_prompt,
+                        read_wav_fn=read_wav,
+                        estimate_tokens_fn=estimate_tokens,
+                    )
+                    load_ms = int((time.perf_counter() - t0) * 1000)
+                    warm_ms = warmup(t, warmup_wav)
+                    # Re-read active Metal memory after warm-up so vram_mb reflects steady state.
+                    try:
+                        active = int(t._mx.get_active_memory())
+                        if active > 0:
+                            t.vram_mb = max(1, int(round(active / (1024 * 1024))))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    log("info", f"loaded {t.name} on mlx ({cfg.compute}) in {load_ms} ms, warm-up {warm_ms} ms")
+                    return t
+                except FileNotFoundError:
+                    reason = f"model {cfg.model} is not installed"
+                except Exception as e:  # noqa: BLE001
+                    reason = "out of GPU memory" if is_oom(e) else f"MLX load failed ({type(e).__name__})"
+        else:
+            reason = cuda.cuda_problem() or ""
+            if not reason:
+                before = cuda.gpu_used_mb()
+                t0 = time.perf_counter()
+                try:
+                    t = _load(cfg, cfg.model, "cuda", cfg.compute)
+                    load_ms = int((time.perf_counter() - t0) * 1000)
+                    warm_ms = warmup(t, warmup_wav)
+                    after = cuda.gpu_used_mb()
+                    t.vram_mb = max(0, after - before) if before is not None and after is not None else 0
+                    log("info", f"loaded {cfg.model} on cuda ({cfg.compute}) in {load_ms} ms, warm-up {warm_ms} ms")
+                    return t
+                except FileNotFoundError:
+                    reason = f"model {cfg.model} is not installed"
+                except Exception as e:  # noqa: BLE001
+                    reason = "out of GPU memory" if is_oom(e) else f"CUDA load failed ({type(e).__name__})"
     log("warn", f"using {cfg.cpu_fallback} on CPU: {reason}")
     t0 = time.perf_counter()
     t = _load(cfg, cfg.cpu_fallback, "cpu", "int8")

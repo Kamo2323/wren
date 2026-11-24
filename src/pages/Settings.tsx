@@ -127,15 +127,17 @@ function Status({ tone, children }: { tone: "ok" | "warn" | "bad" | "info"; chil
 function AppearanceSection({
   choice,
   onSelect,
+  isMac,
 }: {
   choice: ThemeChoice;
   onSelect: (next: ThemeChoice) => void;
+  isMac: boolean;
 }) {
   return (
     <Group id="appearance" title="Appearance" icon={<Sun size={15} strokeWidth={2} />} tone="amber">
       <SetRow
         title="Colour theme"
-        desc="Choose Dark, Light, or follow your Windows theme automatically."
+        desc={`Choose Dark, Light, or follow your ${isMac ? "macOS" : "Windows"} theme automatically.`}
         control={
           <div className="segments theme-switch" role="group" aria-label="Colour theme">
             <button
@@ -180,7 +182,16 @@ function AppearanceSection({
 const METER_SEGMENTS = 28;
 const TEST_MS = 15_000;
 
-function MicSection({ settings, update }: { settings: SettingsData; update: (patch: Partial<SettingsData>) => Promise<void> }) {
+function MicSection({
+  settings,
+  update,
+  isMac,
+}: {
+  settings: SettingsData;
+  update: (patch: Partial<SettingsData>) => Promise<void>;
+  isMac: boolean;
+}) {
+  const osName = isMac ? "macOS" : "Windows";
   const [devices, setDevices] = useState<string[] | null>(null);
   const [testing, setTesting] = useState(false);
   const toast = useToast();
@@ -217,10 +228,10 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
       <SetRow
         title="Which microphone"
         htmlFor="mic-select"
-        desc={missing ? "That microphone isn't plugged in. Wren is using the Windows default for now." : "Wren follows the Windows default unless you pick one here."}
+        desc={missing ? `That microphone isn't plugged in. Wren is using the ${osName} default for now.` : `Wren follows the ${osName} default unless you pick one here.`}
         control={
           <select id="mic-select" className="select" value={settings.micDevice ?? ""} onChange={(e) => void pick(e.target.value)}>
-            <option value="">Windows default</option>
+            <option value="">{osName} default</option>
             {missing && <option value={settings.micDevice ?? ""}>{settings.micDevice} (not found)</option>}
             {list.map((d) => (
               <option key={d} value={d}>
@@ -244,11 +255,11 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
               <span className="is-bad">{mic.message}</span>
             ) : mic.state === "on" && mic.fellBack ? (
               <span className="is-bad">
-                Couldn't open “{settings.micDevice}”. Testing “{mic.device ?? "the Windows default"}” instead.
+                Couldn't open “{settings.micDevice}”. Testing “{mic.device ?? `the ${osName} default`}” instead.
               </span>
             ) : mic.state === "on" ? (
               <>
-                Listening to <strong className="mictest__device">{mic.device ?? "the Windows default"}</strong>. Say something; the bar should move.
+                Listening to <strong className="mictest__device">{mic.device ?? `the ${osName} default`}</strong>. Say something; the bar should move.
               </>
             ) : (
               "Check Wren can hear you."
@@ -258,7 +269,7 @@ function MicSection({ settings, update }: { settings: SettingsData; update: (pat
       </SetRow>
       <SetRow
         title="Keep the microphone open"
-        desc="Catches your first word if it gets cut off. Windows will show the microphone as in use all the time."
+        desc={`Catches your first word if it gets cut off. ${osName} will show the microphone as in use all the time.`}
         control={<Toggle checked={settings.alwaysOpenMic} onChange={(v) => void update({ alwaysOpenMic: v })} label="Keep the microphone open" />}
       />
     </Group>
@@ -372,7 +383,15 @@ function WatcherSection({ settings, update }: { settings: SettingsData; update: 
   );
 }
 
-function AiSection({ settings, update }: { settings: SettingsData; update: (patch: Partial<SettingsData>) => Promise<void> }) {
+function AiSection({
+  settings,
+  update,
+  isMac,
+}: {
+  settings: SettingsData;
+  update: (patch: Partial<SettingsData>) => Promise<void>;
+  isMac: boolean;
+}) {
   const [status, setStatus] = useState<AiCleanupStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [pulling, setPulling] = useState(false);
@@ -409,7 +428,7 @@ function AiSection({ settings, update }: { settings: SettingsData; update: (patc
     <Group id="ai" title="AI clean-up" icon={<WandSparkles size={15} strokeWidth={2} />} tone="violet">
       <SetRow
         title="Tidy text with a local AI model"
-        desc="Fixes punctuation, capitals and obvious mis-hearings using Ollama on this PC. Nothing leaves your computer. If it's slow, Wren pastes the plain text instead."
+        desc={`Fixes punctuation, capitals and obvious mis-hearings using Ollama on ${isMac ? "this Mac" : "this PC"}. Nothing leaves your computer. If it's slow, Wren pastes the plain text instead.`}
         control={<Toggle checked={settings.aiCleanup.enabled} onChange={(v) => void update({ aiCleanup: { ...settings.aiCleanup, enabled: v } })} label="Tidy text with a local AI model" />}
       >
         <div className="setrow__foot">
@@ -447,11 +466,25 @@ function AiSection({ settings, update }: { settings: SettingsData; update: (patc
 
 // ---------------------------------------------------------------- engine
 
-function EngineSection({ engine, settings }: { engine: EngineStatus; settings: SettingsData }) {
+function EngineSection({ engine, settings, isMac }: { engine: EngineStatus; settings: SettingsData; isMac: boolean }) {
   const [restarting, setRestarting] = useState(false);
   const toast = useToast();
   const words = engineWords(engine);
   const ready = engine.state === "ready" ? engine : null;
+  const runsOn = ready
+    ? ready.device === "cpu"
+      ? "Processor (slower)"
+      : ready.device === "mlx"
+        ? "Apple Silicon (MLX)"
+        : "Graphics card"
+    : "–";
+  const memoryLabel = ready?.device === "mlx" || isMac ? "Unified memory" : "Graphics memory";
+  const memoryValue =
+    ready && ready.vramMb > 0
+      ? ready.vramMb < 1024
+        ? `${ready.vramMb} MB`
+        : `${(ready.vramMb / 1024).toFixed(1)} GB`
+      : "–";
 
   async function restart() {
     setRestarting(true);
@@ -470,7 +503,7 @@ function EngineSection({ engine, settings }: { engine: EngineStatus; settings: S
       <SetRow
         title={words.text}
         dot={words.tone}
-        desc={engine.state === "failed" ? <span className="is-bad">{engine.reason || "The engine stopped."}</span> : "Turns your voice into text, on this PC."}
+        desc={engine.state === "failed" ? <span className="is-bad">{engine.reason || "The engine stopped."}</span> : `Turns your voice into text, on ${isMac ? "this Mac" : "this PC"}.`}
         control={
           <Button size="sm" variant="secondary" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={restarting} onClick={() => void restart()}>
             Restart engine
@@ -484,11 +517,11 @@ function EngineSection({ engine, settings }: { engine: EngineStatus; settings: S
           </div>
           <div className="spec">
             <dt>Runs on</dt>
-            <dd>{ready ? (ready.device === "cpu" ? "Processor (slower)" : "Graphics card") : "–"}</dd>
+            <dd>{runsOn}</dd>
           </div>
           <div className="spec">
-            <dt>Graphics memory</dt>
-            <dd className="num">{ready && ready.vramMb > 0 ? `${(ready.vramMb / 1024).toFixed(1)} GB` : "–"}</dd>
+            <dt>{memoryLabel}</dt>
+            <dd className="num">{memoryValue}</dd>
           </div>
         </dl>
       </SetRow>
@@ -709,6 +742,7 @@ export default function Settings({
   onThemeChange: (next: ThemeChoice) => Promise<void>;
 }) {
   const constants = useConstants();
+  const isMac = constants.platform === "macos";
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [version, setVersion] = useState("");
   const toast = useToast();
@@ -788,6 +822,7 @@ export default function Settings({
           <div className="setgroups">
             <AppearanceSection
               choice={themeChoice}
+              isMac={isMac}
               onSelect={(next) => {
                 if (latest.current) {
                   latest.current = { ...latest.current, theme: toSettingsTheme(next) };
@@ -796,7 +831,7 @@ export default function Settings({
                 void onThemeChange(next);
               }}
             />
-            <MicSection settings={settings} update={update} />
+            <MicSection settings={settings} update={update} isMac={isMac} />
 
             <Group id="dictation" title="Dictation" icon={<Keyboard size={15} strokeWidth={2} />} tone="violet">
               <SetRow
@@ -811,15 +846,25 @@ export default function Settings({
                 control={<Toggle checked={settings.sounds} onChange={(v) => void update({ sounds: v })} label="Sounds" />}
               />
               <SetRow
-                title="Start with Windows"
-                desc="Turn this on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
-                control={<Toggle checked={settings.startWithWindows} onChange={(v) => void update({ startWithWindows: v })} label="Start with Windows" />}
+                title={isMac ? "Start at login" : "Start with Windows"}
+                desc={
+                  isMac
+                    ? "Open Wren quietly in the menu bar when you sign in to your Mac."
+                    : "Turn this on once Willow and Glaido no longer start with Windows, so only one app listens for the keys."
+                }
+                control={
+                  <Toggle
+                    checked={settings.startWithWindows}
+                    onChange={(v) => void update({ startWithWindows: v })}
+                    label={isMac ? "Start at login" : "Start with Windows"}
+                  />
+                }
               />
             </Group>
 
             <WatcherSection settings={settings} update={update} />
-            <AiSection settings={settings} update={update} />
-            <EngineSection engine={engine} settings={settings} />
+            <AiSection settings={settings} update={update} isMac={isMac} />
+            <EngineSection engine={engine} settings={settings} isMac={isMac} />
             <HistorySection />
 
             <Group
@@ -852,7 +897,7 @@ export default function Settings({
                 <div className="about__name">
                   Wren <span className="about__version num">{version ? `v${version}` : ""}</span>
                 </div>
-                <div className="about__line">Free and local. Your voice never leaves this PC.</div>
+                <div className="about__line">Free and local. Your voice never leaves {isMac ? "this Mac" : "this PC"}.</div>
               </div>
             </footer>
           </div>

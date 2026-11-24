@@ -33,7 +33,26 @@ function cachedChromium() {
     .filter(existsSync);
 }
 
+function macBrowserCandidates() {
+  if (process.platform !== "darwin") return [];
+  return [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  ].filter(existsSync);
+}
+
 export async function launchEdge() {
+  if (process.platform === "darwin") {
+    for (const exe of macBrowserCandidates()) {
+      try {
+        return await chromium.launch({ executablePath: exe });
+      } catch {
+        /* try next */
+      }
+    }
+  }
   try {
     return await chromium.launch({ channel: "msedge" });
   } catch (err) {
