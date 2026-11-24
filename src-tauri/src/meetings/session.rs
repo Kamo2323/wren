@@ -633,13 +633,16 @@ impl Pipeline {
             let end = b.stream_pos_ms + b.samples.len() as u64 * 1000 / SAMPLE_RATE as u64;
             let open = self.segmenter(i).open_since().unwrap_or(u64::MAX);
             self.shared.me_open_since.store(open, Ordering::Relaxed);
-            self.shared.me_pos.fetch_max(end, Ordering::Relaxed);
+            self.shared.me_pos.store(end, Ordering::Relaxed);
         }
         let speaking = self.segmenter(i).is_speaking();
         self.set_speaking(source, speaking);
     }
 
     fn flush(&mut self) {
+        // No more mic audio is coming: nothing for a Them clip to wait for.
+        self.shared.me_open_since.store(u64::MAX, Ordering::Relaxed);
+        self.shared.me_pos.store(u64::MAX, Ordering::Relaxed);
         for (i, source) in [(0, Source::Me), (1, Source::Them)] {
             if let Some(seg) = self.segmenters[i].as_mut().and_then(Segmenter::flush) {
                 self.enqueue(source, seg);
@@ -756,7 +759,8 @@ fn next_job(s: &Shared, q: &mut Queue) -> Option<Job> {
                 .any(|m| m.source == Source::Me && may_echo(m, j));
             // Or one the mic hasn't delivered yet: still being spoken, or not reached yet. Bounded.
             let me_open = s.me_open_since.load(Ordering::Relaxed);
-            let me_pending = (s.me_pos.load(Ordering::Relaxed) < j.start_ms
+            let me_pending = !q.closed
+                && (s.me_pos.load(Ordering::Relaxed) < j.start_ms
                 || (me_open != u64::MAX && starts_after(j.start_ms, me_open)))
                 && j.queued_at.elapsed() < ME_WAIT_FOR_THEM;
             if echo_of_queued_me || me_pending {
