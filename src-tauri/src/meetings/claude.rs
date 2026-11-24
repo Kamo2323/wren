@@ -177,6 +177,8 @@ pub enum SseEvent {
     Usage(Usage),
     Stop(String),
     Error { kind: String, message: String },
+    /// The stream's last event: only a stream that reaches it is complete.
+    MessageStop,
     Ignored,
 }
 
@@ -200,6 +202,7 @@ fn event_of(data: &str) -> Vec<SseEvent> {
             }
             out
         }
+        "message_stop" => vec![SseEvent::MessageStop],
         "error" => vec![SseEvent::Error {
             kind: v["error"]["type"].as_str().unwrap_or("error").to_string(),
             message: v["error"]["message"].as_str().unwrap_or("").to_string(),
@@ -301,6 +304,15 @@ pub fn stop_error(stop_reason: &str) -> Option<ClaudeError> {
     (stop_reason == "refusal").then_some(ClaudeError::Refusal)
 }
 
+/// Why a finished stream can't be kept: it never reached `message_stop`, had no stop reason, or was
+/// refused. `None` means the note is complete.
+pub fn completion_error(stop_reason: &str, saw_message_stop: bool) -> Option<ClaudeError> {
+    if !saw_message_stop || stop_reason.is_empty() {
+        return Some(ClaudeError::Network("the stream ended early".into()));
+    }
+    stop_error(stop_reason)
+}
+
 // ---- cost ----
 
 /// List prices, $/MTok: (input, output, cache read). Cache writes (5 min) cost 1.25 × input.
@@ -333,6 +345,8 @@ fn client() -> Result<reqwest::blocking::Client, ClaudeError> {
     reqwest::blocking::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(STREAM_TIMEOUT)
+        // The key travels in a custom header that redirects would carry along: never follow one.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| ClaudeError::Network(e.to_string()))
 }
@@ -368,6 +382,7 @@ fn stream_once(
     let mut done = Completed { text: String::new(), usage: Usage::default(), stop_reason: String::new() };
     let mut raw = [0u8; 8192];
     let mut pending: Vec<u8> = Vec::new();
+    let mut saw_stop = false;
     loop {
         let n = resp.read(&mut raw).map_err(|_| ClaudeError::Network("the connection dropped".into()))?;
         if n == 0 {
@@ -391,14 +406,12 @@ fn stream_once(
                 SseEvent::Usage(u) => done.usage.merge(&u),
                 SseEvent::Stop(r) => done.stop_reason = r,
                 SseEvent::Error { kind, message } => return Err(error_from_kind(&kind, &message)),
+                SseEvent::MessageStop => saw_stop = true,
                 SseEvent::Ignored => {}
             }
         }
     }
-    if done.stop_reason.is_empty() {
-        return Err(ClaudeError::Network("the stream ended early".into()));
-    }
-    if let Some(e) = stop_error(&done.stop_reason) {
+    if let Some(e) = completion_error(&done.stop_reason, saw_stop) {
         return Err(e);
     }
     Ok(done)

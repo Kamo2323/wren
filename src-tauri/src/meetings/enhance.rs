@@ -228,6 +228,7 @@ pub fn generate(
         emit(NoteEvent::Error { meeting_id: id.to_string(), length: len, kind: e.kind().into(), message: e.to_string() });
         Err(e)
     };
+    let started = chrono::Utc::now();
     let m = match store.meeting_get(id) {
         Ok(Some(m)) => m,
         _ => return fail(ClaudeError::Api("That meeting no longer exists.".into()), emit),
@@ -264,9 +265,13 @@ pub fn generate(
         created_at_utc: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         stale: false,
     };
-    if let Err(e) = store.note_upsert(&note) {
-        return fail(ClaudeError::Api(format!("couldn't save the notes ({e})")), emit);
+    match store.note_save_if_current(&note, started) {
+        Ok(true) => {}
+        Ok(false) => return fail(ClaudeError::Api("That meeting was deleted.".into()), emit),
+        Err(e) => return fail(ClaudeError::Api(format!("couldn't save the notes ({e})")), emit),
     }
+    // Saved stale if the notes or names changed while Claude was writing.
+    let note = store.notes(id).ok().and_then(|ns| ns.into_iter().find(|n| n.length == len)).unwrap_or(note);
     tracing::info!(meeting = %id, length = len.as_db(), out_tokens = note.output_tokens, "enhanced notes saved");
     emit(NoteEvent::Done { note: note.clone() });
     Ok(note)

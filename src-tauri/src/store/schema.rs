@@ -117,6 +117,20 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (meeting_id, length)
     );
     "#,
+    // v3 — meetings council fixes: when notes/names last changed (stale detection), and a spend log
+    // that keeps the cost of every note written, including ones later regenerated.
+    r#"
+    ALTER TABLE meetings ADD COLUMN inputs_changed_at TEXT;
+    CREATE TABLE meeting_spend (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        meeting_id     TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL,
+        cost_usd       REAL NOT NULL
+    );
+    CREATE INDEX idx_meeting_spend_created ON meeting_spend (created_at_utc);
+    INSERT INTO meeting_spend (meeting_id, created_at_utc, cost_usd)
+        SELECT meeting_id, created_at_utc, cost_usd FROM meeting_notes;
+    "#,
 ];
 
 /// Latest schema version this build knows.
@@ -181,6 +195,7 @@ mod tests {
                 "hourly_totals",
                 "meeting_notes",
                 "meeting_segments",
+                "meeting_spend",
                 "meetings",
                 "transcriptions"
             ]

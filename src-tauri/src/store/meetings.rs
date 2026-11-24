@@ -161,7 +161,10 @@ impl Store {
         if let Some(n) = my_notes {
             let old: String = tx.query_row("SELECT my_notes FROM meetings WHERE id = ?1", [id], |r| r.get(0))?;
             if old != n {
-                tx.execute("UPDATE meetings SET my_notes = ?2 WHERE id = ?1", params![id, n])?;
+                tx.execute(
+                    "UPDATE meetings SET my_notes = ?2, inputs_changed_at = ?3 WHERE id = ?1",
+                    params![id, n, ts(Utc::now())],
+                )?;
                 tx.execute("UPDATE meeting_notes SET stale = 1 WHERE meeting_id = ?1", [id])?;
             }
         }
@@ -230,11 +233,12 @@ impl Store {
         Ok(())
     }
 
+    /// Save a transcribed line. Fails with `NotFound` if the meeting was deleted meanwhile.
     pub fn segment_insert(&self, s: &NewSegment) -> StoreResult<SegmentRow> {
         let conn = self.conn()?;
-        conn.execute(
+        let n = conn.execute(
             "INSERT INTO meeting_segments (meeting_id, source, speaker, confidence, muted, start_ms, end_ms, text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?1)",
             params![
                 s.meeting_id,
                 s.source.as_db(),
@@ -246,6 +250,9 @@ impl Store {
                 s.text
             ],
         )?;
+        if n == 0 {
+            return Err(StoreError::NotFound);
+        }
         let id = conn.last_insert_rowid();
         Ok(conn.query_row(
             "SELECT id, meeting_id, source, speaker, confidence, renamed, muted, start_ms, end_ms, text
@@ -286,7 +293,8 @@ impl Store {
                 params![meeting_id, sid, to],
             )?,
             (None, Some(f)) => tx.execute(
-                "UPDATE meeting_segments SET speaker = ?3, renamed = 1, confidence = 1 WHERE meeting_id = ?1 AND speaker = ?2",
+                "UPDATE meeting_segments SET speaker = ?3, renamed = 1, confidence = 1
+                 WHERE meeting_id = ?1 AND speaker = ?2 AND source = 'them'",
                 params![meeting_id, f, to],
             )?,
             (None, None) => tx.execute(
@@ -297,32 +305,42 @@ impl Store {
         };
         if n > 0 {
             tx.execute("UPDATE meeting_notes SET stale = 1 WHERE meeting_id = ?1", [meeting_id])?;
+            tx.execute("UPDATE meetings SET inputs_changed_at = ?2 WHERE id = ?1", params![meeting_id, ts(Utc::now())])?;
         }
         tx.commit()?;
         Ok(n)
     }
 
-    /// Insert or replace the note of one length; a saved note is never stale.
+    /// Insert or replace the note of one length (not stale) and log its cost.
     pub fn note_upsert(&self, n: &NoteRow) -> StoreResult<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO meeting_notes (meeting_id, length, markdown, model, input_tokens, output_tokens,
-                cache_read_tokens, cache_write_tokens, cost_usd, created_at_utc, stale)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
-            params![
-                n.meeting_id,
-                n.length.as_db(),
-                n.markdown,
-                n.model,
-                n.input_tokens as i64,
-                n.output_tokens as i64,
-                n.cache_read_tokens as i64,
-                n.cache_write_tokens as i64,
-                n.cost_usd,
-                n.created_at_utc
-            ],
-        )?;
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        write_note(&tx, n, false)?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Save a note written from inputs read at `started`: only if the meeting still exists (false if it
+    /// was deleted meanwhile); stale if the notes or names changed since `started`. Logs its cost.
+    pub fn note_save_if_current(&self, n: &NoteRow, started: DateTime<Utc>) -> StoreResult<bool> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let changed: Option<Option<String>> = tx
+            .query_row("SELECT inputs_changed_at FROM meetings WHERE id = ?1", [&n.meeting_id], |r| r.get(0))
+            .optional()?;
+        let Some(changed) = changed else { return Ok(false) };
+        let stale = changed.is_some_and(|c| c > ts(started));
+        write_note(&tx, n, stale)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Meetings left interrupted that still have audio (their WAV headers may need repair).
+    pub fn interrupted_with_audio(&self) -> StoreResult<Vec<String>> {
+        let conn = self.conn()?;
+        let mut st = conn.prepare("SELECT id FROM meetings WHERE status = 'interrupted' AND audio_deleted_at IS NULL")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
     }
 
     pub fn notes(&self, meeting_id: &str) -> StoreResult<Vec<NoteRow>> {
@@ -337,11 +355,11 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Estimated spend and number of notes created at or after `since`.
+    /// Estimated spend and number of notes written at or after `since` (regenerated ones included).
     pub fn notes_cost_since(&self, since: DateTime<Utc>) -> StoreResult<(f64, u32)> {
         let conn = self.conn()?;
         Ok(conn.query_row(
-            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM meeting_notes WHERE created_at_utc >= ?1",
+            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM meeting_spend WHERE created_at_utc >= ?1",
             [ts(since)],
             |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)? as u32)),
         )?)
@@ -394,10 +412,15 @@ impl Store {
             };
             (expired, known)
         };
+        let mut done = 0;
         for id in &expired {
-            delete_wavs(&meetings_dir.join(id));
+            // Stamp only when every file is really gone; a locked file is retried next sweep.
+            if !delete_wavs(&meetings_dir.join(id)) {
+                continue;
+            }
             let conn = self.conn()?;
             conn.execute("UPDATE meetings SET audio_deleted_at = ?2 WHERE id = ?1", params![id, ts(now)])?;
+            done += 1;
         }
         let min_age = Duration::milliseconds(ORPHAN_AUDIO_MIN_AGE_MS as i64);
         if let Ok(entries) = std::fs::read_dir(meetings_dir) {
@@ -417,21 +440,56 @@ impl Store {
                 }
             }
         }
-        Ok(expired.len())
+        Ok(done)
     }
 }
 
-fn delete_wavs(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+fn write_note(tx: &rusqlite::Transaction<'_>, n: &NoteRow, stale: bool) -> StoreResult<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO meeting_notes (meeting_id, length, markdown, model, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, cost_usd, created_at_utc, stale)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            n.meeting_id,
+            n.length.as_db(),
+            n.markdown,
+            n.model,
+            n.input_tokens as i64,
+            n.output_tokens as i64,
+            n.cache_read_tokens as i64,
+            n.cache_write_tokens as i64,
+            n.cost_usd,
+            n.created_at_utc,
+            stale as i64
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO meeting_spend (meeting_id, created_at_utc, cost_usd) VALUES (?1, ?2, ?3)",
+        params![n.meeting_id, n.created_at_utc, n.cost_usd],
+    )?;
+    Ok(())
+}
+
+/// Delete every WAV under `dir`; true when none is left (or the folder is gone).
+fn delete_wavs(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return !dir.exists() };
+    let mut all = true;
     for e in entries.flatten() {
         let p = e.path();
+        let is_wav = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"));
         if p.is_dir() {
-            delete_wavs(&p);
+            if is_wav {
+                all = false; // a folder named *.wav: can't be audio we wrote; leave it, report not done
+                continue;
+            }
+            all &= delete_wavs(&p);
             let _ = std::fs::remove_dir(&p);
-        } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav")) {
+        } else if is_wav {
             remove_audio(&p);
+            all &= !p.exists();
         }
     }
+    all
 }
 
 fn remove_meeting_dir(dir: &Path) {

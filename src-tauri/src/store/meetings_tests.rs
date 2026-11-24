@@ -258,3 +258,83 @@ fn migration_upgrades_existing_db_without_touching_transcriptions() {
     assert!(s.get("t1").unwrap().is_some());
     assert!(s.meeting_list().unwrap().is_empty());
 }
+
+// ---------------- council round 1 ----------------
+
+#[test]
+fn sweep_keeps_audio_flag_when_a_file_cannot_be_deleted() {
+    let (d, s) = open();
+    let dir = d.meetings();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    end(&s, &m.id, Utc::now() - Duration::hours(30));
+    // A folder named me.wav can't be removed as a file: the delete "fails".
+    std::fs::create_dir_all(dir.join(&m.id).join("me.wav").join("x")).unwrap();
+    assert_eq!(s.meeting_sweep(Utc::now(), &dir).unwrap(), 0);
+    assert!(s.meeting_get(&m.id).unwrap().unwrap().audio_available, "retried next sweep, not marked gone");
+}
+
+#[test]
+fn note_for_a_deleted_meeting_is_not_saved() {
+    let (d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    let started = Utc::now();
+    s.meeting_delete(&m.id, &d.meetings()).unwrap();
+    let saved = s.note_save_if_current(&note(&m.id, Length::Medium, "x", 0.1, Utc::now()), started).unwrap();
+    assert!(!saved);
+    assert!(s.notes(&m.id).unwrap().is_empty());
+}
+
+#[test]
+fn note_is_stale_when_inputs_changed_while_it_was_written() {
+    let (_d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    let started = Utc::now();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    s.meeting_update(&m.id, None, Some("{\"type\":\"doc\"}"), None, None).unwrap();
+    assert!(s.note_save_if_current(&note(&m.id, Length::Medium, "x", 0.1, Utc::now()), started).unwrap());
+    assert!(s.notes(&m.id).unwrap()[0].stale, "edits during generation mark it stale");
+    let later = Utc::now();
+    assert!(s.note_save_if_current(&note(&m.id, Length::Medium, "y", 0.1, Utc::now()), later).unwrap());
+    assert!(!s.notes(&m.id).unwrap()[0].stale);
+}
+
+#[test]
+fn regenerated_notes_still_count_in_spend() {
+    let (_d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    let t = Utc::now();
+    s.note_save_if_current(&note(&m.id, Length::Medium, "a", 0.10, t), t).unwrap();
+    s.note_save_if_current(&note(&m.id, Length::Medium, "b", 0.20, t), t).unwrap();
+    let (usd, n) = s.notes_cost_since(t - Duration::hours(1)).unwrap();
+    assert!((usd - 0.30).abs() < 1e-9, "{usd}");
+    assert_eq!(n, 2);
+}
+
+#[test]
+fn rename_all_by_name_never_touches_my_lines() {
+    let (_d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    s.segment_insert(&seg(&m.id, MSource::Me, Some("Maximilian"), 0, "mine")).unwrap();
+    s.segment_insert(&seg(&m.id, MSource::Them, Some("Maximilian"), 1_000, "theirs")).unwrap();
+    assert_eq!(s.segment_rename(&m.id, None, Some("Maximilian"), "Max Other").unwrap(), 1);
+    let segs = s.segments(&m.id).unwrap();
+    assert_eq!(segs[0].speaker.as_deref(), Some("Maximilian"));
+    assert_eq!(segs[1].speaker.as_deref(), Some("Max Other"));
+}
+
+#[test]
+fn segment_for_a_deleted_meeting_is_rejected() {
+    let (d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    s.meeting_delete(&m.id, &d.meetings()).unwrap();
+    assert!(s.segment_insert(&seg(&m.id, MSource::Me, None, 0, "late")).is_err());
+    assert!(s.segments(&m.id).unwrap().is_empty());
+}
+
+#[test]
+fn interrupted_meetings_with_audio_are_listed_for_repair() {
+    let (_d, s) = open();
+    let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();
+    s.mark_interrupted().unwrap();
+    assert_eq!(s.interrupted_with_audio().unwrap(), vec![m.id]);
+}

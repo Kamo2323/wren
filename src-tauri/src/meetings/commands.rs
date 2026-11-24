@@ -205,29 +205,42 @@ pub fn recording_dot(rgba: &mut [u8], w: u32, h: u32) {
     }
 }
 
-/// The stretch `[start_ms, end_ms + CLIP_TAIL_MS)` of a meeting WAV as a playable data URL.
+/// Longest stretch one ▶ can play (a line is at most ~20 s).
+const CLIP_MAX_MS: u64 = 60_000;
+
+/// The stretch `[start_ms, end_ms + CLIP_TAIL_MS)` of a meeting WAV as a playable data URL. Reads the
+/// real file length, so lines spoken since the last header update (a live meeting) still play.
 pub fn clip_data_url(path: &Path, start_ms: u64, end_ms: u64) -> anyhow::Result<Option<String>> {
     use base64::Engine;
+    use std::io::{Read, Seek, SeekFrom};
     if !path.is_file() {
         return Ok(None);
     }
-    let mut r = hound::WavReader::open(path)?;
-    let spec = r.spec();
-    let total = r.duration() as u64;
-    let rate = spec.sample_rate as u64;
+    let (offset, total) = crate::meetings::capture::wav::pcm_layout(path)?;
+    let rate = 16_000u64;
+    let end_ms = end_ms.max(start_ms).min(start_ms + CLIP_MAX_MS);
     let from = (start_ms * rate / 1000).min(total);
     let to = ((end_ms + CLIP_TAIL_MS) * rate / 1000).min(total).max(from);
-    r.seek(from as u32)?;
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(offset + from * 2))?;
+    let mut pcm = vec![0u8; ((to - from) * 2) as usize];
+    f.read_exact(&mut pcm)?;
+    let spec = hound::WavSpec { channels: 1, sample_rate: rate as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut w = hound::WavWriter::new(&mut buf, spec)?;
-        for s in r.samples::<i16>().take((to - from) as usize) {
-            w.write_sample(s?)?;
+        for c in pcm.chunks_exact(2) {
+            w.write_sample(i16::from_le_bytes([c[0], c[1]]))?;
         }
         w.finalize()?;
     }
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.into_inner());
     Ok(Some(format!("data:audio/wav;base64,{b64}")))
+}
+
+/// Meeting ids are UUIDs we made; anything else from the page is refused before touching files.
+fn valid_id(id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(id).map(|_| ()).map_err(|_| "That meeting doesn't exist.".to_string())
 }
 
 fn svc(m: &Option<State<'_, Meetings>>) -> Result<Arc<MeetingService>, String> {

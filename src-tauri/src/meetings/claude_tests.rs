@@ -149,3 +149,20 @@ fn live_test_key() {
     let key = KeyStore::system().get().expect("a key saved in the OS credential store");
     test_key(key.expose()).expect("the key works");
 }
+
+#[test]
+fn message_stop_is_reported() {
+    let ev = feed(&["event: message_stop
+data: {\"type\":\"message_stop\"}
+
+"]);
+    assert_eq!(ev, vec![SseEvent::MessageStop]);
+}
+
+#[test]
+fn a_stream_without_message_stop_is_incomplete() {
+    assert!(matches!(completion_error("end_turn", false), Some(ClaudeError::Network(_))));
+    assert_eq!(completion_error("end_turn", true), None);
+    assert_eq!(completion_error("refusal", true), Some(ClaudeError::Refusal));
+    assert!(matches!(completion_error("", true), Some(ClaudeError::Network(_))));
+}
