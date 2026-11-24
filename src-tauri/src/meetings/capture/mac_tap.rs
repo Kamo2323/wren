@@ -209,16 +209,10 @@ pub fn audio_processes() -> Vec<AudioProc> {
         .collect()
 }
 
-/// Pids of running Teams apps (main app bundles).
+/// Pids of running Teams apps (main app bundles). libproc, not `NSWorkspace` (AppKit is main-thread
+/// only; this runs on the capture thread).
 pub fn running_teams_pids() -> Vec<i32> {
-    objc2::rc::autoreleasepool(|_| {
-        let apps = objc2_app_kit::NSWorkspace::sharedWorkspace().runningApplications();
-        apps.iter()
-            .filter(|a| a.bundleIdentifier().is_some_and(|b| is_teams_bundle(&b.to_string())))
-            .map(|a| a.processIdentifier())
-            .filter(|p| *p > 0)
-            .collect()
-    })
+    crate::meetings::mac_procs::running_app_pids(is_teams_bundle)
 }
 
 /// Wren's own process object, if Wren has registered with the audio system.

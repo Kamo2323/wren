@@ -133,6 +133,8 @@ pub mod segmenter;
 pub mod speakers;
 pub mod teams;
 pub mod capture;
+#[cfg(target_os = "macos")]
+pub mod mac_procs;
 pub mod session;
 
 /// The running meeting service, for the dictation session's start/stop notices (spec §5.1: dictated

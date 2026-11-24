@@ -205,23 +205,12 @@ impl AxTeamsReader {
         }
     }
 
-    /// Pids of the running app(s) to read.
+    /// Pids of the running app(s) to read. libproc, not `NSWorkspace` (AppKit is main-thread only and
+    /// this runs on the meeting watcher's thread several times a second).
     fn app_pids(&self) -> Vec<i32> {
-        objc2::rc::autoreleasepool(|_| {
-            let apps = objc2_app_kit::NSWorkspace::sharedWorkspace().runningApplications();
-            apps.iter()
-                .filter(|a| {
-                    a.bundleIdentifier().is_some_and(|b| {
-                        let b = b.to_string();
-                        match &self.bundle_id {
-                            Some(want) => b.eq_ignore_ascii_case(want),
-                            None => is_teams_bundle(&b),
-                        }
-                    })
-                })
-                .map(|a| a.processIdentifier())
-                .filter(|p| *p > 0)
-                .collect()
+        crate::meetings::mac_procs::running_app_pids(|b| match &self.bundle_id {
+            Some(want) => b.eq_ignore_ascii_case(want),
+            None => is_teams_bundle(b),
         })
     }
 
