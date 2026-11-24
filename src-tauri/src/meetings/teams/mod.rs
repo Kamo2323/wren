@@ -4,6 +4,8 @@
 //!
 //! Privacy: names and titles read here go to the meeting only; they are never logged.
 
+#[cfg(target_os = "macos")]
+pub mod ax_macos;
 pub mod parse;
 pub mod snapshot;
 #[cfg(windows)]

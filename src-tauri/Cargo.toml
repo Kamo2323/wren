@@ -55,6 +55,10 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsA
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# Meetings: Core Audio process tap on Teams (CATapDescription + private aggregate device, macOS 14.2+).
+objc2-core-audio = "0.3"
+objc2-core-audio-types = { version = "0.3", features = ["CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", features = ["CFDictionary"] }
 block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
@@ -67,6 +71,7 @@ objc2-foundation = { version = "0.3", features = [
     "NSObject",
     "NSString",
     "NSURL",
+    "NSUUID",
     "NSValue",
 ] }
 objc2-app-kit = { version = "0.3", features = [

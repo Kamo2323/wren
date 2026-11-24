@@ -4,6 +4,8 @@
 use crate::meetings::CaptureMode;
 use crossbeam_channel::Sender;
 
+#[cfg(target_os = "macos")]
+pub mod mac_tap;
 pub mod mic;
 pub mod wav;
 #[cfg(windows)]

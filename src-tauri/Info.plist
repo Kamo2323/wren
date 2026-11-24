@@ -4,6 +4,8 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Wren records your voice locally on this Mac to turn speech into text. Nothing leaves your computer.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Wren records the sound of your Teams meeting so it can transcribe what others say.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Wren pastes dictated text into the app you are typing in.</string>
   <key>LSMinimumSystemVersion</key>

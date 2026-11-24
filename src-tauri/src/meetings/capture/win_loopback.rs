@@ -124,13 +124,24 @@ impl TeamsLoopback {
 impl AudioSource for TeamsLoopback {
     fn start(&mut self, tx: Sender<AudioBlock>, mode_tx: Sender<CaptureMode>) -> anyhow::Result<CaptureMode> {
         let (first_tx, first_rx) = crossbeam_channel::bounded(1);
+        // Set when `start` gave up waiting for the first connection: the thread then reports its first
+        // mode as a change instead, so the real mode is never lost.
+        let late = Arc::new(parking_lot::Mutex::new(false));
+        let late_thread = late.clone();
         let stop = self.stop.clone();
         let target = self.target;
         let thread = std::thread::Builder::new().name("wren-teams-audio".into()).spawn(move || {
             let _ = initialize_mta().ok();
             let started = Instant::now();
             let (mut client, mut mode, mut pid) = connect(target);
-            let _ = first_tx.send(mode);
+            {
+                let late = late_thread.lock();
+                if *late {
+                    let _ = mode_tx.send(mode);
+                } else {
+                    let _ = first_tx.send(mode);
+                }
+            }
             let mut emitted: u64 = 0; // samples
             let mut bytes: VecDeque<u8> = VecDeque::new();
             let mut last_check = Instant::now();
@@ -186,7 +197,16 @@ impl AudioSource for TeamsLoopback {
             }
         })?;
         self.thread = Some(thread);
-        let mode = first_rx.recv_timeout(Duration::from_secs(5)).unwrap_or(CaptureMode::MicOnly);
+        let mode = match first_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(m) => m,
+            Err(_) => {
+                let mut late = late.lock();
+                first_rx.try_recv().unwrap_or_else(|_| {
+                    *late = true;
+                    CaptureMode::MicOnly
+                })
+            }
+        };
         Ok(mode)
     }
 

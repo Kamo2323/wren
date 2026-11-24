@@ -78,7 +78,11 @@ fn make_sources(app: &AppHandle) -> SourcePair {
     let teams: Box<dyn AudioSource> = Box::new(crate::meetings::capture::win_loopback::TeamsLoopback::new(
         crate::meetings::capture::win_loopback::Target::Teams,
     ));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let teams: Box<dyn AudioSource> = Box::new(crate::meetings::capture::mac_tap::TeamsTap::new(
+        crate::meetings::capture::mac_tap::Target::Teams,
+    ));
+    #[cfg(not(any(windows, target_os = "macos")))]
     let teams: Box<dyn AudioSource> = Box::new(crate::meetings::capture::Silence::default());
     (mic, teams)
 }
@@ -98,7 +102,15 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
                     .map(|r| Box::new(r) as Box<dyn crate::meetings::teams::TeamsReader>)
             }) as crate::meetings::teams::ReaderFactory
         }));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let make_teams_reader: Option<Arc<dyn Fn() -> crate::meetings::teams::ReaderFactory + Send + Sync>> =
+        Some(Arc::new(|| {
+            Box::new(|| {
+                Some(Box::new(crate::meetings::teams::ax_macos::AxTeamsReader::new())
+                    as Box<dyn crate::meetings::teams::TeamsReader>)
+            }) as crate::meetings::teams::ReaderFactory
+        }));
+    #[cfg(not(any(windows, target_os = "macos")))]
     let make_teams_reader = None;
     let deps = Deps {
         store: state.store.clone(),
@@ -265,14 +277,21 @@ pub fn system_audio_permission() -> String {
     {
         "granted".into()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::meetings::capture::mac_tap::system_audio_permission().into()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         "unknown".into()
     }
 }
 
 #[tauri::command]
-pub fn open_system_audio_settings() {}
+pub fn open_system_audio_settings() {
+    #[cfg(target_os = "macos")]
+    crate::meetings::capture::mac_tap::open_system_audio_settings();
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

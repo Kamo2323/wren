@@ -255,4 +255,20 @@ mod tests {
         assert!(o.speaking.is_empty());
         assert!(o.title.is_none());
     }
+
+    #[test]
+    #[ignore = "needs tests/fixtures/teams/mac_idle.json: run `teams_probe --any` on the Mac with Teams open (plan Task 6)"]
+    fn mac_idle_window_has_no_speakers() {
+        // Real dump of the Mac's Teams main window (not in a call), captured with `teams_probe --any`.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/teams/mac_idle.json");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            panic!("missing fixture {path}: run `cargo run --example teams_probe -- --any --out {path}`");
+        };
+        let dump: crate::meetings::teams::snapshot::Dump = serde_json::from_str(&text).unwrap();
+        assert!(dump.tree.count() > 10, "a real tree");
+        assert!(!is_meeting_window(&dump.tree));
+        let o = parse(&dump.tree, &dump.title);
+        assert!(o.speaking.is_empty());
+        assert!(o.title.is_none());
+    }
 }
