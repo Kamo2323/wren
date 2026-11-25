@@ -3,6 +3,7 @@
 
 use crate::meetings::capture::mic::MicSource;
 use crate::meetings::capture::AudioSource;
+use crate::meetings::enhance::NoteEvent;
 use crate::meetings::session::{ActiveMeeting, Deps, MeetingEvent, MeetingService, SourcePair, Transcriber};
 use crate::meetings::{Length, MeetingRow, MeetingStatus, NoteRow, SegmentRow, Source};
 use crate::session::app::AppEnv;
@@ -10,6 +11,7 @@ use crate::store::{Store, StoreResult};
 use crate::AppState;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -179,10 +181,38 @@ fn claude_model(app: &AppHandle) -> String {
 }
 
 /// Removes a (meeting, length) from `GENERATING` however the run ends (error, panic, spawn failure).
-struct Generating(String, Length);
+struct Generating {
+    id: String,
+    length: Length,
+    registered: AtomicBool,
+}
+
+impl Generating {
+    fn new(id: String, length: Length) -> Self {
+        Self { id, length, registered: AtomicBool::new(true) }
+    }
+
+    fn remove(&self, runs: &mut Vec<(String, Length)>) {
+        if self.registered.swap(false, Ordering::Relaxed) {
+            runs.retain(|(id, length)| *id != self.id || *length != self.length);
+        }
+    }
+
+    fn publish(&self, event: NoteEvent, send: impl FnOnce(NoteEvent)) {
+        if matches!(event, NoteEvent::Done { .. } | NoteEvent::Error { .. }) {
+            let mut runs = GENERATING.lock();
+            self.remove(&mut runs);
+            // Queue the terminal event before another run for this pair can publish Started.
+            send(event);
+        } else {
+            send(event);
+        }
+    }
+}
+
 impl Drop for Generating {
     fn drop(&mut self) {
-        GENERATING.lock().retain(|(i, l)| !(*i == self.0 && *l == self.1));
+        self.remove(&mut GENERATING.lock());
     }
 }
 
@@ -195,33 +225,36 @@ pub fn spawn_enhance(app: &AppHandle, id: String, len: Length, delay: Duration) 
         }
         g.push((id.clone(), len));
     }
-    let guard = Generating(id.clone(), len);
-    let _ = app.emit(NOTE_EVENT, crate::meetings::enhance::NoteEvent::Started { meeting_id: id.clone(), length: len });
-    let (app, app_err, id_err) = (app.clone(), app.clone(), id.clone());
+    let guard = Arc::new(Generating::new(id.clone(), len));
+    let _ = app.emit(NOTE_EVENT, NoteEvent::Started { meeting_id: id.clone(), length: len });
+    let (app_run, id_run, guard_run) = (app.clone(), id.clone(), guard.clone());
     let spawned = std::thread::Builder::new().name("wren-notes".into()).spawn(move || {
-        let _guard = guard;
         // After Stop: a moment for the last edit to My notes (saved on a short delay) to land first.
         std::thread::sleep(delay);
-        let state = app.state::<AppState>();
-        let (model, me) = (claude_model(&app), meeting_name(&app));
+        let state = app_run.state::<AppState>();
+        let (model, me) = (claude_model(&app_run), meeting_name(&app_run));
         let _ = crate::meetings::enhance::generate(
             &state.store,
             &crate::meetings::enhance::ClaudeWriter,
             &model,
             &me,
-            &id,
+            &id_run,
             len,
             &mut |e| {
-                let _ = app.emit(NOTE_EVENT, e);
+                guard_run.publish(e, |event| {
+                    let _ = app_run.emit(NOTE_EVENT, event);
+                });
             },
         );
     });
     if let Err(e) = &spawned {
         // Nothing will run: say so, or "Writing…" would stay up.
-        let _ = app_err.emit(
-            NOTE_EVENT,
-            crate::meetings::enhance::NoteEvent::Error { meeting_id: id_err, length: len, kind: "api".into(), message: format!("Wren couldn't start writing the notes: {e}") },
-        );
+        let event = NoteEvent::Error {
+            meeting_id: id, length: len, kind: "api".into(), message: format!("Wren couldn't start writing the notes: {e}"),
+        };
+        guard.publish(event, |event| {
+            let _ = app.emit(NOTE_EVENT, event);
+        });
     }
     spawned.is_ok()
 }
@@ -418,6 +451,14 @@ pub fn open_system_audio_settings() {
 #[tauri::command]
 pub fn meeting_enhance(app: AppHandle, state: State<'_, AppState>, id: String, length: Length, regenerate: bool) -> Result<String, String> {
     valid_id(&id)?;
+    if state
+        .store
+        .meeting_get(&id)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|m| matches!(m.status, MeetingStatus::Recording | MeetingStatus::Paused))
+    {
+        return Err("Stop this meeting before writing enhanced notes.".into());
+    }
     if GENERATING.lock().iter().any(|(i, l)| *i == id && *l == length) {
         return Ok("running".into());
     }

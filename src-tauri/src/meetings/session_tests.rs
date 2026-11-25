@@ -438,14 +438,17 @@ fn quitting_stop_skips_the_notes_hook() {
     let r = rig();
     let fired = Arc::new(AtomicUsize::new(0));
     let f = fired.clone();
-    r.svc.set_on_stopped(Arc::new(move |_| {
+    let hook: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |_| {
         f.fetch_add(1, Ordering::SeqCst);
-    }));
+    });
+    r.svc.set_on_stopped(hook.clone());
     r.svc.start(None).unwrap();
     r.svc.stop_for_quit(Duration::from_millis(200));
     assert_eq!(fired.load(Ordering::SeqCst), 0, "no paid request on quit");
-    r.svc.start(None).unwrap();
-    r.svc.stop();
+    let next_launch = rig();
+    next_launch.svc.set_on_stopped(hook);
+    next_launch.svc.start(None).unwrap();
+    next_launch.svc.stop();
     assert_eq!(fired.load(Ordering::SeqCst), 1);
 }
 
@@ -655,6 +658,50 @@ fn words_before_the_first_teams_mute_read_count_as_muted() {
 }
 
 #[test]
+fn empty_watcher_reads_do_not_release_a_clip_before_a_known_mute_read() {
+    let r = rig_with_reader(Duration::ZERO, Arc::new(AtomicBool::new(false)));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 600, 0.10);
+    let shared = r.svc.running.lock().as_ref().unwrap().shared.clone();
+    wait_for("empty Teams reads past the clip", 2_400, || {
+        shared.timeline.lock().latest_at().is_some_and(|at| at >= 1_500)
+    });
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(r.fake.calls.load(Ordering::SeqCst), 0, "empty reads must not release the clip");
+    r.svc.observe(obs(2_000, &[], Some(false)));
+    wait_for("clip saved after the first known read", 1_000, || {
+        r.store.segments(&m.id).unwrap().first().is_some_and(|s| s.muted)
+    });
+    r.svc.stop();
+}
+
+#[test]
+fn late_first_mute_read_corrects_saved_lines_and_emits_the_update() {
+    let r = rig_with_reader(Duration::ZERO, Arc::new(AtomicBool::new(false)));
+    let m = r.svc.start(None).unwrap();
+    r.me.utter(0, 800, 0.10);
+    r.me.utter(10_000, 800, 0.40);
+    r.them.utter(6_000, 800, 0.20);
+    wait_for("clips saved after the mute wait times out", 8_000, || {
+        r.store.segments(&m.id).unwrap().len() == 3
+    });
+    let before = r.store.segments(&m.id).unwrap();
+    let corrected_id = before[2].id;
+    assert!(!before[2].muted);
+    r.svc.observe(obs(35_000, &[], Some(false)));
+    wait_for("replacement segment event", 1_000, || {
+        r.events.lock().iter().any(|e| matches!(e,
+            MeetingEvent::Segment { segment } if segment.id == corrected_id && segment.muted))
+    });
+    let after = r.store.segments(&m.id).unwrap();
+    assert_eq!(after.iter().map(|s| s.muted).collect::<Vec<_>>(), [false, false, true]);
+    assert_eq!(after[2].id, corrected_id);
+    let prompt = crate::meetings::enhance::context_block(&m, &after, "", "Maximilian");
+    assert!(!prompt.contains(&after[2].text), "reconciled speech stays out of enhanced notes");
+    r.svc.stop();
+}
+
+#[test]
 fn stop_waits_for_the_teams_reader_to_finish() {
     let dropped = Arc::new(AtomicBool::new(false));
     let r = rig_with_reader(Duration::from_millis(600), dropped.clone());
@@ -687,14 +734,52 @@ fn quitting_while_a_meeting_is_starting_saves_it() {
         max_backlog_ms: 600_000,
     };
     let svc = Arc::new(MeetingService::new(deps));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let received = events.clone();
+    svc.set_listener(Arc::new(move |e| received.lock().push(e)));
     let s2 = svc.clone();
     let starting = std::thread::spawn(move || s2.start(None).unwrap());
     std::thread::sleep(Duration::from_millis(100));
     svc.stop_for_quit(Duration::from_secs(1));
     let m = starting.join().unwrap();
     assert!(svc.active().is_none(), "quit stopped the meeting that was starting");
+    assert!(!events.lock().iter().any(|e| matches!(e, MeetingEvent::Status { active: Some(_) })));
     assert_eq!(store.meeting_get(&m.id).unwrap().unwrap().status, MeetingStatus::Ended);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn quit_timeout_cannot_publish_a_late_start() {
+    let mut r = rig();
+    let make_sources = r.svc.deps.make_sources.clone();
+    let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
+    let (release_tx, release_rx) = crossbeam_channel::bounded(0);
+    r.svc.deps.make_sources = Arc::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+        make_sources()
+    });
+    let svc = Arc::new(r.svc);
+    let starting_svc = svc.clone();
+    let starting = std::thread::spawn(move || starting_svc.start(None));
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(svc.stop_for_quit(Duration::ZERO), None);
+    release_tx.send(()).unwrap();
+    let m = starting.join().unwrap().unwrap();
+    assert!(svc.active().is_none(), "startup must stay cancelled after quit's wait expires");
+    assert_eq!(r.store.meeting_get(&m.id).unwrap().unwrap().status, MeetingStatus::Ended);
+    assert!(r.me.tx.lock().is_none() && r.them.tx.lock().is_none(), "both audio sources stopped");
+    for file in ["me.wav", "them.wav"] {
+        hound::WavReader::open(svc.meeting_dir(&m.id).join(file)).unwrap();
+    }
+}
+
+#[test]
+fn a_start_after_quit_is_rejected() {
+    let r = rig();
+    assert_eq!(r.svc.stop_for_quit(Duration::ZERO), None);
+    assert!(r.svc.start(None).is_err());
+    assert!(r.store.meeting_list().unwrap().is_empty());
 }
 
 #[test]

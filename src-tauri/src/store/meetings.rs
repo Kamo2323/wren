@@ -273,6 +273,30 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Fail closed for saved microphone lines overlapping the unknown window before the first mute read.
+    pub(crate) fn mute_me_segments(&self, id: &str, start_ms: u64, end_ms: u64) -> StoreResult<Vec<SegmentRow>> {
+        if start_ms >= end_ms {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let changed = {
+            let mut st = tx.prepare(
+                "UPDATE meeting_segments SET muted = 1
+                 WHERE meeting_id = ?1 AND source = 'me' AND muted = 0 AND start_ms < ?3 AND end_ms > ?2
+                 RETURNING id, meeting_id, source, speaker, confidence, renamed, muted, start_ms, end_ms, text",
+            )?;
+            st.query_map(params![id, start_ms as i64, end_ms as i64], segment_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if !changed.is_empty() {
+            tx.execute("UPDATE meeting_notes SET stale = 1 WHERE meeting_id = ?1", [id])?;
+            tx.execute("UPDATE meetings SET inputs_changed_at = ?2 WHERE id = ?1", params![id, ts(Utc::now())])?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// Rename one line (`segment_id`) or every line whose speaker is `from` (`None` = unnamed lines).
     /// Returns how many lines changed; any change marks the meeting's notes stale.
     pub fn segment_rename(

@@ -15,7 +15,7 @@ use crate::meetings::capture::wav::ContinuousWav;
 use crate::meetings::capture::{AudioBlock, AudioSource};
 use crate::meetings::dedupe::{is_bleed, is_echo, starts_after, DictationGate, ECHO_MAX_LAG_MS};
 use crate::meetings::segmenter::{RawSegment, Segmenter, SegmenterConfig};
-use crate::meetings::speakers::{SpeakerTimeline, TeamsObservation, TEAMS_LAG_MS};
+use crate::meetings::speakers::{SpeakerTimeline, TeamsObservation, TEAMS_LAG_MS, UNKNOWN_BEFORE_FIRST_MUTE_READ_MS};
 use crate::meetings::teams::{spawn_watcher, ReaderFactory};
 use crate::meetings::{CaptureMode, MeetingRow, MeetingStatus, NewSegment, SegmentRow, Source};
 use crate::store::Store;
@@ -150,6 +150,7 @@ struct Shared {
     me_pos: AtomicU64,
     me_open_since: AtomicU64,
     abort: AtomicBool,
+    published: AtomicBool,
     listener: Arc<RwLock<Option<Listener>>>,
     dir: PathBuf,
     max_backlog_ms: u64,
@@ -179,6 +180,9 @@ impl Shared {
     }
 
     fn emit(&self, e: MeetingEvent) {
+        if !self.published.load(Ordering::Acquire) {
+            return;
+        }
         let l = self.listener.read().clone();
         if let Some(l) = l {
             l(e);
@@ -320,10 +324,11 @@ impl MeetingService {
     /// Start recording a new meeting. Fails if one is already running. Opening the audio happens
     /// outside the `running` lock: dictation's start/stop notices take that lock and must not wait.
     pub fn start(&self, title: Option<String>) -> Result<MeetingRow, String> {
-        if self.quitting.lock().is_some() {
-            return Err("Wren is quitting.".into());
-        }
         {
+            let quitting = self.quitting.lock();
+            if quitting.is_some() {
+                return Err("Wren is quitting.".into());
+            }
             // `stop` takes the meeting and marks it stopping in one step under `running`: check both there.
             let running = self.running.lock();
             if self.stopping.lock().is_some() {
@@ -340,9 +345,6 @@ impl MeetingService {
             }
         }
         let _starting = Starting(&self.starting);
-        if self.running.lock().is_some() {
-            return Err("A meeting is already being recorded.".into());
-        }
         // One clock for everything: both sources count their stream positions from (about) now, and
         // observations and dictation windows are measured from the same instant.
         let t0 = Instant::now();
@@ -396,6 +398,7 @@ impl MeetingService {
             me_pos: AtomicU64::new(0),
             me_open_since: AtomicU64::new(u64::MAX),
             abort: AtomicBool::new(false),
+            published: AtomicBool::new(false),
             listener: self.listener.clone(),
             dir: dir.clone(),
             max_backlog_ms: self.max_backlog_ms.load(Ordering::Relaxed),
@@ -438,20 +441,16 @@ impl MeetingService {
             std::thread::Builder::new()
                 .name("wren-meeting".into())
                 .spawn(move || {
-                    Pipeline { shared, store, sources: [mic, teams], wavs: [Some(me_wav), Some(them_wav)], segmenters: Default::default() }
-                        .run(me_rx, them_rx, mode_rx, obs_rx, ctl_rx)
+                    Pipeline {
+                        shared,
+                        store,
+                        sources: [mic, teams],
+                        wavs: [Some(me_wav), Some(them_wav)],
+                        segmenters: Default::default(),
+                        reconciled_mute_at: None,
+                    }
+                    .run(me_rx, them_rx, mode_rx, obs_rx, ctl_rx)
                 })
-                .map_err(|e| e.to_string())?
-        };
-        let worker = {
-            let shared = shared.clone();
-            let store = self.deps.store.clone();
-            let transcriber = self.deps.transcriber.clone();
-            let bias = self.deps.bias_terms.clone();
-            let permit = self.asr_permit.clone();
-            std::thread::Builder::new()
-                .name("wren-meeting-asr".into())
-                .spawn(move || worker(shared, store, transcriber, bias, permit))
                 .map_err(|e| e.to_string())?
         };
         if let Some(make) = &self.deps.make_teams_reader {
@@ -462,9 +461,47 @@ impl MeetingService {
                 Err(e) => tracing::warn!(error = %e, "cannot start the Teams window watcher"),
             }
         }
+        let worker = {
+            let shared = shared.clone();
+            let store = self.deps.store.clone();
+            let transcriber = self.deps.transcriber.clone();
+            let bias = self.deps.bias_terms.clone();
+            let permit = self.asr_permit.clone();
+            std::thread::Builder::new()
+                .name("wren-meeting-asr".into())
+                .spawn(move || worker(shared, store, transcriber, bias, permit))
+        };
+        let mut recording = Running {
+            shared: shared.clone(),
+            ctl: ctl_tx,
+            obs: obs_tx,
+            pipeline: Some(pipeline),
+            worker: None,
+            watcher_stop,
+        };
+        match worker {
+            Ok(worker) => recording.worker = Some(worker),
+            Err(e) => {
+                drop(dl);
+                self.finish_recording(recording, Duration::ZERO);
+                return Err(e.to_string());
+            }
+        }
+        let quitting = self.quitting.lock();
+        if quitting.is_some() {
+            drop(quitting);
+            drop(dl);
+            self.finish_recording(recording, Duration::ZERO);
+            return self.deps.store.meeting_get(&row.id).map_err(|e| e.to_string())?
+                .ok_or_else(|| "That meeting no longer exists.".to_string());
+        }
         tracing::info!(meeting = %row.id, mode = ?mode, "meeting started");
-        *self.running.lock() =
-            Some(Running { shared: shared.clone(), ctl: ctl_tx, obs: obs_tx, pipeline: Some(pipeline), worker: Some(worker), watcher_stop });
+        {
+            let mut running = self.running.lock();
+            *running = Some(recording);
+            shared.published.store(true, Ordering::Release);
+        }
+        drop(quitting);
         drop(dl);
         shared.emit(MeetingEvent::Status { active: Some(shared.snapshot()) });
         Ok(row)
@@ -553,22 +590,12 @@ impl MeetingService {
     }
 
     fn stop_inner(&self, drain: Duration, run_hook: bool) -> Option<String> {
-        struct ClearQuit<'a>(&'a Mutex<Option<Instant>>);
-        impl Drop for ClearQuit<'_> {
-            fn drop(&mut self) {
-                *self.0.lock() = None;
-            }
-        }
-        // Wren exits once this returns; cleared anyway so a cancelled exit (and tests) carry on normally.
-        let _clear_quit = (!run_hook).then(|| ClearQuit(&self.quitting));
         if !run_hook {
-            // Quitting: a Stop still saving shortens its wait to ours, no new meeting starts, and a
-            // meeting still opening its audio is waited for and then saved like any other.
+            // Keep the deadline latched through app exit, even if a start outlasts this wait.
             {
                 let mut q = self.quitting.lock();
-                if q.is_none() {
-                    *q = Some(Instant::now() + drain);
-                }
+                let deadline = Instant::now() + drain;
+                *q = Some(q.map_or(deadline, |d| d.min(deadline)));
             }
             let until = Instant::now() + QUIT_WAITS_FOR_START;
             while self.starting.load(Ordering::SeqCst) && Instant::now() < until {
@@ -583,7 +610,7 @@ impl MeetingService {
             }
             r
         };
-        let Some(mut r) = taken else {
+        let Some(r) = taken else {
             if !run_hook {
                 // Quitting while an earlier Stop still saves: wait for it rather than cut it short.
                 let mut st = self.stopping.lock();
@@ -602,6 +629,18 @@ impl MeetingService {
             }
         }
         let stopping_guard = Stopping(&self.stopping, &self.stopped_cv);
+        let s = self.finish_recording(r, drain);
+        let quitting = self.quitting.lock().is_some(); // read before quit can see this stop finish
+        drop(stopping_guard); // saved: a new meeting may start, quit may proceed
+        s.emit(MeetingEvent::Status { active: None });
+        let hook = self.on_stopped.read().clone();
+        if let (true, false, Some(h)) = (run_hook, quitting, hook) {
+            h(s.id.clone());
+        }
+        Some(s.id.clone())
+    }
+
+    fn finish_recording(&self, mut r: Running, drain: Duration) -> Arc<Shared> {
         let s = r.shared.clone();
         let elapsed = s.elapsed_ms();
         r.watcher_stop.store(true, Ordering::Relaxed);
@@ -653,32 +692,11 @@ impl MeetingService {
             // Otherwise it's inside a slow transcription: it discards its result (abort), deletes its
             // own clip and exits; the 24 h sweep removes the folder.
         }
-        // The Teams reader is released before a new meeting may start: on macOS its cleanup switches
-        // Teams' accessibility back off, which must never land under the next meeting's reader.
-        let watcher = s.watcher.lock().take();
-        if let Some(w) = watcher {
-            let until = Instant::now() + WATCHER_JOIN;
-            while !w.is_finished() && Instant::now() < until {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            if w.is_finished() {
-                let _ = w.join();
-            } else {
-                tracing::warn!(meeting = %s.id, "Teams window read still running after stop; leaving it to finish");
-            }
-        }
         if let Err(e) = self.deps.store.meeting_set_status(&s.id, MeetingStatus::Ended, Some(chrono::Utc::now()), elapsed) {
             tracing::warn!(error = %e, "could not mark the meeting ended");
         }
         tracing::info!(meeting = %s.id, elapsed_ms = elapsed, "meeting stopped");
-        let quitting = self.quitting.lock().is_some(); // read before quit can see this stop finish
-        drop(stopping_guard); // saved: a new meeting may start, quit may proceed
-        s.emit(MeetingEvent::Status { active: None });
-        let hook = self.on_stopped.read().clone();
-        if let (true, false, Some(h)) = (run_hook, quitting, hook) {
-            h(s.id.clone());
-        }
-        Some(s.id.clone())
+        s
     }
 }
 
@@ -709,6 +727,7 @@ struct Pipeline {
     sources: [Box<dyn AudioSource>; 2],
     wavs: [Option<ContinuousWav>; 2],
     segmenters: [Option<Segmenter>; 2],
+    reconciled_mute_at: Option<u64>,
 }
 
 impl Pipeline {
@@ -796,16 +815,16 @@ impl Pipeline {
 
     fn observation(&mut self, o: TeamsObservation) {
         let s = &self.shared;
-        let (before, title_before, me_before) = {
-            let t = s.timeline.lock();
-            (t.participants(), t.latest_title(), t.self_name())
-        };
-        let (after, title, me) = {
+        let ((before, title_before, me_before), (after, title, me)) = {
             let mut t = s.timeline.lock();
+            let before = (t.participants(), t.latest_title(), t.self_name());
             t.record(&o);
-            (t.participants(), t.latest_title(), t.self_name())
+            (before, (t.participants(), t.latest_title(), t.self_name()))
         };
+        self.reconcile_mute();
+        let s = &self.shared;
         s.has_observations.store(true, Ordering::Relaxed);
+        s.queue_cv.notify_all();
         if after != before || me != me_before {
             let _ = self.store.meeting_update(&s.id, None, None, Some(&after), me.as_deref());
         }
@@ -818,6 +837,24 @@ impl Pipeline {
                     s.emit(MeetingEvent::Title { meeting_id: s.id.clone(), title: t });
                 }
             }
+        }
+    }
+
+    fn reconcile_mute(&mut self) {
+        let s = &self.shared;
+        let first = s.timeline.lock().first_mute_at();
+        let Some(at) = first.filter(|at| Some(*at) != self.reconciled_mute_at) else { return };
+        // The worker classifies and saves under this lock. If it saved before the first read,
+        // correct its row here, and emit the correction after the original event.
+        let _queue = s.queue.lock();
+        match self.store.mute_me_segments(&s.id, at.saturating_sub(UNKNOWN_BEFORE_FIRST_MUTE_READ_MS), at) {
+            Ok(rows) => {
+                self.reconciled_mute_at = Some(at);
+                for segment in rows {
+                    s.emit(MeetingEvent::Segment { segment });
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "could not reconcile microphone lines with Teams mute state"),
         }
     }
 
@@ -894,6 +931,25 @@ impl Pipeline {
                 }
             }
         }
+        // Finish the current Teams read before draining its observations. The last read may show
+        // the mute state for the first time, and must be applied before Stop can request notes.
+        // Release the old reader before the next recorder starts (its macOS cleanup changes AX).
+        let watcher = self.shared.watcher.lock().take();
+        if let Some(w) = watcher {
+            let until = Instant::now() + WATCHER_JOIN;
+            while !w.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if w.is_finished() {
+                let _ = w.join();
+            } else {
+                tracing::warn!(meeting = %self.shared.id, "Teams window read still running after stop; leaving it to finish");
+            }
+        }
+        while let Ok(o) = obs_rx.try_recv() {
+            self.observation(o);
+        }
+        self.reconcile_mute();
     }
 }
 
@@ -931,11 +987,15 @@ fn next_job(s: &Shared, q: &mut Queue) -> Option<Job> {
             t.source == Source::Them && t.start_ms < j.end_ms && j.start_ms < t.end_ms && !starts_after(t.start_ms, j.start_ms)
         });
         let waiting = them_live && them_pos < j.end_ms + 100 && j.queued_at.elapsed() < ME_WAIT_FOR_THEM;
-        // And for Teams to be read past its end, so whether the user was muted is known (privacy).
+        // Empty window reads don't tell us whether the mic was muted. Outside a call only the
+        // opening clips wait: otherwise we'd add three seconds to every line.
         let unread = !q.closed
             && j.queued_at.elapsed() < ME_WAIT_FOR_TEAMS
-            && s.timeline.lock().latest_at().is_none_or(|t| t < j.end_ms)
-            && s.teams_watching();
+            && s.teams_watching()
+            && match s.timeline.lock().latest_mute_at() {
+                Some(at) => at < j.end_ms,
+                None => j.start_ms < UNKNOWN_BEFORE_FIRST_MUTE_READ_MS,
+            };
         if overlapping_them || waiting || unread {
             continue;
         }
@@ -966,7 +1026,7 @@ fn worker(
                 s.queue_cv.wait_for(&mut q, Duration::from_millis(100));
             }
         };
-        let row = process(&s, &store, transcriber.as_ref(), &bias, &job, &permit);
+        let row = process(&s, transcriber.as_ref(), &bias, &job, &permit);
         // The clip stays "in flight" until its row is saved, so Stop (and the notes it triggers)
         // never runs between transcription and the write.
         let mut q = s.queue.lock();
@@ -974,7 +1034,10 @@ fn worker(
             // Stop already saved this clip as "[not transcribed]".
             return;
         }
-        if let Some(seg) = row {
+        if let Some(mut seg) = row {
+            if seg.source == Source::Me {
+                seg.muted = s.timeline.lock().muted_during(seg.start_ms, seg.end_ms).unwrap_or(false);
+            }
             match store.segment_insert(&seg) {
                 Ok(row) => {
                     let mut r = match row.source {
@@ -999,13 +1062,11 @@ fn worker(
 /// Transcribe and label one clip; `None` when it's dropped (silence, dictation, bleed-through).
 fn process(
     s: &Shared,
-    store: &Store,
     transcriber: &dyn Transcriber,
     bias: &Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     j: &Job,
     permit: &Mutex<()>,
 ) -> Option<NewSegment> {
-    let _ = store;
     if j.source == Source::Me && s.gate.lock().blocks(j.start_ms, j.end_ms) {
         return None;
     }
@@ -1065,7 +1126,6 @@ fn process(
             }
             seg.speaker = Some(s.me_name.clone());
             seg.confidence = 1.0;
-            seg.muted = s.timeline.lock().muted_during(j.start_ms, j.end_ms).unwrap_or(false);
         }
         Source::Them => {
             let me: Vec<(u64, u64, String)> = s.recent_me.lock().iter().cloned().collect();

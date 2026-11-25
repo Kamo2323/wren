@@ -39,7 +39,8 @@ const PRUNE_ABOVE: usize = 7_000;
 /// Privacy: audio this close before the first read that showed the mute state counts as muted — the
 /// first reads after Start can take a moment, and the user may already be muted. Further back (notes
 /// started long before the call was joined) the state stays unknown.
-const UNKNOWN_BEFORE_FIRST_MUTE_READ_MS: u64 = 30_000;
+pub(super) const UNKNOWN_BEFORE_FIRST_MUTE_READ_MS: u64 = 30_000;
+const MUTE_CARRY_MS: u64 = 60_000;
 
 /// `"Sarah Jones (You)"` → `"Sarah Jones"`; also `(Me)`. Case is kept.
 pub fn strip_self_suffix(name: &str) -> &str {
@@ -63,6 +64,9 @@ pub struct SpeakerTimeline {
     covered_from: Option<u64>,
     /// Time of the earliest read that showed the user's mute state.
     mute_known_from: Option<u64>,
+    latest_mute_at: Option<u64>,
+    /// Last known mute state from the pruned history, for unknown reads just after the cutoff.
+    mute_before_coverage: Option<(u64, bool)>,
     self_name: Option<String>,
     participants: Vec<String>,
     title: Option<String>,
@@ -90,8 +94,9 @@ impl SpeakerTimeline {
                 self.participants.push(clean.to_string());
             }
         }
-        if o.self_muted.is_some() && self.mute_known_from.is_none_or(|k| o.at_ms < k) {
-            self.mute_known_from = Some(o.at_ms);
+        if o.self_muted.is_some() {
+            self.mute_known_from = Some(self.mute_known_from.map_or(o.at_ms, |k| k.min(o.at_ms)));
+            self.latest_mute_at = Some(self.latest_mute_at.map_or(o.at_ms, |k| k.max(o.at_ms)));
         }
         let pos = self.obs.partition_point(|x| x.at_ms <= o.at_ms);
         self.obs.insert(pos, o.clone());
@@ -99,6 +104,9 @@ impl SpeakerTimeline {
             let latest = self.obs.last().map_or(0, |x| x.at_ms);
             let cut = self.obs.partition_point(|x| x.at_ms + KEEP_OBSERVATIONS_MS < latest);
             if cut > 0 {
+                if let Some(read) = self.obs[..cut].iter().rev().find_map(|o| o.self_muted.map(|m| (o.at_ms, m))) {
+                    self.mute_before_coverage = Some(read);
+                }
                 self.obs.drain(..cut);
                 self.covered_from = self.obs.first().map(|x| x.at_ms);
             }
@@ -119,6 +127,14 @@ impl SpeakerTimeline {
         self.obs.last().map(|o| o.at_ms)
     }
 
+    pub(super) fn first_mute_at(&self) -> Option<u64> {
+        self.mute_known_from
+    }
+
+    pub(super) fn latest_mute_at(&self) -> Option<u64> {
+        self.latest_mute_at
+    }
+
     /// `[from, to)` of observation `i`.
     fn interval(&self, i: usize) -> (u64, u64) {
         let at = self.obs[i].at_ms;
@@ -126,13 +142,13 @@ impl SpeakerTimeline {
         (at, next.min(at + MAX_OBSERVATION_MS))
     }
 
-    /// Observations whose interval can touch `[from, to)`, with the overlap length.
-    fn overlapping(&self, from: u64, to: u64) -> impl Iterator<Item = (&TeamsObservation, u64)> + '_ {
+    /// Observations whose interval touches `[from, to)`, with the overlap bounds.
+    fn overlapping(&self, from: u64, to: u64) -> impl Iterator<Item = (&TeamsObservation, u64, u64)> + '_ {
         let first = self.obs.partition_point(|x| x.at_ms <= from).saturating_sub(1);
         (first..self.obs.len()).take_while(move |&i| self.obs[i].at_ms < to).filter_map(move |i| {
             let (a, b) = self.interval(i);
-            let ov = b.min(to).saturating_sub(a.max(from));
-            (ov > 0).then_some((&self.obs[i], ov))
+            let (a, b) = (a.max(from), b.min(to));
+            (b > a).then_some((&self.obs[i], a, b))
         })
     }
 
@@ -144,7 +160,8 @@ impl SpeakerTimeline {
             return none;
         }
         let mut totals: Vec<(String, u64)> = Vec::new();
-        for (o, ov) in self.overlapping(from, to) {
+        for (o, a, b) in self.overlapping(from, to) {
+            let ov = b - a;
             for n in &o.speaking {
                 if self.is_self(n) {
                     continue;
@@ -176,12 +193,23 @@ impl SpeakerTimeline {
             return Some(true);
         }
         // Before the first read that showed the mute state (the moments after Start): fail closed.
-        if self.mute_known_from.is_some_and(|k| start_ms < k && end_ms + UNKNOWN_BEFORE_FIRST_MUTE_READ_MS > k) {
+        if self.mute_known_from.is_some_and(|k| k > 0 && start_ms < k && end_ms > k.saturating_sub(UNKNOWN_BEFORE_FIRST_MUTE_READ_MS)) {
             return Some(true);
         }
+        let before_clip = self.obs.partition_point(|o| o.at_ms <= start_ms);
+        let mut last_known = self.obs[..before_clip]
+            .iter()
+            .rev()
+            .take_while(|o| o.at_ms.saturating_add(MUTE_CARRY_MS) > start_ms)
+            .find_map(|o| o.self_muted.map(|m| (o.at_ms, m)))
+            .or(self.mute_before_coverage);
         let (mut known, mut muted) = (0u64, 0u64);
-        for (o, ov) in self.overlapping(start_ms, end_ms) {
+        for (o, a, b) in self.overlapping(start_ms, end_ms) {
             if let Some(m) = o.self_muted {
+                last_known = Some((o.at_ms, m));
+            }
+            if let Some((at, m)) = last_known {
+                let ov = b.min(at.saturating_add(MUTE_CARRY_MS)).saturating_sub(a);
                 known += ov;
                 if m {
                     muted += ov;
@@ -409,5 +437,18 @@ mod tests {
         let mut t = SpeakerTimeline::default();
         t.record(&muted_obs(600_000, false));
         assert_eq!(t.muted_during(0, 2_000), None, "a call joined ten minutes into the notes");
+    }
+
+    #[test]
+    fn unknown_reads_carry_the_last_known_mute_state_for_up_to_a_minute() {
+        let mut t = SpeakerTimeline::default();
+        t.record(&muted_obs(0, true));
+        span(&mut t, 250, 62_000, &[]);
+        assert_eq!(t.muted_during(25_000, 26_000), Some(true));
+        assert_eq!(t.muted_during(59_750, 60_150), Some(true));
+        assert_eq!(t.muted_during(60_000, 61_000), None);
+        t.record(&muted_obs(62_000, false));
+        span(&mut t, 62_250, 64_000, &[]);
+        assert_eq!(t.muted_during(63_000, 64_000), Some(false));
     }
 }

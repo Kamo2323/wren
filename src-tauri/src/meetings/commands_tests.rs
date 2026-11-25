@@ -3,6 +3,26 @@ use crate::meetings::session::ActiveMeeting;
 use crate::meetings::{CaptureMode, MeetingStatus};
 
 #[test]
+fn terminal_note_event_clears_the_generating_snapshot_before_the_run_drops() {
+    let id = uuid::Uuid::new_v4().to_string();
+    let length = Length::Short;
+    GENERATING.lock().push((id.clone(), length));
+    let run = Generating::new(id.clone(), length);
+    run.publish(NoteEvent::Delta { meeting_id: id.clone(), length, text: "draft".into() }, |_| {
+        assert_eq!(meeting_generating(id.clone()), vec![length]);
+    });
+    run.publish(NoteEvent::Error { meeting_id: id.clone(), length, kind: "api".into(), message: "failed".into() }, |_| {
+        // A concurrent snapshot may wait for the terminal event to be queued, but can't read
+        // the old run after receiving that event.
+        if let Some(generating) = GENERATING.try_lock() {
+            assert!(!generating.contains(&(id.clone(), length)));
+        }
+    });
+    assert!(meeting_generating(id).is_empty());
+    drop(run);
+}
+
+#[test]
 fn settings_defaults_meeting_name_and_model() {
     let s = crate::settings::Settings::default();
     assert_eq!(s.meeting_name, "Maximilian");
