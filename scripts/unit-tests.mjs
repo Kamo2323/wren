@@ -341,6 +341,7 @@ test("notes export: email HTML is inline-styled, escaped and drops unsafe conten
   assert.ok(!h.includes("javascript:") && !h.includes("<img") && !h.includes("<script") && !h.includes("<input"), h);
   assert.ok(h.includes("☐ Book room") && h.includes("☑ Send deck"));
   assert.ok(h.includes("<code") && h.includes("a&lt;b"));
+  assert.ok(!h.includes('<p style="margin: 0 0 10px;"></p>'), "a paragraph of only raw HTML leaves no empty <p>");
   assert.ok(!/<(style|link|meta)\b/.test(h), "a fragment: no <style>, mail apps drop it");
 });
 

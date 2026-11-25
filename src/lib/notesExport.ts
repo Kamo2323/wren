@@ -136,9 +136,11 @@ function blocksHtml(tokens: Token[]): string {
         out += `<${tag} style="${S[`h${level}`]}">${inlineHtml(h.tokens)}</${tag}>`;
         break;
       }
-      case "paragraph":
-        out += `<p style="${S.p}">${inlineHtml((t as Tokens.Paragraph).tokens)}</p>`;
+      case "paragraph": {
+        const inner = inlineHtml((t as Tokens.Paragraph).tokens);
+        if (inner.trim()) out += `<p style="${S.p}">${inner}</p>`; // e.g. only raw HTML, now dropped
         break;
+      }
       case "text": {
         const tt = t as Tokens.Text;
         out += tt.tokens?.length ? inlineHtml(tt.tokens) : esc(tokenText(tt));
@@ -256,10 +258,13 @@ function blocksPlain(tokens: Token[], indent = ""): string[] {
         gap();
         lines.push(indent + inlinePlain((t as Tokens.Heading).tokens).trim());
         break;
-      case "paragraph":
+      case "paragraph": {
+        const text = inlinePlain((t as Tokens.Paragraph).tokens);
+        if (!text.trim()) break;
         gap();
-        for (const l of inlinePlain((t as Tokens.Paragraph).tokens).split("\n")) lines.push(indent + l);
+        for (const l of text.split("\n")) lines.push(indent + l);
         break;
+      }
       case "text": {
         const tt = t as Tokens.Text;
         for (const l of (tt.tokens?.length ? inlinePlain(tt.tokens) : tokenText(tt)).split("\n")) lines.push(indent + l);
@@ -406,6 +411,7 @@ export async function buildDocx(md: string, meta: NoteMeta): Promise<Uint8Array>
           break;
         }
         case "paragraph":
+          if (!inlinePlain((t as Tokens.Paragraph).tokens).trim()) break;
           out.push(new d.Paragraph({ children: runs((t as Tokens.Paragraph).tokens), spacing: { after: 120 }, ...quote }));
           break;
         case "text": {

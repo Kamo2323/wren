@@ -206,6 +206,16 @@ mod tests {
         assert_eq!(safe_file_name(&long, "pdf").len(), 124);
     }
 
+    /// Live: puts the HTML/plain files named by WREN_NOTES_HTML / WREN_NOTES_PLAIN on the real clipboard,
+    /// for a paste test in a mail app or browser editor.
+    #[test]
+    #[ignore = "live: writes the system clipboard"]
+    fn live_rich_copy_from_files() {
+        let html = std::fs::read_to_string(std::env::var("WREN_NOTES_HTML").unwrap()).unwrap();
+        let plain = std::fs::read_to_string(std::env::var("WREN_NOTES_PLAIN").unwrap()).unwrap();
+        copy_rich(&html, &plain).unwrap();
+    }
+
     #[test]
     fn oversized_or_empty_content_is_refused() {
         assert!(check_len("copy", 0, 10).is_err());
