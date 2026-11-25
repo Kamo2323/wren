@@ -74,7 +74,7 @@ const REWAKE_AFTER_MISSES: u32 = 4;
 /// Waking one Teams process: retried with backoff until the call window's tree (the one with
 /// `hangup-button`) can be read. Teams' chat/main window having a tree says nothing about the separate
 /// call window, so only the call window counts. When it can't be read any more (it closed, or its
-/// tree went empty) the wake starts over, with the same backoff.
+/// tree went empty) the wake starts over once the last attempt's deadline has passed.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Wake {
     attempts: u32,
@@ -100,6 +100,9 @@ impl Wake {
         if call_window {
             self.done = true;
             self.misses = 0;
+            // Future attempts start at the shortest delay. Keep the pending deadline so a
+            // briefly readable tree does not immediately trigger another wake.
+            self.attempts = 0;
         } else if self.done {
             self.misses += 1;
             if self.misses >= REWAKE_AFTER_MISSES {
@@ -587,6 +590,27 @@ mod tests {
         assert!(!w.due(t0), "not before it");
         w.tried(t0 + wake_backoff(1));
         assert!(!w.due(t0 + wake_backoff(1) + Duration::from_secs(1)), "and backs off again");
+    }
+
+    #[test]
+    fn a_readable_call_resets_future_wake_backoff_but_keeps_the_pending_deadline() {
+        let t0 = Instant::now();
+        let mut w = Wake::default();
+        let mut now = t0;
+        for attempt in 1..=6 {
+            assert!(w.due(now));
+            w.tried(now);
+            now += wake_backoff(attempt);
+        }
+        w.read(true);
+        for _ in 0..REWAKE_AFTER_MISSES {
+            w.read(false);
+        }
+        assert!(!w.due(now - Duration::from_secs(1)), "flapping keeps the existing deadline");
+        assert!(w.due(now));
+        w.tried(now);
+        assert!(!w.due(now + Duration::from_secs(1)));
+        assert!(w.due(now + Duration::from_secs(2)), "backoff restarts at two seconds after success");
     }
 
     #[test]
