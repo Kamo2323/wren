@@ -20,8 +20,8 @@
 //! rate changes in a way the in-place handling below didn't catch. Rate changes (AirPods 48 kHz ↔
 //! hands-free 16/24 kHz, sleep/wake) are caught per IO cycle: a timeline jump or a cycle whose
 //! timestamps imply another rate marks a boundary in the ring, and the worker settles the new rate
-//! there before resampling anything after it, so audio is never resampled at the wrong rate; a rate
-//! that can't be told even after [`BOUNDARY_HOLD`] reopens the tap (a bounded number of times). On the
+//! there before resampling anything after it. A rate that can't be told even after [`BOUNDARY_HOLD`]
+//! reopens the tap (a bounded number of times), flushing held audio before replacement. On the
 //! all-sound fallback it retries Teams-only every [`UPGRADE_RETRY`], opening that tap on another thread
 //! while the fallback keeps being drained, and switches only once the new tap delivers. Mode changes
 //! are reported on `mode_tx`. Wall-clock alignment: when too little arrives, zeros are emitted so
@@ -462,7 +462,7 @@ fn at_boundary(current: u32, prop: Option<u32>, implied: Option<f64>, timed_out:
     }
 }
 
-/// What to resample at when the rate stayed [`AtBoundary::Unknown`] and the reopen budget is spent:
+/// What to resample at when the rate stayed [`AtBoundary::Unknown`] and we must drain the ring:
 /// the property if readable, else the current rate.
 fn fallback_rate(current: u32, prop: Option<u32>) -> AtBoundary {
     match prop {
@@ -652,9 +652,9 @@ fn silence_before(real: u64, emitted: u64, block: u64, holding: bool) -> usize {
     if !holding && behind > PAD_AFTER_MS * RATE / 1000 { behind as usize } else { 0 }
 }
 
-/// True when a rate known at open time is now known to be different (unreadable is not a change).
-fn rate_changed(opened: Option<u32>, now: Option<u32>) -> bool {
-    matches!((opened, now), (Some(a), Some(b)) if a != b)
+/// Whether two readable rates differ.
+fn rate_changed(settled: Option<u32>, now: Option<u32>) -> bool {
+    matches!((settled, now), (Some(a), Some(b)) if a != b)
 }
 
 /// A running process tap + private aggregate device + IO proc. Torn down on drop.
@@ -665,8 +665,8 @@ struct Tap {
     ctx: *mut Ctx,
     /// The rate audio arrives at (the device's, else the tap's).
     rate: u32,
-    opened_tap_rate: Option<u32>,
-    opened_device_rate: Option<u32>,
+    #[cfg(test)]
+    test_rates: Option<(Option<u32>, Option<u32>)>,
     /// The process objects tapped (or, with `exclude`, the ones left out).
     objects: Vec<AudioObjectID>,
     exclude: bool,
@@ -709,9 +709,25 @@ impl Tap {
         self.ctx().map_or(0, |c| c.boundaries.load(Ordering::Relaxed))
     }
 
+    fn device_rate(&self) -> Option<u32> {
+        #[cfg(test)]
+        if let Some((device, _)) = self.test_rates {
+            return device;
+        }
+        device_rate(self.agg)
+    }
+
+    fn tap_rate(&self) -> Option<u32> {
+        #[cfg(test)]
+        if let Some((_, tap)) = self.test_rates {
+            return tap;
+        }
+        tap_rate(self.tap)
+    }
+
     /// The rate audio arrives at now (the device's, else the tap's), as at open.
     fn rate_now(&self) -> Option<u32> {
-        device_rate(self.agg).or_else(|| tap_rate(self.tap))
+        self.device_rate().or_else(|| self.tap_rate())
     }
 
     /// The rate the IO timestamps implied most recently (unknown right after a timeline jump).
@@ -723,8 +739,6 @@ impl Tap {
     /// they imply now (so a device whose timestamps run slightly off doesn't flag every cycle).
     fn settle(&mut self, rate: u32) {
         self.rate = rate;
-        self.opened_tap_rate = tap_rate(self.tap);
-        self.opened_device_rate = device_rate(self.agg);
         let expect = self.implied_rate().map_or(rate, |r| r.round() as u32);
         if let Some(c) = self.ctx() {
             c.expected_rate.store(expect, Ordering::Relaxed);
@@ -742,10 +756,10 @@ impl Tap {
         }
     }
 
-    /// The output device changed under the tap (AirPods 48 kHz ↔ hands-free 16/24 kHz, sleep/wake):
-    /// the resampler would now run at the wrong rate, so the tap must be rebuilt.
+    /// Whether the effective IO rate moved since open or the last boundary settlement. The
+    /// aggregate's rate takes precedence because the tap format may catch up later.
     fn format_changed(&self) -> bool {
-        rate_changed(self.opened_tap_rate, tap_rate(self.tap)) || rate_changed(self.opened_device_rate, device_rate(self.agg))
+        rate_changed(Some(self.rate), self.rate_now())
     }
 }
 
@@ -788,8 +802,8 @@ fn open_tap(objects: &[AudioObjectID], exclude: bool, stop: &AtomicBool) -> anyh
         proc_id: None,
         ctx: std::ptr::null_mut(),
         rate: 0,
-        opened_tap_rate: None,
-        opened_device_rate: None,
+        #[cfg(test)]
+        test_rates: None,
         objects: objects.to_vec(),
         exclude,
     };
@@ -819,7 +833,6 @@ fn open_tap(objects: &[AudioObjectID], exclude: bool, stop: &AtomicBool) -> anyh
     if format.mFormatFlags & kAudioFormatFlagIsFloat == 0 || format.mBitsPerChannel != 32 || format.mSampleRate < 8_000.0 {
         anyhow::bail!("unexpected tap format: {} Hz, {} bits, flags {:#x}", format.mSampleRate, format.mBitsPerChannel, format.mFormatFlags);
     }
-    tap.opened_tap_rate = tap_rate(tap.tap);
 
     objc2::rc::autoreleasepool(|_| -> anyhow::Result<()> {
         let tap_uid = NSString::from_str(&uuid);
@@ -850,10 +863,8 @@ fn open_tap(objects: &[AudioObjectID], exclude: bool, stop: &AtomicBool) -> anyh
         })
     })?;
 
-    tap.opened_device_rate = device_rate(tap.agg);
     tap.rate = tap
-        .opened_device_rate
-        .or(tap.opened_tap_rate)
+        .rate_now()
         .ok_or_else(|| anyhow::anyhow!("tap has no usable sample rate"))?;
     tap.ctx = Box::into_raw(Box::new(Ctx::new(tap.rate)));
     // `extern "C"` and `extern "C-unwind"` share the calling convention; only unwinding differs, and
@@ -948,7 +959,7 @@ struct Check {
     has_tap: bool,
     /// No IO callback for longer than [`STALL`].
     stalled: bool,
-    /// The tap's / device's sample rate moved since the tap was opened.
+    /// The effective IO rate differs from the active resampler's rate.
     format_changed: bool,
     /// The rate after a format boundary couldn't be settled (see [`AtBoundary::Unknown`]).
     rate_unknown: bool,
@@ -1100,10 +1111,13 @@ impl Conn {
         self.boundary.is_some()
     }
 
-    /// Move what the IO thread delivered through the resampler into `out`. At a format boundary the
-    /// rate is settled before anything after it is resampled: a new rate flushes the old resampler and
-    /// starts one at the new rate, so new-rate audio is never resampled at the old rate.
     fn pump(&mut self, raw: &mut Vec<f32>, out: &mut Vec<f32>) {
+        self.drain(raw, out, false);
+    }
+
+    /// Move the queued IO through the resampler. At a boundary a new rate flushes the old
+    /// resampler and starts one at the new rate. A final drain resolves every queued boundary now.
+    fn drain(&mut self, raw: &mut Vec<f32>, out: &mut Vec<f32>, finishing: bool) {
         let Some(t) = self.tap.as_mut() else { return };
         let n = t.callbacks();
         if n != self.callbacks {
@@ -1114,10 +1128,10 @@ impl Conn {
         for _ in 0..4 {
             if let Some(since) = self.boundary {
                 let (prop, implied) = (t.rate_now(), t.implied_rate());
-                let decided = match at_boundary(t.rate, prop, implied, since.elapsed() >= BOUNDARY_HOLD) {
-                    AtBoundary::Unknown if self.may_reopen => {
-                        // Held; the worker reopens the tap (and drops what is held: never resampled
-                        // at a guessed rate).
+                let timed_out = finishing || since.elapsed() >= BOUNDARY_HOLD;
+                let decided = match at_boundary(t.rate, prop, implied, timed_out) {
+                    AtBoundary::Unknown if self.may_reopen && !finishing => {
+                        // The worker will flush the held samples before reopening the tap.
                         self.rate_unknown = true;
                         return;
                     }
@@ -1126,7 +1140,8 @@ impl Conn {
                             rate = t.rate,
                             prop = ?prop,
                             implied = ?implied.map(|r| r.round() as u32),
-                            "Teams audio rate still unclear after reopening the tap; going by the device's rate"
+                            finishing,
+                            "Teams audio rate still unclear; using the reported rate or the last settled rate"
                         );
                         fallback_rate(t.rate, prop)
                     }
@@ -1163,17 +1178,35 @@ impl Conn {
         }
     }
 
-    /// Flush the resampler's tail before this capture is replaced. What is still queued is pumped only
-    /// when it is known to be at the resampler's rate; otherwise it is dropped (never resampled at the
-    /// wrong rate).
+    /// Drain the last queued audio, including any held at a boundary, then flush the resampler.
     fn finish(&mut self, raw: &mut Vec<f32>, out: &mut Vec<f32>) {
-        let same_rate = self.tap.as_ref().is_some_and(|t| t.rate_now() == Some(t.rate) && !t.format_changed());
-        if same_rate && self.boundary.is_none() {
-            self.pump(raw, out);
-        }
+        self.drain(raw, out, true);
         if let Some(r) = self.resampler.as_mut() {
             let _ = r.finish(out);
         }
+    }
+
+    fn health(&self) -> (bool, bool) {
+        if self.holding() {
+            // The boundary resolver owns recovery until the held audio has a rate or times out.
+            return (false, false);
+        }
+        (self.tap.as_ref().is_some_and(Tap::format_changed), self.stalled())
+    }
+
+    fn try_upgrade(&mut self, mut tap: Tap, raw: &mut Vec<f32>, out: &mut Vec<f32>) -> bool {
+        // The candidate may have been waiting through a rate change. Stay on the working fallback
+        // if the candidate's current rate is unreadable or disagrees with its IO timestamps.
+        let Some(rate) = tap.rate_now() else { return false };
+        if tap.implied_rate().is_some_and(|r| off_rate(r, f64::from(rate))) {
+            return false;
+        }
+        tap.settle(rate);
+        // The fallback heard Teams too. Flush it and discard the overlapping candidate audio.
+        self.finish(raw, out);
+        tap.discard_queued();
+        *self = Self::new(Some(tap), CaptureMode::TeamsOnly);
+        true
     }
 
     /// Checks Core Audio only once callbacks have been missing for [`STALL`].
@@ -1254,8 +1287,8 @@ impl AudioSource for TeamsTap {
                     break 'run;
                 }
 
-                // The Teams-only retry: never blocks this loop, switches once the new tap delivers
-                // (and not while the fallback holds audio at a boundary: that would drop it).
+                // Poll the Teams-only retry without waiting for the opener. Give the fallback's
+                // boundary time to settle before switching to the candidate.
                 let polled = if conn.holding() { Polled::Nothing } else { upgrade.poll() };
                 match polled {
                     Polled::Nothing => {}
@@ -1266,12 +1299,12 @@ impl AudioSource for TeamsTap {
                         }
                     }
                     Polled::Ready(t) if target == Target::Teams && conn.mode == CaptureMode::AllSound => {
+                        if !conn.try_upgrade(t, &mut raw, &mut out) {
+                            last_upgrade = Instant::now();
+                            tracing::debug!("Teams tap rate is unsettled; staying on all sound");
+                            continue;
+                        }
                         tracing::info!("Teams tap delivering; leaving the all-sound fallback");
-                        // The fallback has everything up to now (it heard Teams too): flush it, and
-                        // take the new tap from here on.
-                        conn.finish(&mut raw, &mut out);
-                        t.discard_queued();
-                        drop(std::mem::replace(&mut conn, Conn::new(Some(t), CaptureMode::TeamsOnly)));
                         let _ = mode_tx.send(conn.mode);
                         if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, false) {
                             break 'run;
@@ -1282,7 +1315,7 @@ impl AudioSource for TeamsTap {
 
                 let (format_changed, stalled) = if last_health.elapsed() >= HEALTH_CHECK {
                     last_health = Instant::now();
-                    (conn.tap.as_ref().is_some_and(Tap::format_changed), conn.stalled())
+                    conn.health()
                 } else {
                     (false, false)
                 };
@@ -1330,6 +1363,11 @@ impl AudioSource for TeamsTap {
                             );
                         }
                         conn.finish(&mut raw, &mut out);
+                        // Emit before opening the replacement, so a slow reconnect can't put its
+                        // gap before these samples.
+                        if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, false) {
+                            break 'run;
+                        }
                         drop(conn.tap.take());
                         // A pending Teams-only retry was for the capture being replaced.
                         upgrade = Upgrade::Idle;
@@ -1353,8 +1391,11 @@ impl AudioSource for TeamsTap {
                         let _ = mode_tx.send(conn.mode);
                     }
                 }
-                if !out.is_empty() && !emit(std::mem::take(&mut out), &mut emitted, conn.holding()) {
-                    break 'run;
+            }
+            if stop.load(Ordering::Relaxed) {
+                conn.finish(&mut raw, &mut out);
+                if !out.is_empty() {
+                    emit(out, &mut emitted, false);
                 }
             }
         })?;
@@ -1551,6 +1592,87 @@ mod tests {
         assert!(!b.allowed(t0 + Duration::from_secs(3)), "three reopens in a minute: stop reopening");
         assert!(b.allowed(t0 + RATE_REOPEN_WINDOW), "a minute on, the budget is back");
         assert_eq!(b.spend(t0 + RATE_REOPEN_WINDOW), 1);
+    }
+
+    fn test_tap(rate: u32) -> Tap {
+        Tap {
+            tap: kAudioObjectUnknown,
+            agg: kAudioObjectUnknown,
+            proc_id: None,
+            ctx: Box::into_raw(Box::new(Ctx::new(rate))),
+            rate,
+            test_rates: Some((Some(rate), Some(rate))),
+            objects: Vec::new(),
+            exclude: false,
+        }
+    }
+
+    #[test]
+    fn health_check_leaves_a_held_format_boundary_to_the_resolver() {
+        let mut tap = test_tap(48_000);
+        tap.test_rates = Some((Some(24_000), Some(48_000)));
+        tap.ctx().unwrap().ring.mark_boundary();
+        let mut conn = Conn::new(Some(tap), CaptureMode::TeamsOnly);
+        conn.last_io -= STALL + TICK;
+        conn.pump(&mut Vec::new(), &mut Vec::new());
+        assert!(conn.holding());
+        assert_eq!(conn.health(), (false, false));
+        conn.boundary = None;
+        assert_eq!(conn.health(), (true, true));
+    }
+
+    #[test]
+    fn a_late_tap_format_does_not_reopen_a_settled_device_rate() {
+        let mut tap = test_tap(48_000);
+        tap.test_rates = Some((Some(24_000), Some(48_000)));
+        assert!(tap.format_changed());
+        tap.settle(24_000);
+        assert!(!tap.format_changed());
+        tap.test_rates = Some((Some(24_000), Some(24_000)));
+        assert!(!tap.format_changed(), "the secondary rate caught up to the settled rate");
+        tap.test_rates = Some((Some(48_000), Some(24_000)));
+        assert!(tap.format_changed(), "the effective rate changed again");
+        tap.test_rates = Some((None, Some(48_000)));
+        assert!(tap.format_changed(), "the tap rate is used when the device rate is unreadable");
+    }
+
+    #[test]
+    fn finish_flushes_audio_held_at_a_boundary_before_reconnect() {
+        let mut tap = test_tap(48_000);
+        tap.test_rates = Some((Some(16_000), Some(48_000)));
+        let ring = &tap.ctx().unwrap().ring;
+        ring.push_with(4_800, |_| 0.1);
+        ring.mark_boundary();
+        ring.push_with(1_600, |_| 0.3);
+        let mut conn = Conn::new(Some(tap), CaptureMode::TeamsOnly);
+        let (mut raw, mut out) = (Vec::new(), Vec::new());
+        conn.pump(&mut raw, &mut out);
+        assert!(conn.holding(), "the rate is waiting for IO timestamps");
+
+        conn.finish(&mut raw, &mut out);
+
+        assert_eq!(out.len(), 3_200, "100 ms on either side of the boundary");
+        assert!(out[1_600..].iter().all(|&sample| sample == 0.3));
+    }
+
+    #[test]
+    fn teams_upgrade_uses_the_rate_when_the_waiting_tap_starts_delivering() {
+        let mut up = Upgrade::Waiting(test_tap(48_000));
+        assert!(matches!(up.poll(), Polled::Nothing));
+        let Upgrade::Waiting(tap) = &mut up else { panic!("expected the candidate to keep waiting") };
+        tap.test_rates = Some((Some(16_000), Some(48_000)));
+        tap.ctx().unwrap().callbacks.store(1, Ordering::Relaxed);
+        let Polled::Ready(tap) = up.poll() else { panic!("expected the candidate to be ready") };
+        let mut conn = Conn::new(None, CaptureMode::AllSound);
+        let (mut raw, mut out) = (Vec::new(), Vec::new());
+        assert!(conn.try_upgrade(tap, &mut raw, &mut out));
+        assert_eq!(conn.mode, CaptureMode::TeamsOnly);
+        let tap = conn.tap.as_ref().unwrap();
+        assert_eq!(tap.rate, 16_000);
+        assert_eq!(tap.ctx().unwrap().expected_rate.load(Ordering::Relaxed), 16_000);
+        tap.ctx().unwrap().ring.push_with(1_600, |_| 0.3);
+        conn.pump(&mut raw, &mut out);
+        assert_eq!(out, vec![0.3; 1_600]);
     }
 
     #[test]
@@ -2080,8 +2202,8 @@ mod tests {
             eprintln!(
                 "Teams tap: rate {} Hz (tap {:?}, device {:?}), {calls} IO callbacks in 4 s, format changed {}",
                 tap.rate,
-                tap.opened_tap_rate,
-                tap.opened_device_rate,
+                tap.tap_rate(),
+                tap.device_rate(),
                 tap.format_changed()
             );
             let playing = tap.sources_playing();
@@ -2185,11 +2307,10 @@ mod tests {
         set_nominal_rate(device, other as f64);
         let switched = collect(&rx, 4_000);
         eprintln!(
-            "probe tap after switch: tap {:?} Hz, device {:?} Hz (opened at {:?} / {:?}), format changed {}, {} boundaries, implied {:?} Hz, alive {}",
+            "probe tap after switch: tap {:?} Hz, device {:?} Hz (opened at {} Hz), format changed {}, {} boundaries, implied {:?} Hz, alive {}",
             tap_rate(probe.tap),
             device_rate(probe.agg),
-            probe.opened_tap_rate,
-            probe.opened_device_rate,
+            probe.rate,
             probe.format_changed(),
             probe.boundaries(),
             probe.implied_rate(),
