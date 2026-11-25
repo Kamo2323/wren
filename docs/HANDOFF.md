@@ -61,6 +61,46 @@ Teams/Meetings capture, transcripts and Claude notes are untouched.
 - App identifier `com.maximilian.wren` kept on purpose (changing it breaks upgrades, WebView2 data
   and macOS permissions). Sidecar pytest not run (no sidecar Python changed).
 
+### Review round 1 (Sol) — disposition (commits eac58fc, 2eb6250)
+- **S1 fixed.** Engine status events carry the engine's generation (`session::app::tagged_status`);
+  stale engines' events reach neither the UI nor setup; setup completes on the Ready of the engine it
+  started (set under the status lock, so no race). Test `a_no_change_repair_waits_for_the_new_engine…`;
+  live: no-change repair on a complete profile → Done (log: gen 0 "shut down" `current:false`, gen 1 Ready).
+- **S2 fixed.** `setup-repair-pending` marker written before anything changes, cleared only on the new
+  engine's Ready; a pause, plain retry (`repair=false`) or relaunch repairs again. Tests
+  `repair_intent_survives_pause_retry_and_relaunch…`, `a_readable_but_corrupt_model_fails_the_repair_check`.
+  Live: same-size zeroed `tokenizer.json` → repair → app killed → relaunch reopens setup ("A speech
+  repair didn't finish") → plain retry ran `repair: true` → only that file re-fetched, pinned hash restored.
+- **S3 fixed.** Plan, preflight (`space_needed`, one function for both) and progress count only what is
+  left (`.part` + staged files). Percent labelled "overall", detail "models: x of y". Test
+  `a_partial_download_only_counts_what_is_left`; live: after pause, main model 1.1 GB left (532 MB kept),
+  needs 1.9 GB instead of 2.4 GB.
+- **S4 fixed.** `examples/verify_update.rs` runs the app's `verify_signature` with the key built into the
+  same build; both release jobs run it after signing; update-signing exit codes checked. Local: official
+  key vs throwaway-signed file → FAIL; matching fork key → OK; wrong version → FAIL.
+- **S5 fixed.** uv only runs when unpacked this run from the re-hashed archive; cleanup only deletes files.
+  Live: a planted fake `uv.exe` in `setup-cache` was replaced, never run.
+- **Self-test CPU fallback fixed.** Passes when the clip transcribes, names the device. Live:
+  CUDA → `large-v3-turbo ready on cuda … 272 ms` PASS; `CUDA_VISIBLE_DEVICES=-1` + unreachable proxy →
+  `small.en ready on cpu (processor fallback, no CUDA: slower) … 1547 ms` PASS.
+- **Found in the live proofs and fixed (2eb6250):** a reopened setup didn't say why and offered "Download
+  about 1 MB"; now it shows the reason and labels the button Check and repair / Continue setup.
+- A real network drop happened during the round-2 run: the clear "connection dropped… try again" error,
+  partial kept, retry finished the download.
+- Checks at eac58fc: Rust lib 435 passed, 0 failed, 15 ignored, 0 warnings (lib + examples); 30 JS unit
+  tests, 144 page checks, frontend build OK; workflow YAML valid. 2eb6250 (UI only): tsc + 144 page checks.
+- Round-2 screenshots: `C:\Users\maxha\.t3\proof\wren-speech-onboarding\screenshots\r2-01-first-run-setup-screen.png`,
+  `r2-02-progress-packages-overall.png`, `r2-03-progress-models-overall.png`,
+  `r2-04-resume-counts-only-what-is-left.png`, `12-repair-reopens-after-crash.png` (before the 2eb6250 wording).
+  Self-test logs: `selftest-cuda.txt`, `selftest-cpu-fallback.txt` in the same folder.
+
+### Remaining gaps (exact)
+- macOS: nothing run here (parent has a Mac for independent proof).
+- Trusted Authenticode / Developer ID / notarization: no credentials; never run with signing on.
+- The CI `verify_update` step was proven locally in debug only, not in Actions.
+- Chord dictate → paste not run live (his Wren running); engine transcription proven by self-test.
+- No live low-disk test; the space check for a resume is unit-tested.
+
 ### Next step
 Parent: independent review, then PR from `t3/speech-onboarding-portability` to `main`.
 
