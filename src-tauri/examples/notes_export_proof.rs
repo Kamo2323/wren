@@ -157,6 +157,23 @@ fn main() {
         println!("write_pdf: {written:?} in {:?} → {}", t.elapsed(), pdf.display());
         check(written.is_ok(), "PDF written and starts with %PDF");
 
+        // 2b. Two PDFs at once: AppKit allows one print operation at a time (a second one throws and
+        // aborts), so whichever starts printing second must fail cleanly while the first succeeds.
+        let both: Vec<_> = ["a", "b"]
+            .map(|n| {
+                let p = out.join(format!("concurrent-{n}.pdf"));
+                std::thread::spawn(move || macos::write_pdf_blocking(&pdf_document(), &p).map_err(|e| e.to_string()))
+            })
+            .into_iter()
+            .map(|h| h.join().expect("pdf thread"))
+            .collect();
+        println!("concurrent write_pdf: {both:?}");
+        let busy = |r: &Result<(), String>| r.as_ref().is_err_and(|e| e.contains("still being saved"));
+        check(
+            both.iter().filter(|r| r.is_ok()).count() == 1 && both.iter().filter(|r| busy(r)).count() == 1,
+            "two PDFs at once: one written, the other refused (no abort)",
+        );
+
         // 3. Share picker anchored in a test window (top-right "button" at CSS [600, 16, 72, 28]).
         if share {
             DispatchQueue::main().exec_async(move || {

@@ -201,17 +201,17 @@ define_class!(
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
         fn did_fail(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
-            self.finish(Err(format!("loading the notes failed: {}", error.localizedDescription())));
+            self.fail(format!("loading the notes failed: {}", error.localizedDescription()));
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional(&self, _web_view: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
-            self.finish(Err(format!("loading the notes failed: {}", error.localizedDescription())));
+            self.fail(format!("loading the notes failed: {}", error.localizedDescription()));
         }
 
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn content_process_ended(&self, _web_view: &WKWebView) {
-            self.finish(Err("the web content process ended".into()));
+            self.fail("the web content process ended".into());
         }
     }
 
@@ -230,8 +230,21 @@ impl PdfJob {
         }
     }
 
+    /// A WebKit failure. Once the print operation runs it holds `self` (unretained) as its delegate and
+    /// AppKit owns the window, so then only report the error and let `print_did_run` release the job.
+    fn fail(&self, error: String) {
+        if self.ivars().printing.get() {
+            if let Some(tx) = self.ivars().events.borrow_mut().take() {
+                let _ = tx.send(PdfEvent::Done(Err(error)));
+            }
+        } else {
+            self.finish(Err(error));
+        }
+    }
+
     fn start_print(&self, web_view: &WKWebView) {
-        if self.ivars().printing.replace(true) {
+        // Already printing, or already finished (failed/cancelled and waiting to be released).
+        if self.ivars().printing.get() || self.ivars().events.borrow().is_none() {
             return;
         }
         self.send(PdfEvent::Loaded);
@@ -242,6 +255,11 @@ impl PdfJob {
 
     fn run_print(&self, web_view: &WKWebView) -> Result<(), String> {
         let iv = self.ivars();
+        // AppKit allows one print operation per thread; starting a second throws (and aborts the app).
+        let other_printing = PDF_JOBS.with(|jobs| jobs.borrow().iter().any(|j| j.ivars().printing.get()));
+        if other_printing || NSPrintOperation::currentOperation(MainThreadMarker::from(self)).is_some() {
+            return Err("Another PDF is still being saved. Try again in a moment.".into());
+        }
         let window = iv.window.borrow().clone().ok_or("no window for the print operation")?;
         let info = print_info(&iv.path, iv.paper)?;
         // SAFETY: main thread; the web view finished loading.
@@ -255,6 +273,7 @@ impl PdfJob {
         // The modal-for-window form is the one WebKit completes asynchronously (plain `runOperation`
         // prints blank pages, because the out-of-process page can't draw while the main thread blocks).
         // With both panels off, no sheet appears; the window itself is never shown.
+        iv.printing.set(true);
         // SAFETY: `self` implements the did-run selector with the documented signature.
         unsafe {
             op.runOperationModalForWindow_delegate_didRunSelector_contextInfo(
