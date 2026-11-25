@@ -135,6 +135,50 @@ export const accessibilityStatus = (): Promise<boolean> =>
 export const openAccessibilitySettings = (): Promise<void> =>
   inTauri ? call("open_accessibility_settings") : Promise.resolve();
 
+// ---------- enhanced notes export (src-tauri/src/notes_export) ----------
+
+/** What the browser preview "exported" last, so page checks can see it. */
+export interface MockExport {
+  kind: "copy" | "share" | "pdf" | "docx";
+  html?: string;
+  plain?: string;
+  bytes?: number[];
+  name?: string;
+  subject?: string;
+  rect?: number[];
+}
+function recordExport(e: MockExport) {
+  (window as unknown as { __wrenExport?: MockExport }).__wrenExport = e;
+}
+
+/** Copy: formatted HTML (+ RTF on macOS) and clean plain text in one clipboard write. */
+export const notesCopyRich = (html: string, plain: string): Promise<void> => {
+  if (inTauri) return call("notes_copy_rich", { html, plain });
+  recordExport({ kind: "copy", html, plain });
+  return later(undefined);
+};
+
+/** Save as Word: asks where (native dialog) and writes the .docx. Resolves to the file name, or null if cancelled. */
+export const notesSaveDocx = (bytes: Uint8Array, suggestedName: string): Promise<string | null> => {
+  if (inTauri) return call("notes_save_docx", { bytes: Array.from(bytes), suggestedName });
+  recordExport({ kind: "docx", bytes: Array.from(bytes), name: suggestedName });
+  return later(`${suggestedName}.docx`);
+};
+
+/** Save as PDF (macOS): asks where, renders the page off-screen to a paginated PDF. */
+export const notesSavePdf = (html: string, suggestedName: string): Promise<string | null> => {
+  if (inTauri) return call("notes_save_pdf", { html, suggestedName });
+  recordExport({ kind: "pdf", html, name: suggestedName });
+  return later(`${suggestedName}.pdf`);
+};
+
+/** Share (macOS): the system Share menu under `rect` ([x, y, width, height] in CSS px of the window). */
+export const notesShare = (html: string, plain: string, subject: string, rect: [number, number, number, number]): Promise<void> => {
+  if (inTauri) return call("notes_share", { html, plain, subject, rect });
+  recordExport({ kind: "share", html, plain, subject, rect });
+  return later(undefined);
+};
+
 /** macOS: clear Wren's privacy permissions left over from an older build and ask again. */
 export const resetMacPermissions = (): Promise<void> =>
   inTauri ? call("reset_mac_permissions") : Promise.resolve();

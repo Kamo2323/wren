@@ -1,14 +1,17 @@
 // Enhanced notes: Short / Medium / Long written by Claude. Streams while writing; a note is only kept once
 // it finished. Errors say what to do; "Notes changed" offers a rewrite after edits (spec §5.4, §6.3).
-import { useMemo, useState, type MouseEvent } from "react";
+import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Length, NoteErrorKind, NoteRow } from "../../lib/meetings";
 import { footerLabel } from "../../lib/meetingText";
-import { copyText, inTauri } from "../../lib/api";
+import { inTauri, notesCopyRich, notesSaveDocx, notesSavePdf, notesShare } from "../../lib/api";
+import { errorText } from "../../lib/meetings";
+import { buildDocx, emailHtml, exportFileName, pdfDocument, plainText, type NoteMeta } from "../../lib/notesExport";
+import { useConstants } from "../../lib/useConstants";
 import { Button } from "../../components/Button";
 import { useToast } from "../../components/Toast";
-import { Copy, KeyRound, RotateCw, Sparkles } from "../../components/Icon";
+import { Copy, FileDown, FileText, KeyRound, RotateCw, Share, Sparkles } from "../../components/Icon";
 
 export interface NoteError {
   kind: NoteErrorKind;
@@ -54,9 +57,55 @@ function Markdown({ md }: { md: string }) {
   return <div className="md" onClick={onLinkClick} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-/** Copy as Markdown text through Wren's native clipboard path (pages never use the web clipboard). */
-function copyNotes(md: string): Promise<boolean> {
-  return copyText(md);
+type ExportKind = "copy" | "share" | "pdf" | "docx";
+
+/** Copy / Share / Save as PDF / Save as Word for one finished note (spec: notes export). */
+function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; onRegenerate: () => void }) {
+  const toast = useToast();
+  const isMac = useConstants().platform === "macos";
+  const [busy, setBusy] = useState<ExportKind | null>(null);
+
+  async function run(kind: ExportKind, e: MouseEvent<HTMLButtonElement>) {
+    if (busy) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    setBusy(kind);
+    try {
+      if (kind === "copy") {
+        await notesCopyRich(emailHtml(md, meta), plainText(md, meta));
+        toast.show("Notes copied");
+      } else if (kind === "share") {
+        await notesShare(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes", [r.left, r.top, r.width, r.height]);
+      } else if (kind === "pdf") {
+        const saved = await notesSavePdf(pdfDocument(md, meta), exportFileName(meta));
+        if (saved) toast.show(`Saved ${saved}`);
+      } else {
+        const saved = await notesSaveDocx(await buildDocx(md, meta), exportFileName(meta));
+        if (saved) toast.show(`Saved ${saved}`);
+      }
+    } catch (err) {
+      const fallback = kind === "copy" ? "Couldn't copy the notes" : kind === "share" ? "Couldn't open the Share menu" : "Couldn't save the notes";
+      toast.show(errorText(err) || fallback, { tone: "danger" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const btn = (kind: ExportKind, label: string, icon: ReactNode, title: string) => (
+    <Button size="sm" variant="ghost" icon={icon} title={title} disabled={busy !== null} onClick={(e) => void run(kind, e)}>
+      {label}
+    </Button>
+  );
+  return (
+    <div className="enh-actions">
+      {btn("copy", "Copy", <Copy size={13} strokeWidth={2.2} />, "Copy with formatting, ready to paste into an email")}
+      {isMac && btn("share", "Share", <Share size={13} strokeWidth={2.2} />, "Share to Mail, Notes, AirDrop and more")}
+      {isMac && btn("pdf", "PDF", <FileDown size={13} strokeWidth={2.2} />, "Save as PDF")}
+      {btn("docx", "Word", <FileText size={13} strokeWidth={2.2} />, "Save as Word document")}
+      <Button size="sm" variant="ghost" icon={<RotateCw size={13} strokeWidth={2.2} />} disabled={busy !== null} onClick={onRegenerate}>
+        Regenerate
+      </Button>
+    </div>
+  );
 }
 
 function errorAdvice(e: NoteError): string {
@@ -84,6 +133,8 @@ export function EnhancedTab({
   errors,
   live,
   hasKey,
+  title,
+  startedAtUtc,
   onGenerate,
   onOpenSettings,
 }: {
@@ -93,10 +144,12 @@ export function EnhancedTab({
   errors: Partial<Record<Length, NoteError>>;
   live: boolean;
   hasKey: boolean;
+  /** Meeting title and start, for the exported notes' heading and file name. */
+  title: string;
+  startedAtUtc: string;
   onGenerate: (len: Length, regenerate: boolean) => void;
   onOpenSettings: () => void;
 }) {
-  const toast = useToast();
   const [len, setLen] = useState<Length>(() => (writing[0] ?? "medium"));
   const note = notes.find((n) => n.length === len);
   const stream = streams[len];
@@ -153,19 +206,11 @@ export function EnhancedTab({
         <Markdown md={note.markdown} />
         <div className="enh-bar">
           <span className="enh-footer num">{footerLabel(note)}</span>
-          <div className="enh-actions">
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Copy size={13} strokeWidth={2.2} />}
-              onClick={() => void copyNotes(note.markdown).then((ok) => toast.show(ok ? "Notes copied" : "Couldn't copy the notes"))}
-            >
-              Copy
-            </Button>
-            <Button size="sm" variant="ghost" icon={<RotateCw size={13} strokeWidth={2.2} />} onClick={() => onGenerate(len, true)}>
-              Regenerate
-            </Button>
-          </div>
+          <NoteActions
+            md={note.markdown}
+            meta={{ title, startedAtUtc, lengthLabel: LENGTHS.find((l) => l.id === len)?.label ?? "Medium" }}
+            onRegenerate={() => onGenerate(len, true)}
+          />
         </div>
       </>
     );

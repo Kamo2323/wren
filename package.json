@@ -20,6 +20,7 @@
     "@tiptap/pm": "^3.35.0",
     "@tiptap/react": "^3.35.0",
     "@tiptap/starter-kit": "^3.35.0",
+    "docx": "^9.6.1",
     "dompurify": "^3.5.0",
     "lucide-react": "^1.66.0",
     "marked": "^18.3.0",

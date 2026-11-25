@@ -258,6 +258,8 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
             errors={errors}
             live={live}
             hasKey={hasKey}
+            title={detail.meeting.title}
+            startedAtUtc={detail.meeting.startedAtUtc}
             onGenerate={generate}
             onOpenSettings={onOpenSettings}
           />

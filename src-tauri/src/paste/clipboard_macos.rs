@@ -252,7 +252,8 @@ struct PendingRestore {
 static PENDING: Mutex<Option<PendingRestore>> = Mutex::new(None);
 static TX_MUTEX: Mutex<()> = Mutex::new(());
 
-fn transaction_lock() -> MutexGuard<'static, ()> {
+/// Held for any write to the general pasteboard so it can never interleave with a dictation paste.
+pub(crate) fn transaction_lock() -> MutexGuard<'static, ()> {
     flush();
     TX_MUTEX.lock()
 }

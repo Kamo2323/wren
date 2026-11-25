@@ -9,6 +9,8 @@ import { normalizeThemePreference, resolveTheme, toSettingsTheme } from "../src/
 import { dismissMsFor } from "../src/popup/dismiss.ts";
 import { assignColours, speakerColour, groupRuns, formatElapsed, displayName, captureNote, footerLabel } from "../src/lib/meetingText.ts";
 import { buildManifest, computeVersion, stampCargoVersion } from "./ci-release-meta.mjs";
+import { emailHtml, pdfDocument, plainText, buildDocx, exportFileName } from "../src/lib/notesExport.ts";
+import JSZip from "jszip";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -286,6 +288,111 @@ test("developer setup scripts pin the same runtime as the in-app setup", () => {
       assert.ok(text.includes(revision), `${script} pins ${name} at ${revision}`);
     }
   }
+});
+
+// ---------- enhanced notes export ----------
+const NOTE_META = { title: "Rollout <sync> & review", startedAtUtc: "2026-11-25T14:00:00Z", lengthLabel: "Medium" };
+const NOTE_MD = [
+  "> **In short:** Rollout moves to **Thursday**.",
+  "",
+  "## Summary",
+  "The team agreed, see [pricing](https://example.com/p?a=1&b=2) and [bad](javascript:alert(1)).",
+  "",
+  "## Action items",
+  "| Owner | Task | Due |",
+  "| --- | --- | --- |",
+  "| **Tom** | Chase *QA* | Today |",
+  "| Max | Pricing sheet | |",
+  "",
+  "- [ ] Book room",
+  "- [x] Send deck",
+  "",
+  "1. One",
+  "2. Two",
+  "   - nested `a<b`",
+  "",
+  '<img src="https://example.com/t.png"><script>alert(2)</script>',
+  "",
+  "Emoji 🎉 and em dash —",
+].join("\n");
+
+test("notes export: plain text has no Markdown symbols and keeps structure", () => {
+  const t = plainText(NOTE_MD, NOTE_META);
+  assert.ok(t.startsWith("Rollout <sync> & review\n"), t.slice(0, 40));
+  for (const bad of ["**", "##", "| ", "](", "- [", "<img", "<script"]) assert.ok(!t.includes(bad), `found ${bad}\n${t}`);
+  assert.ok(t.includes("In short: Rollout moves to Thursday."));
+  assert.ok(t.includes("pricing (https://example.com/p?a=1&b=2)"));
+  assert.ok(t.includes("• Tom (Task: Chase QA; Due: Today)"), t);
+  assert.ok(t.includes("• Max (Task: Pricing sheet)"), t);
+  assert.ok(t.includes("☐ Book room") && t.includes("☑ Send deck"));
+  assert.ok(t.includes("1. One") && t.includes("2. Two") && t.includes("   • nested a<b"), t);
+  assert.ok(t.includes("Emoji 🎉 and em dash —"));
+  assert.ok(!t.includes("javascript:"));
+});
+
+test("notes export: email HTML is inline-styled, escaped and drops unsafe content", () => {
+  const h = emailHtml(NOTE_MD, NOTE_META);
+  assert.ok(h.startsWith('<div style="font-family:'));
+  assert.ok(h.includes(">Rollout &lt;sync&gt; &amp; review</h1>"));
+  assert.ok(/<table [^>]*style="border-collapse: collapse;/.test(h));
+  assert.ok(/<th style="border: 1px solid #c9d1d9;[^"]*">Owner<\/th>/.test(h), "header cells carry their own borders (Outlook)");
+  assert.ok(h.includes("<strong>Tom</strong>") && h.includes("<em>QA</em>"));
+  assert.ok(h.includes('href="https://example.com/p?a=1&amp;b=2"'));
+  assert.ok(!h.includes("javascript:") && !h.includes("<img") && !h.includes("<script") && !h.includes("<input"), h);
+  assert.ok(h.includes("☐ Book room") && h.includes("☑ Send deck"));
+  assert.ok(h.includes("<code") && h.includes("a&lt;b"));
+  assert.ok(!h.includes('<p style="margin: 0 0 10px;"></p>'), "a paragraph of only raw HTML leaves no empty <p>");
+});
+
+test("notes export: review fixes — multi-paragraph items, inline code entities", () => {
+  const h = emailHtml("- [ ] First para\n\n  Second para\n- plain item\n\nUse `&amp;` and `a<b`", NOTE_META);
+  const items = h.match(/<li [^>]*>[\s\S]*?<\/li>/g);
+  assert.equal(items.length, 2, h);
+  const opens = (s, re) => (s.match(re) || []).length;
+  for (const li of items) assert.equal(opens(li, /<p\b/g), opens(li, /<\/p>/g), `balanced <p> in ${li}`);
+  assert.ok(/<li [^>]*><p [^>]*>☐ First para<\/p><p [^>]*>Second para<\/p><\/li>/.test(items[0]), items[0]);
+  assert.ok(h.includes("&amp;amp;") && h.includes("a&lt;b"), "inline code keeps a literal &amp;");
+  assert.ok(plainText("`&amp;`", NOTE_META).includes("&amp;"));
+  assert.ok(!/<(style|link|meta)\b/.test(h), "a fragment: no <style>, mail apps drop it");
+});
+
+test("notes export: PDF page is complete and keeps rows/items whole", () => {
+  const doc = pdfDocument(NOTE_MD, NOTE_META);
+  assert.ok(doc.startsWith("<!doctype html>") && doc.includes('<meta charset="utf-8">'));
+  assert.ok(doc.includes("@page") && doc.includes("break-inside: avoid"));
+  assert.ok(doc.includes(emailHtml(NOTE_MD, NOTE_META)));
+});
+
+test("notes export: file name", () => {
+  assert.equal(exportFileName(NOTE_META), "Rollout <sync> & review – 25 Nov 2026 (Medium notes)");
+  assert.equal(exportFileName({ ...NOTE_META, title: "  " }), "Meeting notes – 25 Nov 2026 (Medium notes)");
+});
+
+await testAsync("notes export: Word file is a real .docx with headings, table and list", async () => {
+  const bytes = await buildDocx(NOTE_MD, NOTE_META);
+  assert.deepEqual([...bytes.slice(0, 4)], [0x50, 0x4b, 0x03, 0x04], "zip signature");
+  const zip = await JSZip.loadAsync(bytes);
+  const xml = await zip.file("word/document.xml").async("string");
+  const text = xml.replace(/<[^>]+>/g, "");
+  for (const want of ["Rollout &lt;sync&gt; &amp; review", "Summary", "Action items", "Owner", "Chase", "☐ ", "Book room", "☑ ", "nested", "🎉"])
+    assert.ok(text.includes(want), `document.xml lacks ${want}`);
+  assert.ok(xml.includes('w:val="Title"') && xml.includes('w:val="Heading2"'), "title + heading styles");
+  assert.ok(xml.includes("<w:tbl>") && xml.includes("<w:tblHeader"), "a real table with a header row");
+  assert.ok(xml.includes("<w:numPr>"), "real list numbering/bullets");
+  assert.ok(!text.includes("**") && !text.includes("javascript") && !text.includes("<script"));
+  const rels = await zip.file("word/_rels/document.xml.rels").async("string");
+  assert.ok(rels.includes("https://example.com/p?a=1&amp;b=2"), "hyperlink kept");
+  assert.ok(!rels.includes("javascript:"));
+});
+
+await testAsync("notes export: each numbered list in Word restarts at 1", async () => {
+  const zip = await JSZip.loadAsync(await buildDocx("1. a\n2. b\n\nBetween.\n\n1. c\n2. d", NOTE_META));
+  const xml = await zip.file("word/document.xml").async("string");
+  const ids = [...xml.matchAll(/<w:numId w:val="(\d+)"\/>/g)].map((m) => m[1]);
+  assert.equal(ids.length, 4, xml);
+  assert.equal(ids[0], ids[1]);
+  assert.equal(ids[2], ids[3]);
+  assert.notEqual(ids[0], ids[2], "second list uses its own numbering instance");
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

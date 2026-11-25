@@ -379,6 +379,31 @@ fn with_owner_window<T>(f: impl FnOnce(HWND) -> anyhow::Result<T>) -> anyhow::Re
 // Plain copy and read
 // ---------------------------------------------------------------------------------------------
 
+/// Notes Copy: puts a CF_HTML payload (`"HTML Format"`, built by `notes_export::cf_html`) and the plain
+/// text on the clipboard together. A deliberate copy of a document, so it is NOT excluded from
+/// clipboard history (unlike dictation text).
+pub fn copy_html_and_text(cf_html: &str, plain: &str) -> anyhow::Result<()> {
+    if plain.is_empty() {
+        bail!("nothing to copy");
+    }
+    let _lock = transaction_lock();
+    with_owner_window(|hwnd| {
+        let _open = OpenGuard::open(hwnd)?;
+        unsafe { EmptyClipboard() }.context("EmptyClipboard failed")?;
+        let html_format = unsafe { RegisterClipboardFormatW(w!("HTML Format")) };
+        if html_format == 0 {
+            tracing::warn!("RegisterClipboardFormat(HTML Format) failed; copying plain text only");
+        } else {
+            let mut bytes = cf_html.as_bytes().to_vec();
+            bytes.push(0);
+            unsafe { set_bytes(html_format, &bytes) }?;
+        }
+        unsafe { set_bytes(CF_UNICODETEXT, &wide_bytes(plain)) }
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+
 /// Puts `text` on the clipboard as ordinary data (not delayed), excluded from clipboard history and
 /// cloud clipboard. Used for "Not pasted — click to copy" and History's copy button.
 pub fn copy_text(text: &str) -> anyhow::Result<()> {
