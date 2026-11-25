@@ -12,6 +12,11 @@ on:
         description: 'Optional explicit version (e.g. 0.2.0). Leave blank for automatic 0.1.<run_number>.'
         required: false
         default: ''
+      dry_run:
+        description: 'Build and check everything, but publish nothing (for testing signing on a branch).'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -23,12 +28,17 @@ permissions:
 #   Repository variable WREN_SIGN_MACOS=true -> Developer ID signing + notarization of Wren.app and the
 #     DMG (secrets APPLE_CERTIFICATE = base64 .p12, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #     APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_P8). Missing secrets or a failed check stop it.
+#   Repository variable WREN_SIGN_MACOS=self-signed -> sign Wren.app with a stable self-signed certificate
+#     (secrets MAC_SELF_SIGNED_P12 = base64 .p12, MAC_SELF_SIGNED_P12_PASSWORD). No notarization, but the
+#     signature is the same on every build, so macOS keeps Wren's privacy permissions across updates.
 #   Not requested -> unsigned Windows installer / ad-hoc signed Mac app, exactly as before, with a
 #     warning on the run. The updater's own Ed25519 signature (TAURI_SIGNING_PRIVATE_KEY) is always required.
 # Update source baked into the build: this repository (forks get their own releases), or the
 # WREN_UPDATE_REPO variable (`none` = no updater). A fork with its own TAURI_SIGNING_PRIVATE_KEY sets
 # WREN_UPDATE_PUBKEY to the matching public key. WREN_UPDATE_PRIVATE=1 allows the token/gh fallback
 # (only while the repository is private).
+# Repository variable WREN_RELEASE_PLATFORMS: `both` (default), `mac` or `windows` -> which platforms this
+# release builds and lists in latest.json. Installed copies on a platform that isn't listed stay put.
 env:
   WREN_UPDATE_REPO: ${{ vars.WREN_UPDATE_REPO || github.repository }}
   WREN_UPDATE_PUBKEY: ${{ vars.WREN_UPDATE_PUBKEY }}
@@ -118,6 +128,7 @@ jobs:
   build-windows:
     name: Build Windows installer
     needs: prepare
+    if: vars.WREN_RELEASE_PLATFORMS != 'mac'
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -258,6 +269,7 @@ jobs:
   build-macos:
     name: Build macOS Apple Silicon app
     needs: prepare
+    if: vars.WREN_RELEASE_PLATFORMS != 'windows'
     runs-on: macos-latest
     timeout-minutes: 45
     env:
@@ -294,8 +306,16 @@ jobs:
         env:
           SIGN_REQUESTED: ${{ vars.WREN_SIGN_MACOS }}
           HAS_ALL: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_KEY_P8 != '' }}
+          HAS_SELF_SIGNED: ${{ secrets.MAC_SELF_SIGNED_P12 != '' && secrets.MAC_SELF_SIGNED_P12_PASSWORD != '' }}
         run: |
-          if [ "$SIGN_REQUESTED" = "true" ]; then
+          if [ "$SIGN_REQUESTED" = "self-signed" ]; then
+            if [ "$HAS_SELF_SIGNED" != "true" ]; then
+              echo "::error::WREN_SIGN_MACOS=self-signed but MAC_SELF_SIGNED_P12 / MAC_SELF_SIGNED_P12_PASSWORD is missing. Nothing is published ad-hoc signed."
+              exit 1
+            fi
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "self_signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$SIGN_REQUESTED" = "true" ]; then
             if [ "$HAS_ALL" != "true" ]; then
               echo "::error::WREN_SIGN_MACOS=true but a Developer ID or notarization secret is missing (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_P8). Nothing is published unsigned."
               exit 1
@@ -330,6 +350,30 @@ jobs:
           echo "WREN_SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           security find-identity -v -p codesigning "$KEYCHAIN" | grep -c "Developer ID Application" >/dev/null || { echo "::error::No Developer ID Application identity in the certificate"; exit 1; }
 
+      - name: Import the self-signed signing certificate
+        if: steps.msign.outputs.self_signed == 'true'
+        env:
+          MAC_SELF_SIGNED_P12: ${{ secrets.MAC_SELF_SIGNED_P12 }}
+          MAC_SELF_SIGNED_P12_PASSWORD: ${{ secrets.MAC_SELF_SIGNED_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/wren-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          CERT="$RUNNER_TEMP/wren-self-signed.p12"
+          printf '%s' "$MAC_SELF_SIGNED_P12" | base64 --decode > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$MAC_SELF_SIGNED_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN" >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT"
+          echo "WREN_SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          # The identity is named by the certificate's Common Name. It needn't be trusted for codesign to
+          # sign with it; macOS ties permissions to the designated requirement, which names this certificate.
+          IDENTITY="Wren Self-Signed Code Signing"
+          security find-identity -p codesigning "$KEYCHAIN" | grep -F "\"$IDENTITY\"" || { echo "::error::No '$IDENTITY' identity in MAC_SELF_SIGNED_P12"; exit 1; }
+          echo "WREN_SELF_SIGNED_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
       - name: Build macOS app bundle
         env:
           WREN_BUILD_ID: ${{ needs.prepare.outputs.build_id }}
@@ -355,6 +399,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           VERSION: ${{ needs.prepare.outputs.version }}
           SIGN_ENABLED: ${{ steps.msign.outputs.enabled }}
+          SELF_SIGNED: ${{ steps.msign.outputs.self_signed }}
           SECRET_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           SECRET_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           SECRET_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -373,6 +418,21 @@ jobs:
             codesign -dvv "$APP_DIR" 2>&1 | grep -q 'flags=.*runtime' || { echo "::error::Wren.app is missing the Hardened Runtime"; exit 1; }
             xcrun stapler validate "$APP_DIR"
             spctl --assess --type execute --verbose=2 "$APP_DIR"
+          elif [ "$SELF_SIGNED" = "true" ]; then
+            # Same as the ad-hoc path (no Hardened Runtime, no notarization), but with a stable certificate:
+            # the designated requirement names the certificate instead of this build's hash, so macOS keeps
+            # Accessibility / Microphone / System Audio Recording permissions across updates.
+            # The signing keychain is on the user search list (import step); codesign finds the untrusted
+            # self-signed identity there. `--keychain` alone does not (tested on macOS 26.4).
+            codesign --force --deep --sign "$WREN_SELF_SIGNED_IDENTITY" "$APP_DIR"
+            codesign --verify --deep --strict "$APP_DIR"
+            AUTH="$(codesign -dvv "$APP_DIR" 2>&1 | sed -n 's/^Authority=//p' | head -n 1)"
+            [ "$AUTH" = "$WREN_SELF_SIGNED_IDENTITY" ] || { echo "::error::Wren.app is not signed by $WREN_SELF_SIGNED_IDENTITY ($AUTH)"; exit 1; }
+            REQ="$(codesign -d -r- "$APP_DIR" 2>&1)"
+            echo "$REQ"
+            echo "$REQ" | grep -q 'identifier "com.maximilian.wren"' || { echo "::error::Designated requirement doesn't name com.maximilian.wren"; exit 1; }
+            echo "$REQ" | grep -q 'certificate' || { echo "::error::Designated requirement doesn't name the certificate (permissions would reset on update)"; exit 1; }
+            if echo "$REQ" | grep -q 'cdhash'; then echo "::error::Designated requirement is a cdhash (permissions would reset on update)"; exit 1; fi
           else
             # Ad-hoc sign so local launches work without a paid Apple Developer ID (Gatekeeper still warns).
             codesign --force --deep --sign - "$APP_DIR"
@@ -403,12 +463,14 @@ jobs:
             xcrun stapler validate "$DMG"
             spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
             echo "developer-id=notarized" > dist-release-mac/signing-macos.txt
+          elif [ "$SELF_SIGNED" = "true" ]; then
+            echo "self-signed=stable" > dist-release-mac/signing-macos.txt
           else
             echo "developer-id=none" > dist-release-mac/signing-macos.txt
           fi
 
       - name: Remove signing keychain and key
-        if: always() && steps.msign.outputs.enabled == 'true'
+        if: always() && (steps.msign.outputs.enabled == 'true' || steps.msign.outputs.self_signed == 'true')
         run: |
           [ -n "${WREN_SIGNING_KEYCHAIN:-}" ] && security delete-keychain "$WREN_SIGNING_KEYCHAIN" || true
           rm -f "${APPLE_API_KEY_PATH:-/nonexistent}"
@@ -430,6 +492,12 @@ jobs:
   publish:
     name: Publish unified GitHub Release
     needs: [prepare, build-windows, build-macos]
+    # A skipped platform (WREN_RELEASE_PLATFORMS) is fine; a failed or cancelled one stops the release.
+    if: >-
+      always() && needs.prepare.result == 'success' && !inputs.dry_run &&
+      (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+      (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+      !(needs.build-windows.result == 'skipped' && needs.build-macos.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -447,12 +515,21 @@ jobs:
         env:
           SIGN_WINDOWS: ${{ vars.WREN_SIGN_WINDOWS }}
           SIGN_MACOS: ${{ vars.WREN_SIGN_MACOS }}
+          PLATFORMS: ${{ vars.WREN_RELEASE_PLATFORMS || 'both' }}
         run: |
+          BUILD_WIN=true; BUILD_MAC=true
+          [ "$PLATFORMS" = "mac" ] && BUILD_WIN=false
+          [ "$PLATFORMS" = "windows" ] && BUILD_MAC=false
+          [ "$BUILD_WIN" = "true" ] || SIGN_WINDOWS=skipped
+          [ "$BUILD_MAC" = "true" ] || SIGN_MACOS=skipped
           if [ "$SIGN_WINDOWS" = "true" ] && ! tr -d '\r' < release-artifacts/windows-release/signing-windows.txt 2>/dev/null | grep -qx 'authenticode=Valid'; then
             echo "::error::Windows signing was requested but the installer's Authenticode signature is not Valid."; exit 1
           fi
           if [ "$SIGN_MACOS" = "true" ] && ! tr -d '\r' < release-artifacts/macos-release/signing-macos.txt 2>/dev/null | grep -qx 'developer-id=notarized'; then
             echo "::error::macOS signing was requested but the app/DMG were not notarized."; exit 1
+          fi
+          if [ "$SIGN_MACOS" = "self-signed" ] && ! tr -d '\r' < release-artifacts/macos-release/signing-macos.txt 2>/dev/null | grep -qx 'self-signed=stable'; then
+            echo "::error::Self-signed macOS signing was requested but the app wasn't signed with the stable certificate."; exit 1
           fi
           echo "signing: windows=${SIGN_WINDOWS:-off} macos=${SIGN_MACOS:-off}"
 
@@ -462,6 +539,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
           REPO: ${{ github.repository }}
+          PLATFORMS: ${{ vars.WREN_RELEASE_PLATFORMS || 'both' }}
         run: |
           WIN_NAME="Wren_${VERSION}_x64-setup.exe"
           WIN_FILE="release-artifacts/windows-release/$WIN_NAME"
@@ -474,21 +552,21 @@ jobs:
           NOTES="release-artifacts/release-notes/release-notes.md"
           MANIFEST="release-artifacts/latest.json"
 
-          node scripts/ci-release-meta.mjs manifest \
-            --version "$VERSION" \
-            --repo "$REPO" \
-            --installer "$WIN_NAME" \
-            --sig-file "$WIN_SIG" \
-            --mac-installer "$MAC_ARCHIVE_NAME" \
-            --mac-sig-file "$MAC_SIG" \
-            --mac-platform darwin-aarch64 \
-            --notes-file "$NOTES" \
-            --out "$MANIFEST"
-
-          FILES=("$WIN_FILE" "$WIN_SIG" "$MAC_ARCHIVE" "$MAC_SIG" "$MANIFEST")
-          if [ -f "$MAC_DMG" ]; then
-            FILES+=("$MAC_DMG")
+          ARGS=(--version "$VERSION" --repo "$REPO" --notes-file "$NOTES" --out "$MANIFEST")
+          FILES=()
+          if [ "$PLATFORMS" != "mac" ]; then
+            ARGS+=(--installer "$WIN_NAME" --sig-file "$WIN_SIG")
+            FILES+=("$WIN_FILE" "$WIN_SIG")
           fi
+          if [ "$PLATFORMS" != "windows" ]; then
+            ARGS+=(--mac-installer "$MAC_ARCHIVE_NAME" --mac-sig-file "$MAC_SIG" --mac-platform darwin-aarch64)
+            FILES+=("$MAC_ARCHIVE" "$MAC_SIG")
+            if [ -f "$MAC_DMG" ]; then
+              FILES+=("$MAC_DMG")
+            fi
+          fi
+          node scripts/ci-release-meta.mjs manifest "${ARGS[@]}"
+          FILES+=("$MANIFEST")
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${FILES[@]}" --clobber

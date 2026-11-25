@@ -32,6 +32,7 @@ import { engineWords } from "../components/Sidebar";
 import { Toggle } from "../components/Toggle";
 import { Button } from "../components/Button";
 import { useToast } from "../components/Toast";
+import { FIX_PERMISSIONS_HINT, FixPermissionsButton } from "../components/FixPermissions";
 import {
   Check,
   CircleAlert,
@@ -536,14 +537,21 @@ function MeetingNotesSection({
       {isMac && (
         <SetRow
           title="System audio recording"
-          desc="macOS needs this permission so Wren can hear the other people in your Teams calls."
+          desc={
+            perm === "granted"
+              ? "macOS needs this permission so Wren can hear the other people in your Teams calls."
+              : `macOS needs this permission so Wren can hear the other people in your Teams calls. ${FIX_PERMISSIONS_HINT}`
+          }
           control={
             perm === "granted" ? (
               <Status tone="ok">Allowed</Status>
             ) : (
-              <Button size="sm" variant="primary" onClick={() => void openSystemAudioSettings()}>
-                Open System Settings
-              </Button>
+              <span className="set-actions">
+                <Button size="sm" variant="primary" onClick={() => void openSystemAudioSettings()}>
+                  Open System Settings
+                </Button>
+                <FixPermissionsButton onDone={() => void systemAudioPermission().then(setPerm).catch(() => {})} />
+              </span>
             )
           }
         />

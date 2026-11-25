@@ -1,6 +1,7 @@
 // App-wide warning when Willow or Glaido is running too (both would paste). Sticks to the top of the panel.
 import { IconButton } from "./Button";
 import { TriangleAlert, X } from "./Icon";
+import { FIX_PERMISSIONS_HINT, useFixPermissions } from "./FixPermissions";
 import { joinNames } from "../lib/format";
 
 export function OthersBanner({ names, onDismiss, onMore }: { names: string[]; onDismiss: () => void; onMore?: () => void }) {
@@ -32,7 +33,16 @@ export function OthersBanner({ names, onDismiss, onMore }: { names: string[]; on
 }
 
 /** macOS banner shown until Accessibility permission is granted (required for fn + Control & ⌘V). */
-export function AccessibilityBanner({ onAllow, onDismiss }: { onAllow: () => void; onDismiss: () => void }) {
+export function AccessibilityBanner({
+  onAllow,
+  onDismiss,
+  onFixed,
+}: {
+  onAllow: () => void;
+  onDismiss: () => void;
+  onFixed?: () => void;
+}) {
+  const { fix, busy } = useFixPermissions(onFixed);
   return (
     <div className="banner-wrap">
       <div className="banner" role="status">
@@ -41,10 +51,13 @@ export function AccessibilityBanner({ onAllow, onDismiss }: { onAllow: () => voi
         </span>
         <p className="banner__text">
           <strong>Accessibility permission needed.</strong> Allow Wren in System Settings → Privacy &amp; Security → Accessibility so{" "}
-          <strong>fn + Control</strong> and pasting work in every app.
+          <strong>fn + Control</strong> and pasting work in every app. {FIX_PERMISSIONS_HINT}
         </p>
         <button type="button" className="banner__more" onClick={onAllow}>
           Open Settings
+        </button>
+        <button type="button" className="banner__more" disabled={busy} onClick={() => void fix()}>
+          Fix permissions
         </button>
         <IconButton label="Hide this notice" onClick={onDismiss} className="banner__close">
           <X size={17} strokeWidth={2.1} />

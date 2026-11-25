@@ -311,6 +311,7 @@ function AppShell() {
                 .catch(() => {})
             }
             onDismiss={() => setAccessibilityDismissed(true)}
+            onFixed={() => void accessibilityStatus().then(setAccessibilityOk).catch(() => {})}
           />
         )}
         {showBanner && (

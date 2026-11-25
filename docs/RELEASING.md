@@ -56,6 +56,33 @@ then notarizes and staples it. The DMG is signed, notarized and stapled too. The
 `stapler validate` and `spctl --assess` before publishing. The in-app updater keeps a Developer ID
 signature as shipped (it only re-signs ad-hoc/development builds locally).
 
+### macOS — stable self-signed certificate (what the official repo uses)
+
+macOS ties Wren's privacy permissions (Accessibility, Microphone, System Audio Recording) to the app's
+signature. An ad-hoc signature changes with every build, so after each update the switches in System
+Settings still show "on" but no longer apply. Signing every build with the same certificate fixes that
+without an Apple Developer account (Gatekeeper still warns on first install, as with ad-hoc).
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Variable | `WREN_SIGN_MACOS` | `self-signed` |
+| Secret | `MAC_SELF_SIGNED_P12` | base64 of a `.p12` whose certificate's Common Name is `Wren Self-Signed Code Signing` (EKU codeSigning; export with `openssl pkcs12 -export -legacy`) |
+| Secret | `MAC_SELF_SIGNED_P12_PASSWORD` | its password |
+
+The run signs `Wren.app` like the ad-hoc path (no Hardened Runtime, no notarization) and fails unless the
+designated requirement names `com.maximilian.wren` and the certificate (not a `cdhash`). The certificate
+doesn't need to be trusted, but its keychain must be on the user search list while signing. The in-app
+updater keeps this signature as shipped (`MAC_RELEASE_SIGNING_IDENTITY` in `updater.rs` must match the
+Common Name). Keep the `.p12` backed up: a new certificate means every Mac user resets Wren's permissions
+once (Wren's banners have a **Fix permissions** button for that).
+
+## Which platforms a release includes
+
+Variable `WREN_RELEASE_PLATFORMS`: `both` (default), `mac` or `windows`. The skipped platform isn't built
+or listed in `latest.json`; installed copies on that platform treat the release as "up to date" (builds
+before 2026-11-25 just log a failed background check and show nothing). Run the workflow by hand with
+**dry_run** to build and check everything on a branch without publishing.
+
 ## Where installed copies look for updates
 
 Baked in at build time (`src-tauri/build.rs` re-runs when these change):

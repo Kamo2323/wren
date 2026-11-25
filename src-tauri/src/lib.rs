@@ -383,6 +383,7 @@ pub fn run() {
             commands::app_icon,
             commands::accessibility_status,
             commands::open_accessibility_settings,
+            commands::reset_mac_permissions,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,

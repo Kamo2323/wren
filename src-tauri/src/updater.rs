@@ -80,6 +80,11 @@ pub const EVENT_UPDATE_STATUS: &str = "app://update-status";
 /// No payload: user clicked the tray's update item; front end navigates to Settings → Updates.
 pub const EVENT_OPEN_UPDATES: &str = "tray://open-updates";
 
+/// Common Name of the self-signed certificate CI signs macOS releases with (`WREN_SIGN_MACOS=self-signed`).
+/// macOS ties privacy permissions to it, so the install helper keeps such builds exactly as shipped.
+/// Must match `WREN_SELF_SIGNED_IDENTITY` in `.github/workflows/release.yml`.
+pub const MAC_RELEASE_SIGNING_IDENTITY: &str = "Wren Self-Signed Code Signing";
+
 #[cfg(windows)]
 const PLATFORM_KEY: &str = "windows-x86_64";
 #[cfg(windows)]
@@ -577,22 +582,20 @@ pub fn is_newer_version(current: &str, remote: &str) -> Result<bool, String> {
     Ok(rem > cur)
 }
 
-fn pick_platform_artifact(manifest: &UpdateManifest) -> Result<&PlatformArtifact, String> {
-    let art = manifest
+/// This platform's entry in the manifest. `Ok(None)` when the release doesn't list this platform at all:
+/// a single-platform release (CI `WREN_RELEASE_PLATFORMS`) isn't an update for the other one.
+fn pick_platform_artifact(manifest: &UpdateManifest) -> Result<Option<&PlatformArtifact>, String> {
+    let Some(art) = manifest
         .platforms
         .get(PLATFORM_KEY)
         .or_else(|| manifest.platforms.get(PLATFORM_KEY_ALT))
-        .ok_or_else(|| {
-            if cfg!(target_os = "macos") {
-                "This release doesn't include a macOS build yet.".to_string()
-            } else {
-                "This release doesn't include a Windows installer.".to_string()
-            }
-        })?;
+    else {
+        return Ok(None);
+    };
     if art.url.trim().is_empty() || art.signature.trim().is_empty() {
         return Err("This release is missing its installer or signature.".to_string());
     }
-    Ok(art)
+    Ok(Some(art))
 }
 
 fn filename_from_url(url: &str) -> Option<String> {
@@ -734,7 +737,10 @@ fn evaluate_manifest(
         return Ok(CheckResult::UpToDate);
     }
 
-    let artifact = pick_platform_artifact(&manifest)?;
+    let Some(artifact) = pick_platform_artifact(&manifest)? else {
+        tracing::info!(version = %clean_ver, platform = PLATFORM_KEY, "newest release has no build for this platform");
+        return Ok(CheckResult::UpToDate);
+    };
     validate_download_url(&artifact.url, config.allow_insecure_localhost)?;
     let signature_b64 = artifact.signature.trim().to_string();
 
@@ -1267,6 +1273,12 @@ if mv "$NEW_APP" "$TARGET_APP"; then
       log "Keeping the published Developer ID signature"
       NO_LOCAL_RESIGN=1
       ;;
+    "{self_signed}")
+      # Signed with Wren's stable release certificate: macOS ties Accessibility / Microphone /
+      # System Audio Recording permissions to it, so keep it as shipped or they'd reset.
+      log "Keeping the published Wren release signature"
+      NO_LOCAL_RESIGN=1
+      ;;
     *) NO_LOCAL_RESIGN=0 ;;
   esac
   if [ "$NO_LOCAL_RESIGN" != "1" ] && [ "$NO_RELAUNCH" != "1" ] && [ -x /usr/bin/codesign ] && [ -x /usr/bin/security ]; then
@@ -1302,7 +1314,8 @@ else
 fi
 
 rm -f "$0" 2>/dev/null || true
-"#
+"#,
+        self_signed = MAC_RELEASE_SIGNING_IDENTITY
     )
 }
 
@@ -1617,6 +1630,45 @@ mod tests {
         (base, log)
     }
 
+    fn manifest_with(platforms: serde_json::Value) -> UpdateManifest {
+        serde_json::from_value(serde_json::json!({ "version": "0.1.99", "platforms": platforms })).unwrap()
+    }
+
+    fn offline_cfg() -> UpdaterConfig {
+        UpdaterConfig {
+            public_latest_url: "http://127.0.0.1:9/latest.json".into(),
+            api_latest_release_url: "http://127.0.0.1:9/api".into(),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.9".into(),
+            allow_insecure_localhost: true,
+            private_mode: false,
+        }
+    }
+
+    /// A release built for the other platform only (CI `WREN_RELEASE_PLATFORMS`) is "up to date" here,
+    /// never an error or an update offer.
+    #[test]
+    fn release_without_this_platform_is_up_to_date() {
+        let other = if PLATFORM_KEY.starts_with("windows") { "darwin-aarch64" } else { "windows-x86_64" };
+        let manifest = manifest_with(serde_json::json!({
+            other: { "signature": "c2ln", "url": "http://127.0.0.1:9/other" }
+        }));
+        let result = evaluate_manifest(&offline_cfg(), manifest, None, None, None).unwrap();
+        assert!(matches!(result, CheckResult::UpToDate));
+        let empty = manifest_with(serde_json::json!({}));
+        assert!(matches!(evaluate_manifest(&offline_cfg(), empty, None, None, None).unwrap(), CheckResult::UpToDate));
+    }
+
+    /// A listed platform with a blank url or signature is still a broken release, not "up to date".
+    #[test]
+    fn listed_platform_missing_signature_is_an_error() {
+        let manifest = manifest_with(serde_json::json!({
+            PLATFORM_KEY: { "signature": " ", "url": "http://127.0.0.1:9/x" }
+        }));
+        let err = evaluate_manifest(&offline_cfg(), manifest, None, None, None).err().unwrap();
+        assert!(err.contains("missing its installer or signature"), "{err}");
+    }
+
     #[test]
     fn public_repo_check_and_verified_download_succeed() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1886,6 +1938,8 @@ mod tests {
         assert!(body.contains("/usr/bin/codesign --force --deep --sign"));
         assert!(body.contains("Preserving local code-signing identity"));
         assert!(body.contains("Keeping the published Developer ID signature"), "notarized builds are never re-signed");
+        assert!(body.contains("Keeping the published Wren release signature"), "self-signed releases are never re-signed");
+        assert!(body.contains(&format!("\"{MAC_RELEASE_SIGNING_IDENTITY}\")")), "case pattern names the release certificate");
         let tmp = std::env::temp_dir().join(format!("wren-apply-syntax-{}.sh", std::process::id()));
         std::fs::write(&tmp, &body).unwrap();
         let status = std::process::Command::new("/bin/sh").args(["-n"]).arg(&tmp).status().unwrap();

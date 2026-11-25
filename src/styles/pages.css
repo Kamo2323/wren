@@ -1536,3 +1536,11 @@
   font-weight: 500;
   color: var(--sub);
 }
+
+/* A row's control slot holding two buttons (e.g. Open System Settings + Fix permissions). */
+.set-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}

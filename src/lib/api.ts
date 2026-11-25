@@ -135,6 +135,10 @@ export const accessibilityStatus = (): Promise<boolean> =>
 export const openAccessibilitySettings = (): Promise<void> =>
   inTauri ? call("open_accessibility_settings") : Promise.resolve();
 
+/** macOS: clear Wren's privacy permissions left over from an older build and ask again. */
+export const resetMacPermissions = (): Promise<void> =>
+  inTauri ? call("reset_mac_permissions") : Promise.resolve();
+
 export const appIcon = (processName: string): Promise<string | null> =>
   inTauri ? call<string | null>("app_icon", { processName }) : Promise.resolve(null);
 

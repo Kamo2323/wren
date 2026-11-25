@@ -18,6 +18,7 @@ import {
 import { durationLabel, participantsLabel } from "../lib/meetingText";
 import { Button } from "../components/Button";
 import { useToast } from "../components/Toast";
+import { FIX_PERMISSIONS_HINT, FixPermissionsButton } from "../components/FixPermissions";
 import { AudioLines, CircleAlert, Users } from "../components/Icon";
 import MeetingView from "./meeting/MeetingView";
 
@@ -47,17 +48,18 @@ function MeetingCard({ m, live, onOpen }: { m: MeetingRow; live: boolean; onOpen
   );
 }
 
-function SystemAudioCard() {
+function SystemAudioCard({ onFixed }: { onFixed: () => void }) {
   return (
     <div className="perm-card" role="status">
       <CircleAlert size={16} strokeWidth={2.1} aria-hidden="true" />
       <div>
         <strong>Allow Wren to hear your meetings.</strong> macOS needs the System Audio Recording permission so Wren can transcribe
-        what others say in Teams.
+        what others say in Teams. {FIX_PERMISSIONS_HINT}
       </div>
       <Button size="sm" variant="primary" onClick={() => void openSystemAudioSettings()}>
         Open System Settings
       </Button>
+      <FixPermissionsButton onDone={onFixed} />
     </div>
   );
 }
@@ -145,7 +147,7 @@ function MeetingList({ onOpen }: { onOpen: (id: string) => void }) {
           {active ? "Open current meeting" : starting ? "Starting…" : "Start meeting notes"}
         </Button>}
       </header>
-      {constants.platform === "macos" && perm !== "granted" && <SystemAudioCard />}
+      {constants.platform === "macos" && perm !== "granted" && <SystemAudioCard onFixed={() => void systemAudioPermission().then(setPerm).catch(() => {})} />}
       {rows && rows.length === 0 && (
         <div className="empty meetings-empty">
           <span className="tinted-icon" aria-hidden="true">

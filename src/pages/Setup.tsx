@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { EngineStatus, SetupPlan, SetupStatus } from "../lib/types";
 import { accessibilityStatus, openAccessibilitySettings, popupOpenMicSettings } from "../lib/api";
+import { FixPermissionsButton, FIX_PERMISSIONS_HINT } from "../components/FixPermissions";
 import { useMicLevel } from "../lib/useMicLevel";
 import { Button } from "../components/Button";
 import { ChordKeys } from "../components/Empty";
@@ -271,10 +272,13 @@ function Ready({
                   <span className="setup-check__note">Allowed in Privacy & Security → Accessibility.</span>
                 ) : (
                   <>
-                    <span className="setup-check__note">Wren needs Accessibility access to see the shortcut and paste.</span>
+                    <span className="setup-check__note">
+                      Wren needs Accessibility access to see the shortcut and paste. {FIX_PERMISSIONS_HINT}
+                    </span>
                     <Button size="sm" variant="secondary" onClick={() => void openAccessibilitySettings().then(() => accessibilityStatus().then(setAxOk))}>
                       Allow in System Settings
                     </Button>
+                    <FixPermissionsButton variant="ghost" onDone={() => void accessibilityStatus().then(setAxOk).catch(() => {})} />
                   </>
                 )}
               </div>

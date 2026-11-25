@@ -148,6 +148,58 @@ pub fn accessibility_status(app: AppHandle) -> bool {
     }
 }
 
+/// macOS privacy services Wren uses, as `tccutil` names them: Accessibility (shortcut, paste),
+/// Microphone (dictation, meetings) and AudioCapture (System Audio Recording, meetings).
+#[cfg(target_os = "macos")]
+const TCC_SERVICES: [&str; 3] = ["Accessibility", "Microphone", "AudioCapture"];
+
+/// "Fix permissions" (macOS): clears Wren's privacy entries so a switch left over from an older build
+/// stops shadowing this one, then asks for Accessibility again. An app signed differently from the one
+/// a switch was granted to (an ad-hoc signed update) is refused even though the switch shows "on", and
+/// toggling that switch doesn't help; resetting does. Microphone and System Audio Recording are asked
+/// for again the next time Wren records. `tccutil` needs no password for the app's own bundle id.
+#[tauri::command(async)]
+pub fn reset_mac_permissions(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_id = app.config().identifier.clone();
+        let mut failed = Vec::new();
+        for service in TCC_SERVICES {
+            match std::process::Command::new("/usr/bin/tccutil").args(["reset", service, &bundle_id]).output() {
+                Ok(out) if out.status.success() => tracing::info!(service, "reset macOS permission"),
+                Ok(out) => {
+                    tracing::warn!(
+                        service,
+                        code = ?out.status.code(),
+                        stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                        "tccutil reset failed"
+                    );
+                    failed.push(service);
+                }
+                Err(err) => {
+                    tracing::warn!(service, error = %err, "could not run tccutil");
+                    failed.push(service);
+                }
+            }
+        }
+        if failed.len() == TCC_SERVICES.len() {
+            return Err("Couldn't reset Wren's permissions. In System Settings → Privacy & Security, select Wren, press −, then add it again.".into());
+        }
+        // Puts Wren back in the Accessibility list and shows macOS's own "allow" prompt.
+        if crate::hotkey::accessibility_trusted(true) {
+            if let Some(services) = app.try_state::<Services>() {
+                services.session.send(Msg::ReinstallHook);
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 /// On macOS, prompts for Accessibility (if needed) and opens System Settings → Privacy & Security →
 /// Accessibility. Also reinstalls the hotkey if permission is already granted.
 #[tauri::command]
