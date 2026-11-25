@@ -10,6 +10,7 @@ pub mod engine;
 pub mod hotkey;
 pub mod logging;
 pub mod meetings;
+pub mod notes_export;
 pub mod paste;
 pub mod paths;
 pub mod pipeline;
@@ -247,6 +248,7 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             if quit {
                 // `--quit` with no Wren running: nothing to do.
@@ -384,6 +386,10 @@ pub fn run() {
             commands::accessibility_status,
             commands::open_accessibility_settings,
             commands::reset_mac_permissions,
+            notes_export::notes_copy_rich,
+            notes_export::notes_save_docx,
+            notes_export::notes_save_pdf,
+            notes_export::notes_share,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,
