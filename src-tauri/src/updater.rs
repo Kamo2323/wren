@@ -1,9 +1,15 @@
 //! In-app updater backed by GitHub Releases.
 //!
-//! Checks `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` first (no auth,
-//! no API rate limit — works automatically once the repo is public). If GitHub returns 404 because
-//! the repository is private, it falls back to the GitHub REST API using a token from
-//! `WREN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (run silently with no console window).
+//! Checks `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` anonymously (no
+//! auth, no API rate limit). Ordinary builds never read a GitHub token and never run `gh`.
+//!
+//! Only in private mode (`WREN_UPDATE_PRIVATE=1`, at build time or in the environment Wren runs in —
+//! for the owner's own machines while the repository is private) does a 404 fall back to the GitHub
+//! REST API with a token from `WREN_GITHUB_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (run silently).
+//!
+//! Where updates come from is a build setting (`UpdateSource`): `WREN_UPDATE_REPO=owner/repo` for a
+//! fork's own releases (with its own `WREN_UPDATE_PUBKEY`), or `WREN_UPDATE_REPO=none` for a build
+//! that never checks. `WREN_DISABLE_UPDATER=1` at run time stops the background checks.
 //!
 //! Every downloaded installer is verified against [`UPDATE_PUBLIC_KEY`] (Ed25519 minisign, with the
 //! release version bound inside the signed trusted comment) before anything is executed. Installing
@@ -28,8 +34,46 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::constants::{
     UPDATE_CHECK_INTERVAL_MS, UPDATE_CHECK_TIMEOUT_MS, UPDATE_DOWNLOAD_TIMEOUT_MS, UPDATE_EXIT_DELAY_MS,
     UPDATE_FIRST_CHECK_DELAY_MS, UPDATE_GH_TOKEN_TIMEOUT_MS, UPDATE_PROGRESS_EMIT_MS, UPDATE_PUBLIC_KEY,
-    UPDATE_REPO_NAME, UPDATE_REPO_OWNER, UPDATE_WAIT_PARENT_SECS,
+    UPDATE_REPO_DEFAULT, UPDATE_WAIT_PARENT_SECS,
 };
+
+/// Where this build gets updates from, fixed at build time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateSource {
+    pub owner: String,
+    pub repo: String,
+    /// Base64 minisign public key every installer must be signed with.
+    pub public_key_b64: String,
+}
+
+/// `WREN_UPDATE_REPO` value → source. Unset/empty = official; `none`/`off`/`disabled` = no updates;
+/// anything that isn't a plain `owner/repo` also turns updates off rather than guessing.
+pub fn parse_update_source(repo: Option<&str>, pubkey: Option<&str>) -> Option<UpdateSource> {
+    let repo = repo.map(str::trim).filter(|r| !r.is_empty()).unwrap_or(UPDATE_REPO_DEFAULT);
+    if ["none", "off", "disabled", "0"].iter().any(|w| repo.eq_ignore_ascii_case(w)) {
+        return None;
+    }
+    let ok = |s: &str| {
+        !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    let (owner, name) = repo.split_once('/')?;
+    if !ok(owner) || !ok(name) || name.contains('/') {
+        return None;
+    }
+    let key = pubkey.map(str::trim).filter(|k| !k.is_empty()).unwrap_or(UPDATE_PUBLIC_KEY);
+    Some(UpdateSource { owner: owner.into(), repo: name.into(), public_key_b64: key.into() })
+}
+
+/// This build's update source (`None` = built without updates).
+pub fn update_source() -> Option<UpdateSource> {
+    parse_update_source(option_env!("WREN_UPDATE_REPO"), option_env!("WREN_UPDATE_PUBKEY"))
+}
+
+/// Private mode: the only case in which Wren may use a GitHub token or `gh auth token`.
+pub fn private_mode(build_flag: Option<&str>, runtime_flag: Option<&str>) -> bool {
+    let on = |v: Option<&str>| v.is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
+    on(build_flag) || on(runtime_flag)
+}
 
 /// Payload: [`UpdateStatus`], emitted whenever update state or download progress changes.
 pub const EVENT_UPDATE_STATUS: &str = "app://update-status";
@@ -150,26 +194,41 @@ struct PendingUpdate {
 
 #[derive(Debug, Clone)]
 pub struct UpdaterConfig {
+    /// Empty when this build has no update source (`WREN_UPDATE_REPO=none`).
     pub public_latest_url: String,
     pub api_latest_release_url: String,
     pub public_key_b64: String,
     pub current_version: String,
     pub allow_insecure_localhost: bool,
+    /// Token / `gh` fallback allowed (see the module docs). Off for ordinary builds.
+    pub private_mode: bool,
 }
 
 impl UpdaterConfig {
     pub fn production(current_version: String) -> Self {
-        Self {
-            public_latest_url: format!(
-                "https://github.com/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest/download/latest.json"
-            ),
-            api_latest_release_url: format!(
-                "https://api.github.com/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
-            ),
-            public_key_b64: UPDATE_PUBLIC_KEY.to_string(),
-            current_version,
-            allow_insecure_localhost: false,
+        let private = private_mode(option_env!("WREN_UPDATE_PRIVATE"), std::env::var("WREN_UPDATE_PRIVATE").ok().as_deref());
+        match update_source() {
+            Some(src) => Self {
+                public_latest_url: format!("https://github.com/{}/{}/releases/latest/download/latest.json", src.owner, src.repo),
+                api_latest_release_url: format!("https://api.github.com/repos/{}/{}/releases/latest", src.owner, src.repo),
+                public_key_b64: src.public_key_b64,
+                current_version,
+                allow_insecure_localhost: false,
+                private_mode: private,
+            },
+            None => Self {
+                public_latest_url: String::new(),
+                api_latest_release_url: String::new(),
+                public_key_b64: UPDATE_PUBLIC_KEY.to_string(),
+                current_version,
+                allow_insecure_localhost: false,
+                private_mode: false,
+            },
         }
+    }
+
+    pub fn enabled(&self) -> bool {
+        !self.public_latest_url.is_empty()
     }
 }
 
@@ -214,6 +273,10 @@ impl UpdaterService {
 
     /// Starts the silent background checker (15 s after launch, then hourly).
     pub fn start_background(app: AppHandle) {
+        if !app.state::<UpdaterService>().config.enabled() {
+            tracing::info!("this build has no update source; background update checks are off");
+            return;
+        }
         if std::env::var_os("WREN_DISABLE_UPDATER").is_some_and(|v| !v.is_empty() && v != "0")
             || std::env::var_os("WREN_HOME").is_some_and(|v| !v.is_empty())
         {
@@ -255,7 +318,12 @@ impl UpdaterService {
         }
 
         let config = self.config.clone();
-        let outcome = check_remote(&config, resolve_github_token).await;
+        let outcome = if config.private_mode {
+            check_remote(&config, resolve_github_token).await
+        } else {
+            // Ordinary builds: anonymous only; no environment token, no `gh`.
+            check_remote(&config, || None).await
+        };
 
         match outcome {
             Ok(CheckResult::Available(pending)) => {
@@ -413,7 +481,8 @@ impl UpdaterService {
 
         let token = match &pending.source {
             DownloadSource::DirectUrl(_) => None,
-            DownloadSource::GitHubAssetApi { .. } => resolve_github_token(),
+            DownloadSource::GitHubAssetApi { .. } if self.config.private_mode => resolve_github_token(),
+            DownloadSource::GitHubAssetApi { .. } => None,
         };
 
         let mut last_emit = Instant::now() - Duration::from_secs(1);
@@ -545,6 +614,9 @@ async fn check_remote<F>(config: &UpdaterConfig, token_provider: F) -> Result<Ch
 where
     F: FnOnce() -> Option<String>,
 {
+    if !config.enabled() {
+        return Err("This build of Wren doesn't check for updates.".to_string());
+    }
     let timeout = Duration::from_millis(UPDATE_CHECK_TIMEOUT_MS);
     let client = build_client(timeout, true)?;
     let ua = user_agent(&config.current_version);
@@ -579,11 +651,14 @@ where
         }
     }
 
-    // 2. Private-repo fallback via GitHub REST API + token (env var or `gh auth token`).
+    // 2. Private mode only: GitHub REST API + token (env var or `gh auth token`).
+    if !config.private_mode {
+        return Err("No published Wren release was found to update from.".to_string());
+    }
     let token = token_provider();
     let Some(token) = token else {
         return Err(
-            "No public release was found. While the repo is private, sign in with GitHub CLI (gh auth login) so Wren can check for updates."
+            "No public release was found. In private update mode, sign in with GitHub CLI (gh auth login) so Wren can check for updates."
                 .to_string(),
         );
     };
@@ -680,10 +755,14 @@ fn evaluate_manifest(
         DownloadSource::DirectUrl(artifact.url.clone())
     };
 
+    // The release page sits next to latest.json: `<repo>/releases/latest/download/latest.json`.
     let release_url = fallback_release_url.or_else(|| {
-        Some(format!(
-            "https://github.com/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/tag/v{clean_ver}"
-        ))
+        config
+            .public_latest_url
+            .split("/releases/")
+            .next()
+            .filter(|base| !base.is_empty() && *base != config.public_latest_url)
+            .map(|base| format!("{base}/releases/tag/v{clean_ver}"))
     });
 
     Ok(CheckResult::Available(PendingUpdate {
@@ -1177,7 +1256,16 @@ fi
 
 if mv "$NEW_APP" "$TARGET_APP"; then
   /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" 2>/dev/null || true
-  if [ "$NO_RELAUNCH" != "1" ] && [ -x /usr/bin/codesign ] && [ -x /usr/bin/security ]; then
+  NEW_AUTH="$(/usr/bin/codesign -dvv "$TARGET_APP" 2>&1 | /usr/bin/sed -n 's/^Authority=//p' | /usr/bin/head -n 1 || true)"
+  case "$NEW_AUTH" in
+    "Developer ID Application:"*)
+      # A published, notarized build: re-signing would break its notarization. Keep it as shipped.
+      log "Keeping the published Developer ID signature"
+      NO_LOCAL_RESIGN=1
+      ;;
+    *) NO_LOCAL_RESIGN=0 ;;
+  esac
+  if [ "$NO_LOCAL_RESIGN" != "1" ] && [ "$NO_RELAUNCH" != "1" ] && [ -x /usr/bin/codesign ] && [ -x /usr/bin/security ]; then
     SIGN_ID=""
     if [ -d "$BACKUP_APP" ]; then
       PREV_AUTH="$(/usr/bin/codesign -dvv "$BACKUP_APP" 2>&1 | /usr/bin/sed -n 's/^Authority=//p' | /usr/bin/head -n 1 || true)"
@@ -1563,6 +1651,7 @@ mod tests {
             public_key_b64: UPDATE_PUBLIC_KEY.into(),
             current_version: "0.1.0".into(),
             allow_insecure_localhost: true,
+            private_mode: false,
         };
 
         let result = rt.block_on(check_remote(&cfg, || None)).unwrap();
@@ -1671,6 +1760,7 @@ mod tests {
             public_key_b64: UPDATE_PUBLIC_KEY.into(),
             current_version: "0.1.0".into(),
             allow_insecure_localhost: true,
+            private_mode: true,
         };
 
         let result = rt
@@ -1702,6 +1792,72 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_builds_never_ask_for_a_token() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (base, reqs) = start_mock_server(|_path, _auth| (404, vec![], vec![]));
+        let cfg = UpdaterConfig {
+            public_latest_url: format!("{base}/releases/latest/download/latest.json"),
+            api_latest_release_url: format!("{base}/api/releases/latest"),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.0".into(),
+            allow_insecure_localhost: true,
+            private_mode: false,
+        };
+        let asked = std::sync::atomic::AtomicBool::new(false);
+        let err = rt
+            .block_on(check_remote(&cfg, || {
+                asked.store(true, std::sync::atomic::Ordering::SeqCst);
+                Some("ghp_test_secret".to_string())
+            }))
+            .err()
+            .expect("a 404 without private mode is reported, not retried with a token");
+        assert!(err.contains("No published Wren release"), "{err}");
+        assert!(!asked.load(std::sync::atomic::Ordering::SeqCst), "the token provider was never called");
+        let recorded = reqs.lock().unwrap();
+        assert!(recorded.iter().all(|r| r.auth.is_none() && !r.path.starts_with("/api/")), "anonymous public URL only");
+    }
+
+    #[test]
+    fn a_build_without_an_update_source_never_checks() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cfg = UpdaterConfig {
+            public_latest_url: String::new(),
+            api_latest_release_url: String::new(),
+            public_key_b64: UPDATE_PUBLIC_KEY.into(),
+            current_version: "0.1.0".into(),
+            allow_insecure_localhost: false,
+            private_mode: false,
+        };
+        assert!(!cfg.enabled());
+        let err = rt.block_on(check_remote(&cfg, || None)).err().unwrap();
+        assert!(err.contains("doesn't check for updates"), "{err}");
+    }
+
+    #[test]
+    fn update_source_is_official_by_default_and_configurable_for_forks() {
+        let official = parse_update_source(None, None).unwrap();
+        assert_eq!((official.owner.as_str(), official.repo.as_str()), ("Kamo2323", "wren"));
+        assert_eq!(official.public_key_b64, UPDATE_PUBLIC_KEY);
+        assert_eq!(parse_update_source(Some("  "), Some("")), Some(official.clone()));
+        let fork = parse_update_source(Some("someone/wren-fork"), Some("Zm9ya2tleQ==")).unwrap();
+        assert_eq!((fork.owner.as_str(), fork.repo.as_str(), fork.public_key_b64.as_str()), ("someone", "wren-fork", "Zm9ya2tleQ=="));
+        for off in ["none", "OFF", "disabled", "0"] {
+            assert_eq!(parse_update_source(Some(off), None), None, "{off}");
+        }
+        for bad in ["nope", "a/b/c", "a b/c", "../x", "/x", "x/"] {
+            assert_eq!(parse_update_source(Some(bad), None), None, "{bad} is refused, not guessed");
+        }
+    }
+
+    #[test]
+    fn private_mode_needs_an_explicit_switch() {
+        assert!(!private_mode(None, None));
+        assert!(!private_mode(Some(""), Some("0")));
+        assert!(private_mode(Some("1"), None));
+        assert!(private_mode(None, Some("true")));
+    }
+
+    #[test]
     fn no_releases_yet_on_authenticated_private_repo_reports_up_to_date() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (base, _) = start_mock_server(|_path, _auth| (404, vec![], vec![]));
@@ -1711,6 +1867,7 @@ mod tests {
             public_key_b64: UPDATE_PUBLIC_KEY.into(),
             current_version: "0.1.0".into(),
             allow_insecure_localhost: true,
+            private_mode: true,
         };
         let result = rt
             .block_on(check_remote(&cfg, || Some("ghp_test_secret".to_string())))
@@ -1724,6 +1881,7 @@ mod tests {
         let body = macos_apply_script_body();
         assert!(body.contains("/usr/bin/codesign --force --deep --sign"));
         assert!(body.contains("Preserving local code-signing identity"));
+        assert!(body.contains("Keeping the published Developer ID signature"), "notarized builds are never re-signed");
         let tmp = std::env::temp_dir().join(format!("wren-apply-syntax-{}.sh", std::process::id()));
         std::fs::write(&tmp, &body).unwrap();
         let status = std::process::Command::new("/bin/sh").args(["-n"]).arg(&tmp).status().unwrap();

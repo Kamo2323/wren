@@ -5,5 +5,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=WREN_BUILD_ID");
     let id = std::env::var("WREN_BUILD_ID").unwrap_or_else(|_| "dev".into());
     println!("cargo:rustc-env=WREN_BUILD_ID={id}");
+    // Update source for this build (see `updater::UpdateSource`): read with `option_env!`, so a
+    // change must rebuild. Unset = the official repository, anonymous checks only.
+    for var in ["WREN_UPDATE_REPO", "WREN_UPDATE_PUBKEY", "WREN_UPDATE_PRIVATE"] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
     tauri_build::build()
 }

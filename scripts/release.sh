@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_APP="/Applications/Wren.app"
-STAGE_DIR="${WREN_STAGE_DIR:-$(dirname "$REPO_ROOT")/wren-release-macos}"
+STAGE_DIR="${WREN_STAGE_DIR:-$REPO_ROOT/.release-out-macos}"
 
 NO_BUILD=0
 NO_INSTALL=0

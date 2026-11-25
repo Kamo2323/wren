@@ -16,7 +16,8 @@ MACOS_PROJECT="${SIDECAR_MACOS_DIR:-$REPO_ROOT/sidecar/macos}"
 WREN_ROOT="${WREN_ROOT:-$HOME/Library/Application Support/Wren}"
 PYTHON_VERSION="3.12"
 
-# Pinned revisions verified from Hugging Face API.
+# Pinned revisions verified from Hugging Face API. Must match sidecar/runtime-manifest.json (the
+# in-app setup's pins); scripts/unit-tests.mjs checks they agree.
 PRIMARY_NAME="large-v3-turbo-q4"
 PRIMARY_REPO="mlx-community/whisper-large-v3-turbo-q4"
 PRIMARY_REV="660c343bbf4e52ac257f0b7d952e5388e6f93bef"

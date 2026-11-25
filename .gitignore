@@ -17,6 +17,10 @@ sidecar/.venv/
 
 # Shared Rust build cache
 .cargo-target/
+# Local release / live-test output (scripts/release.ps1, release.sh, live-test.ps1)
+.release-out/
+.release-out-macos/
+.live-test/
 # Agent worktrees
 .claude/
 
