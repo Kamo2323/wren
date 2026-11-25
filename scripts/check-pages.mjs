@@ -454,6 +454,59 @@ await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-confir
 await page.waitForSelector(".quit-confirm", { timeout: 2000 }).catch(() => {});
 check("quit while recording asks to stop first", (await page.locator(".quit-confirm").textContent())?.includes("Stop meeting notes and quit?"));
 
+for (const [failure, action] of [["fail-once", "Try again"], ["fail", "Quit anyway"]]) {
+  await page.goto(`${base}/index.html?meeting=recording&notesSave=${failure}#meetings`);
+  await page.locator(".meetings-start").click();
+  await page.getByRole("tab", { name: "My notes" }).click();
+  await page.locator(".notes-editor").fill("Keep this last edit");
+  if (failure === "fail") {
+    await page.getByText("Couldn't save", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: /Transcript/ }).click();
+    await page.getByRole("tab", { name: "My notes" }).click();
+    check("a failed draft survives switching tabs", (await page.locator(".notes-editor").textContent())?.includes("Keep this last edit"));
+  }
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-confirm-quit")));
+  await page.getByRole("button", { name: "Stop and quit" }).click();
+  const next = page.getByRole("button", { name: action, exact: true });
+  await next.waitFor({ timeout: 1500 }).catch(() => {});
+  check(`failed final save offers ${action} and keeps the meeting recording`,
+    await next.isVisible() && (await page.locator(".quit-confirm").textContent())?.includes("couldn't be saved") &&
+    (await page.locator(".mh-status").textContent())?.includes("Recording"));
+  if (await next.isVisible()) {
+    await next.click();
+    await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "hidden", timeout: 2000 });
+    check(`${action} stops the meeting`, !(await page.getByRole("button", { name: "Stop", exact: true }).isVisible()));
+    if (action === "Try again") {
+      await page.locator(".back-link").click();
+      await page.locator(".meeting-card", { hasText: "Design review" }).click();
+      await page.getByRole("tab", { name: "My notes" }).click();
+      check("Try again saves the same draft",
+        (await page.locator(".notes-editor").textContent())?.includes("Keep this last edit"));
+    }
+  }
+}
+
+await page.goto(`${base}/index.html?meeting=recording#meetings`);
+await page.locator(".meetings-start").click();
+await page.getByRole("tab", { name: "My notes" }).click();
+await page.evaluate(() => {
+  const set = window.setTimeout.bind(window);
+  window.setTimeout = (callback, delay, ...args) => set(callback, delay === 800 ? 60_000 : delay, ...args);
+  window.addEventListener("wren-mock-notes-saving", () => {
+    document.body.dataset.notesSavedFrom = document.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+  }, { once: true });
+});
+await page.locator(".notes-editor").fill("Saved even with the timer throttled");
+await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-stop-meeting")));
+await page.getByRole("tab", { name: /Enhanced/, selected: true }).waitFor();
+check("tray stop starts the save before switching tabs",
+  (await page.locator("body").getAttribute("data-notes-saved-from"))?.startsWith("My notes"));
+await page.locator(".back-link").click();
+await page.locator(".meeting-card", { hasText: "Design review" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+check("tray stop flushes My notes with the debounce timer throttled",
+  (await page.locator(".notes-editor").textContent())?.includes("Saved even with the timer throttled"));
+
 // No horizontal overflow on the new screens, both themes, both sizes.
 for (const theme of ["light", "dark"]) {
   for (const [w, h] of [[1200, 800], [960, 640]]) {

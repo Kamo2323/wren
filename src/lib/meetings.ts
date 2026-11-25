@@ -329,8 +329,17 @@ export const meetingStop = (): Promise<string | null> => {
 
 export const meetingStopAndQuit = (): Promise<void> => (inTauri ? call("meeting_stop_and_quit") : meetingStop().then(() => undefined));
 
+if (!inTauri) window.addEventListener("wren-mock-stop-meeting", () => void meetingStop());
+
+let notesSaveFailed = false;
 export const meetingUpdate = (id: string, patch: { title?: string; myNotes?: string }): Promise<void> => {
   if (inTauri) return call("meeting_update", { id, title: patch.title ?? null, myNotes: patch.myNotes ?? null });
+  const notesSave = params.get("notesSave");
+  if (patch.myNotes !== undefined) window.dispatchEvent(new Event("wren-mock-notes-saving"));
+  if (patch.myNotes !== undefined && (notesSave === "fail" || (notesSave === "fail-once" && !notesSaveFailed))) {
+    notesSaveFailed = true;
+    return Promise.reject(new Error("Couldn't save My notes."));
+  }
   const m = find(id);
   if (m) {
     if (patch.title !== undefined) {
@@ -362,10 +371,13 @@ export const meetingRenameSpeaker = (id: string, to: string, segmentId: number |
   return later(n);
 };
 
-export const meetingDelete = (id: string): Promise<void> => {
-  if (inTauri) return call("meeting_delete", { id });
-  mockStore.meetings = mockStore.meetings.filter((m) => m.row.id !== id);
-  return later(undefined);
+export const meetingDelete = async (id: string): Promise<void> => {
+  if (inTauri) await call("meeting_delete", { id });
+  else {
+    mockStore.meetings = mockStore.meetings.filter((m) => m.row.id !== id);
+    await later(undefined);
+  }
+  notesDrafts.delete(id);
 };
 
 export const meetingAudioClip = (id: string, source: Source, startMs: number, endMs: number): Promise<string | null> =>
@@ -416,16 +428,59 @@ export function errorText(e: unknown): string {
   return "Something went wrong.";
 }
 
-/** Saves My notes edits still waiting to be written (set by the open meeting page; quit awaits it). */
-let notesFlush: (() => Promise<void>) | null = null;
+type NotesDraft = { json: string; saving?: { json: string; result: Promise<string> } };
+// Keep drafts and in-flight writes across editor and page unmounts so quit can retry a failed save.
+const notesDrafts = new Map<string, NotesDraft>();
 
-export function setNotesFlush(f: (() => Promise<void>) | null) {
-  notesFlush = f;
+export function getNotesDraft(id: string) {
+  return notesDrafts.get(id)?.json;
 }
 
-/** Write any pending My notes edit, waiting at most `maxMs` (quit must not hang on a failing save). */
-export async function flushPendingNotes(maxMs = 2_000): Promise<void> {
-  const f = notesFlush;
-  if (!f) return;
-  await Promise.race([f().catch(() => {}), new Promise<void>((r) => setTimeout(r, maxMs))]);
+export function setNotesDraft(id: string, json: string) {
+  const draft = notesDrafts.get(id);
+  if (draft) draft.json = json;
+  else notesDrafts.set(id, { json });
+}
+
+export async function saveNotesDraft(id: string): Promise<string | undefined> {
+  const draft = notesDrafts.get(id);
+  if (!draft) return;
+  if (draft.saving) {
+    if (draft.saving.json === draft.json) return draft.saving.result;
+    // Finish the previous write before sending the newer edit, even if that write failed.
+    await draft.saving.result.catch(() => {});
+    return saveNotesDraft(id);
+  }
+  const json = draft.json;
+  const result = meetingUpdate(id, { myNotes: json }).then(() => {
+    if (notesDrafts.get(id) === draft && draft.json === json) notesDrafts.delete(id);
+    return json;
+  }).finally(() => {
+    draft.saving = undefined;
+  });
+  draft.saving = { json, result };
+  return result;
+}
+
+let notesFlush: { id: string; flush: () => Promise<void> } | null = null;
+
+/** The open meeting can also cancel the editor's debounce and update its save indicator. */
+export function setNotesFlush(current: typeof notesFlush) {
+  notesFlush = current;
+}
+
+/** Save pending drafts and report failure or timeout so quit can ask before proceeding. */
+export async function flushPendingNotes(maxMs = 2_000): Promise<boolean> {
+  if (!notesDrafts.size) return true;
+  const current = notesFlush;
+  const pending = [...notesDrafts.keys()].map((id) => current?.id === id ? current.flush() : saveNotesDraft(id));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.all(pending).then(() => true, () => false),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), maxMs); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

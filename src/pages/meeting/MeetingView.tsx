@@ -10,8 +10,8 @@ import {
   meetingEnhance,
   meetingGenerating,
   meetingGet,
-  meetingUpdate,
   onMeetingEvent,
+  saveNotesDraft,
   setNotesFlush,
   onNoteEvent,
   type ActiveMeeting,
@@ -43,9 +43,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
   const [errors, setErrors] = useState<Partial<Record<Length, NoteError>>>({});
   const wasLive = useRef(false);
   /** Set by My notes while it is open: pushes any pending edit into the save queue. */
-  const flushNotes = useRef<(() => void) | null>(null);
-  /** One ordered save queue for the whole meeting (survives the tab closing and reopening). */
-  const notesChain = useRef<Promise<void>>(Promise.resolve());
+  const flushNotes = useRef<(() => Promise<void>) | null>(null);
   /** Lengths whose run already finished or failed: a late "still generating" answer can't revive them. */
   const settled = useRef(new Set<Length>());
 
@@ -58,25 +56,17 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
         : d,
     );
   }, []);
-  const saveNotes = useCallback(
-    (json: string): Promise<void> => {
-      onNotesSaved(json);
-      const p = notesChain.current.then(() => meetingUpdate(id, { myNotes: json }));
-      notesChain.current = p.catch(() => {});
-      return p;
-    },
-    [id, onNotesSaved],
-  );
+  const saveNotes = useCallback(async () => {
+    const json = await saveNotesDraft(id);
+    if (json !== undefined) onNotesSaved(json);
+  }, [id, onNotesSaved]);
 
-  const beforeStop = useCallback(() => {
-    flushNotes.current?.();
-    return notesChain.current;
-  }, []);
+  const beforeStop = useCallback(() => flushNotes.current?.() ?? saveNotes(), [saveNotes]);
   // Quit (the "Stop and quit" dialog) saves a pending edit first, like Stop does.
   useEffect(() => {
-    setNotesFlush(beforeStop);
+    setNotesFlush({ id, flush: beforeStop });
     return () => setNotesFlush(null);
-  }, [beforeStop]);
+  }, [id, beforeStop]);
 
   const reload = useCallback(async () => {
     const d = await meetingGet(id).catch(() => null);
@@ -93,7 +83,15 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
           case "segment":
             if (e.segment.meetingId !== id) return;
             setDetail((d) => {
-              if (!d || d.segments.some((s) => s.id === e.segment.id)) return d;
+              if (!d) return d;
+              const existing = d.segments.find((s) => s.id === e.segment.id);
+              if (existing) {
+                return {
+                  ...d,
+                  segments: d.segments.map((s) => s.id === e.segment.id ? e.segment : s),
+                  notes: existing.muted === e.segment.muted ? d.notes : d.notes.map((n) => ({ ...n, stale: true })),
+                };
+              }
               const segments = [...d.segments, e.segment].sort((a, b) => a.startMs - b.startMs || a.id - b.id);
               return { ...d, segments };
             });
@@ -112,7 +110,8 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
                   : d,
               );
             } else if (wasLive.current) {
-              // Just stopped: reload (status, duration) and show the notes being written.
+              // Tray Stop can arrive while the webview's editor timer is throttled.
+              void beforeStop().catch(() => {});
               setSpeaking({ me: false, them: false });
               void reload();
               setTab("enhanced");
@@ -179,7 +178,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       alive = false;
       off();
     };
-  }, [id, reload]);
+  }, [id, reload, beforeStop]);
 
   const generate = useCallback(
     async (len: Length, regenerate: boolean) => {
@@ -239,7 +238,7 @@ export default function MeetingView({ id, onBack, onOpenSettings }: { id: string
       </div>
       <div className="meeting-panel" role="tabpanel" id={`meeting-panel-${tab}`} aria-labelledby={`meeting-tab-${tab}`}>
         {tab === "notes" && (
-          <NotesTab initial={detail.meeting.myNotes} save={saveNotes} flushRef={flushNotes} />
+          <NotesTab meetingId={id} initial={detail.meeting.myNotes} save={saveNotes} flushRef={flushNotes} />
         )}
         {tab === "transcript" && (
           <TranscriptTab
