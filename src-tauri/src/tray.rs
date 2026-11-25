@@ -9,6 +9,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
+use crate::meetings::MeetingStatus;
 use crate::updater::{EVENT_OPEN_UPDATES, UpdateStatus};
 
 pub const MAIN_LABEL: &str = "main";
@@ -17,6 +18,10 @@ pub const EVENT_PAUSE_TOGGLED: &str = "tray://pause-toggled";
 pub const EVENT_REINSTALL_HOOK: &str = "tray://reinstall-hook";
 
 static UPDATE_MENU_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
+/// The meeting items (pause/resume, stop), enabled only while a meeting records.
+static MEETING_ITEMS: Mutex<Option<(MenuItem<Wry>, MenuItem<Wry>)>> = Mutex::new(None);
+/// Last meeting state shown, so repeated status events don't redraw the icon.
+static MEETING_SHOWN: Mutex<Option<Option<MeetingStatus>>> = Mutex::new(None);
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Wren", true, None::<&str>)?;
@@ -24,9 +29,16 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let reinstall = MenuItem::with_id(app, "reinstall_hook", "Reinstall hotkey", true, None::<&str>)?;
     let update = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
+    let meeting_pause = MenuItem::with_id(app, "meeting_pause", "Pause meeting notes", false, None::<&str>)?;
+    let meeting_stop = MenuItem::with_id(app, "meeting_stop", "Stop meeting notes", false, None::<&str>)?;
+    let separator2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Wren", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &pause, &reinstall, &update, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&open, &meeting_pause, &meeting_stop, &separator2, &pause, &reinstall, &update, &separator, &quit],
+    )?;
     *UPDATE_MENU_ITEM.lock() = Some(update);
+    *MEETING_ITEMS.lock() = Some((meeting_pause, meeting_stop));
 
     let pause_item = pause.clone();
     let mut builder = TrayIconBuilder::with_id("wren")
@@ -47,7 +59,19 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 show_main(app);
                 let _ = app.emit(EVENT_OPEN_UPDATES, ());
             }
-            "quit" => app.exit(0),
+            "meeting_pause" | "meeting_stop" => crate::meetings::commands::tray_action(app, event.id().as_ref()),
+            "quit" => {
+                // A meeting is recording: ask in the main window first (spec §5.5).
+                let recording = app
+                    .try_state::<crate::meetings::commands::Meetings>()
+                    .is_some_and(|m| m.0.active().is_some());
+                if recording {
+                    show_main(app);
+                    let _ = app.emit(crate::meetings::commands::EVENT_CONFIRM_QUIT, ());
+                } else {
+                    app.exit(0);
+                }
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -128,4 +152,38 @@ pub fn set_update_status(status: &UpdateStatus) {
         _ => "Check for updates".to_string(),
     };
     let _ = item.set_text(label);
+}
+
+/// Show the meeting state in the tray: a red dot on the icon, a tooltip, and the pause/stop items.
+pub fn set_meeting_state(app: &AppHandle, status: Option<MeetingStatus>) {
+    {
+        let mut shown = MEETING_SHOWN.lock();
+        if *shown == Some(status) {
+            return;
+        }
+        *shown = Some(status);
+    }
+    if let Some((pause, stop)) = MEETING_ITEMS.lock().as_ref() {
+        let _ = pause.set_enabled(status.is_some());
+        let _ = stop.set_enabled(status.is_some());
+        let _ = pause.set_text(if status == Some(MeetingStatus::Paused) { "Resume meeting notes" } else { "Pause meeting notes" });
+    }
+    let Some(tray) = app.tray_by_id("wren") else { return };
+    let tooltip = match status {
+        Some(MeetingStatus::Paused) => "Wren — meeting notes paused",
+        Some(_) => "Wren — recording meeting notes",
+        None => "Wren",
+    };
+    let _ = tray.set_tooltip(Some(tooltip));
+    if let Some(icon) = app.default_window_icon() {
+        let img = if status == Some(MeetingStatus::Recording) {
+            let (w, h) = (icon.width(), icon.height());
+            let mut rgba = icon.rgba().to_vec();
+            crate::meetings::commands::recording_dot(&mut rgba, w, h);
+            tauri::image::Image::new_owned(rgba, w, h)
+        } else {
+            icon.clone().to_owned()
+        };
+        let _ = tray.set_icon(Some(img));
+    }
 }

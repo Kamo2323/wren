@@ -63,6 +63,10 @@ export interface Settings {
   willowSeedImported: boolean;
   /** Colour theme preference: `null` / omitted follows Windows, or `"dark"` / `"light"`. */
   theme?: "dark" | "light" | null;
+  /** Name on the user's own meeting lines. */
+  meetingName: string;
+  /** "claude-opus-5-5" | "claude-sonnet-5-5" */
+  claudeModel: string;
 }
 
 /** Task 4 `Mode`. Serialised in camelCase; "handsfree" is accepted too (it is how the DB stores it). */

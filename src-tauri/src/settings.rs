@@ -77,6 +77,10 @@ pub struct Settings {
     pub willow_seed_imported: bool,
     /// Colour theme preference: `None` follows Windows, or `Some("dark")` / `Some("light")`.
     pub theme: Option<String>,
+    /// Name on the user's own meeting lines ("Me"), meetings spec §5.3.
+    pub meeting_name: String,
+    /// Claude model for enhanced meeting notes (meetings spec §5.4).
+    pub claude_model: String,
 }
 
 impl Default for Settings {
@@ -93,6 +97,8 @@ impl Default for Settings {
             watcher_enabled: None,
             willow_seed_imported: false,
             theme: None,
+            meeting_name: "Maximilian".into(),
+            claude_model: "claude-opus-5-5".into(),
         }
     }
 }

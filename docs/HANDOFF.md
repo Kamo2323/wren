@@ -1,6 +1,59 @@
 # Wren — handoff and decision log
 
-## Status (2026-11-24) — Meetings feature: spec APPROVED, writing plan
+## Status (2026-11-24, building) — Meetings feature on branch `feat/meetings`
+
+- Plan: `docs/superpowers/plans/2026-11-24-meetings.md` (native execution). Ledger with every ruling:
+  `.superpowers/sdd/2026-11-24-meetings/progress.md` (git-ignored) — read it first when resuming.
+- Done: Tasks 1–5, 7, 8 (storage/retention, segmenter, speaker attribution, Teams UIA reader + probe,
+  Windows Teams process-loopback capture via the `wasapi` crate, recorder service, commands/tray/quit guard).
+- Task 6 (macOS tap + AX reader) is delegated to a T3 thread on the MacBook; on macOS the Teams source is a
+  `Silence` placeholder until that work is merged into `meetings/commands.rs::make_sources`.
+- Done since: Tasks 9 (Claude client), 10 (enhanced notes), 11 (UI + Settings), 13 (Windows live).
+- Windows live (`WREN_LIVE=1 cargo test --test meeting_live -- --ignored --nocapture`): 3/3 clips via system audio,
+  dictation p50 219 → 224 ms with a meeting running, WAVs aligned, Medium note via Opus 5.5 in 8.3 s (~$0.02).
+- Installed on this PC: local build `rel-20261124-210444-b3c728e4` (v0.1.0 + Meetings). Don't click the sidebar
+  Update pill until the Meetings release ships (it would install CI v0.1.3, which has no Meetings).
+- Claude API key is saved in Windows Credential Manager (service "Wren", account "anthropic-api-key").
+- Task 12 (macOS build + live) is running in a T3 thread on the MacBook.
+- Waiting on Maximilian: Task 14 — a real Teams call with ≥ 1 other person on each machine, while
+  `scripts/teams-call-probe.ps1` captures accessibility dumps (Windows; the Mac thread does the same there).
+- Task 14 (Windows): one-person Teams call — 75 dumps; parser now reads the real self tile, mute button, title.
+  Remote "speaking" label still unconfirmed (no second person).
+- Task 15 council round 1: GPT Sol 4/10, Claude Opus 6/10, Gemini 4 Neon 6/10. All shared/Windows/UI fixes done
+  (commits 5065cc7 … 14fb0d2); macOS-only fixes + a Mac Teams call running in a T3 thread on the MacBook.
+  Maximilian's request: richer note formatting — done (headline box, action table, bold facts).
+- Maximilian: the Mac app matters most (most meetings there); both apps must be bug-free.
+- Council round 2 (on 627dc87): Opus 7/10, Sol 5/10, Gemini 7/10. Shared/Windows/UI fixes done (4d1434b, 9a0a848);
+  macOS round-2 fixes running in a T3 thread on the MacBook.
+- Council round 3 (on 0ec68be): Opus 8/10, Sol 5/10, Gemini 8/10. Shared/Windows/UI fixes done in d7751ea
+  (mute fails closed before the first Teams read, the dictation record is kept for the whole meeting, quit waits
+  for a starting meeting and cuts a long Stop short, the watcher is joined on stop, Windows reads every queued
+  packet, notes flush on quit, auto notes wait 1.5 s). Verified: lib 396 passed, 0 warnings, 106 page checks,
+  live Windows 3/3, p50 229→227 ms. macOS round-3 fixes running in a T3 thread on the MacBook (2026-11-25).
+- Page check "day groups" was time-of-day flaky after midnight: it now accepts Today or Yesterday.
+- Mac round-3 fixes merged (8af40b6), Windows re-verified. Council round 4 (at 8af40b6): Opus 8/10, Sol 5/10,
+  Gemini 8/10. All three flag one shared privacy hole: a Me clip can be saved unmuted when the first Teams reads
+  can't see the mute state. See the local ledger for the complete findings and rulings.
+- **R4 shared, Windows and UI fixes complete (fb3e868, af85ec5, cc80e1f).** Me clips wait for a known mute read,
+  saved Me rows in the 30 s before the first known read are reconciled and re-emitted, and unknown reads carry the
+  last known mute state for 60 s. Stop drains the current Teams read before generating notes, and manual generation
+  waits until the meeting ends. Confirmed quit stays latched through exit so an overdue start finishes as Ended
+  without publishing live events. Terminal note events clear the generation snapshot first. Failed My notes drafts
+  survive navigation and quit retries, tray Stop flushes immediately, and WASAPI drops its clients before leaving COM.
+- **Windows verification:** Rust lib 402 passed, 15 ignored, 0 build warnings. npm build, JS unit and 114 page checks
+  passed. Live 3/3 clips heard, dictation p50 220 ms idle → 228 ms recording. The live run used AllSound playback.
+  The mute regressions used a fake Teams reader with SQLite, and the tray test simulated a throttled debounce.
+  A real two-participant Teams call and native hidden-webview timing still need live confirmation.
+- **R4 Mac fixes done by Sol (1dc8a7d, 248786c):** Mac lib 457 passed, 0 warnings, mac_tap live 8/8, live meeting
+  3/3 with p50 1078→1085 ms (the Claude step was not run on the Mac: blocked by the approval check).
+- **FINAL council round 5 (at 248786c): Opus 8/10, Sol 5/10, Gemini 8/10.** Still open: the 60 s mute carry-over
+  only covers time inside a Teams reading (each ≤ 1 s), so a reading gap of over ~1 s while muted can save a line as
+  unmuted (Sol critical, Gemini important; verified in `speakers.rs::muted_during`). Other open items are in the
+  ledger ("Council R5 …"): ordinary Quit dropping a failed notes draft, Mac held-audio flush at a guessed rate,
+  unbounded WASAPI activation wait, a 3 s wait for every Me line after a call ends, a double 15 s wait on quit.
+- **STOPPED (2026-11-25):** waiting for Maximilian's decision. Nothing merged to main.
+
+## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
 ### Completed
 - Reverse-engineered Granola (static only; couldn't log in) and Notion AI Meeting Notes (static, no recording started):

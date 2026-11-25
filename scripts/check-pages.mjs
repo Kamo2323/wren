@@ -307,6 +307,223 @@ check("Windows popup hands-free hint preserves Ctrl + Win", await page.evaluate(
   return t.includes("Ctrl") && t.includes("Win");
 }));
 
+// ---------------- Meetings (plan Task 11) ----------------
+const selectedTab = () => page.locator('[role="tab"][aria-selected="true"]').first().textContent().then((t) => t?.trim());
+await page.goto(`${base}/index.html#meetings`);
+await page.waitForSelector(".meeting-card");
+check("Meetings list shows day groups of cards", (await page.locator(".meeting-card").count()) === 3 &&
+  (await page.locator(".day__label").allTextContents()).some((t) => /Today|Yesterday/.test(t)));
+check("Start button when nothing records", (await page.locator(".meetings-start").textContent())?.includes("Start meeting notes"));
+check("Sidebar has Meetings below Home", await page.evaluate(() => {
+  const ids = [...document.querySelectorAll(".nav-item")].map((b) => b.getAttribute("data-page"));
+  return ids.indexOf("meetings") === ids.indexOf("home") + 1;
+}));
+
+// Ended meeting opens on Enhanced, with the footer.
+await page.locator(".meeting-card", { hasText: "Weekly sync with Sarah" }).click();
+await page.waitForSelector(".meeting-view");
+check("ended meeting opens on the Enhanced tab", (await selectedTab())?.startsWith("Enhanced"));
+await page.waitForSelector(".md h2");
+check("enhanced notes render markdown headings", (await page.locator(".md h2").first().textContent()) === "Summary");
+check("notes open with an 'In short' headline box", (await page.locator(".md > blockquote:first-child").textContent())?.includes("In short"));
+check("raw HTML in notes is never rendered (no remote loads)", (await page.locator(".md img, .md video, .md [src]").count()) === 0);
+check("action items render as a table", (await page.locator(".md table th").allTextContents()).join("|").includes("Owner"));
+const urlBefore = page.url();
+await page.locator(".md a").first().click();
+await wait(200);
+check("links in notes don't navigate Wren's window", page.url() === urlBefore);
+check("…and go to the browser instead", (await page.evaluate(() => window.__wrenOpenedLink)) === "https://example.com/pricing");
+check("enhanced footer shows model, tokens and cost", /Claude Opus 5\.5 · [\d.]+k tokens · ~\$\d+\.\d\d/.test((await page.locator(".enh-footer").textContent()) ?? ""));
+await page.getByRole("button", { name: "Short", exact: true }).click();
+await page.waitForSelector(".enh-writing", { timeout: 2000 }).catch(() => {});
+await page.waitForFunction(() => !document.querySelector(".enh-writing") && document.querySelector(".enh-footer"), null, { timeout: 5000 });
+check("Short streams in and gets its footer", (await page.locator(".md h2").first().textContent()) === "Summary");
+
+// Transcript: muted tag, rename all.
+await page.getByRole("tab", { name: "Transcript" }).click();
+await page.waitForSelector(".tline");
+check("muted lines are tagged", (await page.locator(".tline.is-muted .tline__tag").first().textContent())?.trim() === "muted");
+const sarahBefore = await page.locator(".trun__name", { hasText: "Sarah Jones" }).count();
+await page.locator(".trun__name", { hasText: "Sarah Jones" }).first().click();
+await page.getByRole("button", { name: /Rename all/ }).click();
+await page.locator(".rename__input").fill("Sarah J.");
+await page.keyboard.press("Enter");
+await wait(250);
+check("Rename all updates every Sarah Jones run", sarahBefore > 1 &&
+  (await page.locator(".trun__name", { hasText: "Sarah J." }).count()) === sarahBefore &&
+  (await page.locator(".trun__name", { hasText: "Sarah Jones" }).count()) === 0);
+check("an unnamed line shows as Speaker", (await page.locator(".trun__name", { hasText: "Speaker" }).count()) >= 1);
+
+// My notes survive switching tabs (they used to reload the old text and overwrite it).
+await page.getByRole("tab", { name: "My notes" }).click();
+await page.locator(".notes-editor").click();
+await page.keyboard.type("Keep this line");
+await wait(900);
+await page.getByRole("tab", { name: "Transcript" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+await wait(150);
+check("My notes keep what was typed after switching tabs", (await page.locator(".notes-editor").textContent())?.includes("Keep this line"));
+await page.locator(".notes-editor").click();
+await page.keyboard.press("End");
+await page.keyboard.type(" and more");
+await wait(900);
+await page.getByRole("tab", { name: "Transcript" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+check("…and further edits add to them", (await page.locator(".notes-editor").textContent())?.includes("Keep this line and more"));
+
+// No key: the Enhanced tab sends you to Settings.
+await page.goto(`${base}/index.html?claude=nokey#meetings`);
+await page.locator(".meeting-card", { hasText: "Supplier call" }).click();
+await page.getByRole("tab", { name: "Enhanced" }).click();
+await page.waitForSelector(".enh-empty");
+check("no key: Enhanced shows an Open Settings action", (await page.locator(".enh-empty").textContent())?.includes("Add your Claude API key") &&
+  (await page.getByRole("button", { name: "Open Settings" }).count()) === 1);
+
+// Network error mid-stream: error with Retry, no partial note kept.
+await page.goto(`${base}/index.html?claude=error#meetings`);
+await page.locator(".meeting-card", { hasText: "Supplier call" }).click();
+await page.getByRole("tab", { name: "Enhanced" }).click();
+await page.getByRole("button", { name: /Write notes/ }).click();
+await page.waitForSelector(".enh-error", { timeout: 3000 });
+check("stream error shows Retry and keeps no partial text", (await page.getByRole("button", { name: "Retry" }).count()) === 1 &&
+  (await page.locator(".md").count()) === 0);
+
+// Live meeting.
+await page.goto(`${base}/index.html?meeting=recording#meetings`);
+await page.waitForSelector(".meetings-start");
+check("Start becomes Open current meeting while one records", (await page.locator(".meetings-start").textContent())?.includes("Open current meeting"));
+await page.waitForSelector('.nav-item[data-page="meetings"] .nav-item__live', { timeout: 2000 }).catch(() => {});
+check("sidebar shows the recording dot", (await page.locator('.nav-item[data-page="meetings"] .nav-item__live').count()) === 1);
+await page.locator(".meetings-start").click();
+await page.waitForSelector(".meeting-view");
+check("recording meeting opens on Transcript", (await selectedTab())?.startsWith("Transcript"));
+check("pending row shows while someone talks", (await page.locator(".tline--pending").count()) >= 1);
+const t1 = await page.locator(".mh-timer").textContent();
+await wait(1300);
+check("the recording timer ticks", (await page.locator(".mh-timer").textContent()) !== t1);
+await page.getByRole("button", { name: "Pause" }).click();
+await wait(200);
+check("Pause shows Paused and Resume", (await page.locator(".mh-status").textContent())?.includes("Paused") && (await page.getByRole("button", { name: "Resume" }).count()) === 1);
+await page.getByRole("button", { name: "Resume" }).click();
+await page.getByRole("button", { name: "Stop" }).click();
+await page.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Enhanced"), null, { timeout: 3000 });
+check("Stop switches to Enhanced", true);
+check("'Writing…' shows straight after Stop (no Write notes button meanwhile)",
+  (await page.locator(".enh-writing").count()) === 1 && (await page.getByRole("button", { name: /Write notes/ }).count()) === 0);
+
+// Big transcript: jump to live and smooth scrolling.
+await page.goto(`${base}/index.html?meeting=recording&big=1#meetings`);
+await page.locator(".meetings-start").click();
+await page.waitForSelector(".tline");
+await page.evaluate(() => { const el = document.querySelector(".transcript"); if (el) el.scrollTop = 0; });
+await wait(250);
+check("Jump to live appears when scrolled up", await page.locator(".jump-live").isVisible());
+const worst = await page.evaluate(async () => {
+  const el = document.querySelector(".transcript");
+  let last = performance.now(), worst = 0;
+  for (let i = 0; i < 40; i++) {
+    el.scrollTop += 600;
+    await new Promise((r) => requestAnimationFrame(r));
+    const now = performance.now();
+    worst = Math.max(worst, now - last);
+    last = now;
+  }
+  return worst;
+});
+check("2,500-line transcript scrolls without long frames", worst < 60, `${worst.toFixed(1)} ms worst frame`);
+
+// Settings: Meeting notes section; the key is never shown.
+await page.goto(`${base}/index.html?claude=nokey#settings`);
+await page.waitForSelector("#set-meetings");
+check("Settings has a Meeting notes section", (await page.locator("#set-meetings").textContent())?.includes("Meeting notes"));
+const keyInput = page.locator("#claude-key");
+check("API key field is a password field", (await keyInput.getAttribute("type")) === "password");
+await keyInput.fill("sk-ant-api03-" + "x".repeat(40));
+await page.getByRole("button", { name: "Save key" }).click();
+await page.waitForSelector(".key-saved", { timeout: 3000 });
+check("saved key: status shown, key not rendered anywhere", !(await page.content()).includes("x".repeat(40)) &&
+  (await page.locator(".key-saved").textContent())?.includes("Key saved"));
+check("model picker offers Opus 5.5 and Sonnet 5.5", (await page.locator("#claude-model option").allTextContents()).join("|").includes("Opus 5.5") &&
+  (await page.locator("#claude-model option").allTextContents()).join("|").includes("Sonnet 5.5"));
+check("this month's spend is shown", /~\$\d+\.\d\d across \d+ notes/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+
+// Quit while recording asks first.
+await page.goto(`${base}/index.html?meeting=recording#meetings`);
+await page.waitForSelector(".meetings-start");
+await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-confirm-quit")));
+await page.waitForSelector(".quit-confirm", { timeout: 2000 }).catch(() => {});
+check("quit while recording asks to stop first", (await page.locator(".quit-confirm").textContent())?.includes("Stop meeting notes and quit?"));
+
+for (const [failure, action] of [["fail-once", "Try again"], ["fail", "Quit anyway"]]) {
+  await page.goto(`${base}/index.html?meeting=recording&notesSave=${failure}#meetings`);
+  await page.locator(".meetings-start").click();
+  await page.getByRole("tab", { name: "My notes" }).click();
+  await page.locator(".notes-editor").fill("Keep this last edit");
+  if (failure === "fail") {
+    await page.getByText("Couldn't save", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: /Transcript/ }).click();
+    await page.getByRole("tab", { name: "My notes" }).click();
+    check("a failed draft survives switching tabs", (await page.locator(".notes-editor").textContent())?.includes("Keep this last edit"));
+  }
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-confirm-quit")));
+  await page.getByRole("button", { name: "Stop and quit" }).click();
+  const next = page.getByRole("button", { name: action, exact: true });
+  await next.waitFor({ timeout: 1500 }).catch(() => {});
+  check(`failed final save offers ${action} and keeps the meeting recording`,
+    await next.isVisible() && (await page.locator(".quit-confirm").textContent())?.includes("couldn't be saved") &&
+    (await page.locator(".mh-status").textContent())?.includes("Recording"));
+  if (await next.isVisible()) {
+    await next.click();
+    await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "hidden", timeout: 2000 });
+    check(`${action} stops the meeting`, !(await page.getByRole("button", { name: "Stop", exact: true }).isVisible()));
+    if (action === "Try again") {
+      await page.locator(".back-link").click();
+      await page.locator(".meeting-card", { hasText: "Design review" }).click();
+      await page.getByRole("tab", { name: "My notes" }).click();
+      check("Try again saves the same draft",
+        (await page.locator(".notes-editor").textContent())?.includes("Keep this last edit"));
+    }
+  }
+}
+
+await page.goto(`${base}/index.html?meeting=recording#meetings`);
+await page.locator(".meetings-start").click();
+await page.getByRole("tab", { name: "My notes" }).click();
+await page.evaluate(() => {
+  const set = window.setTimeout.bind(window);
+  window.setTimeout = (callback, delay, ...args) => set(callback, delay === 800 ? 60_000 : delay, ...args);
+  window.addEventListener("wren-mock-notes-saving", () => {
+    document.body.dataset.notesSavedFrom = document.querySelector('[role="tab"][aria-selected="true"]')?.textContent;
+  }, { once: true });
+});
+await page.locator(".notes-editor").fill("Saved even with the timer throttled");
+await page.evaluate(() => window.dispatchEvent(new CustomEvent("wren-mock-stop-meeting")));
+await page.getByRole("tab", { name: /Enhanced/, selected: true }).waitFor();
+check("tray stop starts the save before switching tabs",
+  (await page.locator("body").getAttribute("data-notes-saved-from"))?.startsWith("My notes"));
+await page.locator(".back-link").click();
+await page.locator(".meeting-card", { hasText: "Design review" }).click();
+await page.getByRole("tab", { name: "My notes" }).click();
+check("tray stop flushes My notes with the debounce timer throttled",
+  (await page.locator(".notes-editor").textContent())?.includes("Saved even with the timer throttled"));
+
+// No horizontal overflow on the new screens, both themes, both sizes.
+for (const theme of ["light", "dark"]) {
+  for (const [w, h] of [[1200, 800], [960, 640]]) {
+    await page.setViewportSize({ width: w, height: h });
+    for (const url of [`?theme=${theme}#meetings`, `?theme=${theme}&meeting=recording#meetings`]) {
+      await page.goto(`${base}/index.html${url}`);
+      await page.waitForSelector(".meetings-start");
+      if (url.includes("recording")) { await page.locator(".meetings-start").click(); await page.waitForSelector(".meeting-view"); }
+      else { await page.locator(".meeting-card").first().click(); await page.waitForSelector(".meeting-view"); }
+      await wait(200);
+      const over = await page.evaluate(() => { const p = document.querySelector(".panel"); return p ? p.scrollWidth - p.clientWidth : 0; });
+      check(`no horizontal overflow ${theme} ${w}x${h} ${url.includes("recording") ? "live" : "ended"}`, over <= 0, `${over}px`);
+    }
+  }
+}
+await page.setViewportSize({ width: 1200, height: 800 });
+
 await browser.close();
 server.close();
 console.log(failed ? `${failed} check(s) failed` : "all checks passed");

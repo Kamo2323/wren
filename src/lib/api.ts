@@ -67,6 +67,8 @@ const mock = {
       const t = mockParams.get("theme");
       return t === "dark" || t === "light" ? t : null;
     })(),
+    meetingName: "Maximilian",
+    claudeModel: "claude-opus-5-5",
   } as Settings,
 };
 

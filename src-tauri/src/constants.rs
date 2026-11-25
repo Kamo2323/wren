@@ -53,6 +53,8 @@ pub const SWEEP_INTERVAL_MS: u64 = 3_600_000;
 /// A WAV in the audio folder with no History row is deleted only once it is at least this old,
 /// so a recording that is still being saved is never swept away.
 pub const ORPHAN_AUDIO_MIN_AGE_MS: u64 = 3_600_000;
+/// Meeting audio (me.wav / them.wav) is deleted this many hours after the meeting ends (meetings spec §5.5).
+pub const MEETING_AUDIO_RETENTION_HOURS: i64 = 24;
 /// How long a database call waits for a lock held by another connection before failing.
 pub const DB_BUSY_TIMEOUT_MS: u64 = 5_000;
 /// Stats window for the daily chart and the busiest hour (spec §9).

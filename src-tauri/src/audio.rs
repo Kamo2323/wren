@@ -320,6 +320,17 @@ fn warm_up_input(name: Option<&str>) {
 }
 
 fn open_stream(name: Option<&str>, tx: Sender<Chunk>) -> Result<(u32, cpal::Stream)> {
+    open_mono_input(name, Arc::new(move |mono| {
+        let _ = tx.send(Chunk::Samples(mono));
+    }))
+}
+
+/// Mono blocks at the device rate, from the chosen microphone (or the default). Shared by dictation
+/// and meetings; returns the device rate and the running stream (drop it to stop).
+pub(crate) fn open_mono_input(
+    name: Option<&str>,
+    on_mono: Arc<dyn Fn(Vec<f32>) + Send + Sync>,
+) -> Result<(u32, cpal::Stream)> {
     let host = cpal::default_host();
     let device = match name {
         Some(n) => match find_input_device(n) {
@@ -340,10 +351,10 @@ fn open_stream(name: Option<&str>, tx: Sender<Chunk>) -> Result<(u32, cpal::Stre
 
     macro_rules! build {
         ($t:ty) => {{
-            let tx = tx.clone();
+            let on_mono = on_mono.clone();
             device.build_input_stream::<$t, _, _>(
                 config.clone(),
-                move |data: &[$t], _: &cpal::InputCallbackInfo| send_mono(data, channels, &tx),
+                move |data: &[$t], _: &cpal::InputCallbackInfo| on_mono(to_mono(data, channels)),
                 on_error,
                 None,
             )
@@ -365,16 +376,14 @@ fn open_stream(name: Option<&str>, tx: Sender<Chunk>) -> Result<(u32, cpal::Stre
     Ok((rate, stream))
 }
 
-fn send_mono<T>(data: &[T], channels: usize, tx: &Sender<Chunk>)
+fn to_mono<T>(data: &[T], channels: usize) -> Vec<f32>
 where
     T: cpal::Sample,
     f32: cpal::FromSample<T>,
 {
-    let mono: Vec<f32> = data
-        .chunks_exact(channels)
+    data.chunks_exact(channels)
         .map(|frame| frame.iter().map(|&s| <f32 as cpal::FromSample<T>>::from_sample_(s)).sum::<f32>() / channels as f32)
-        .collect();
-    let _ = tx.send(Chunk::Samples(mono));
+        .collect()
 }
 
 /// The seam: decode the whole file (they are short), then send it in `TEST_AUDIO_CHUNK_MS` blocks,
@@ -510,7 +519,7 @@ impl<'a> Sink<'a> {
 }
 
 /// Mono audio at the source rate in, 16 kHz out, one resampler step at a time.
-struct Resampler16k {
+pub(crate) struct Resampler16k {
     input_len: usize,
     /// `None` when the source is already 16 kHz.
     stage: Option<Stage>,
@@ -528,7 +537,7 @@ struct Stage {
 }
 
 impl Resampler16k {
-    fn new(rate: u32) -> Result<Self> {
+    pub(crate) fn new(rate: u32) -> Result<Self> {
         let target = ENGINE_SAMPLE_RATE as usize;
         let stage = if rate as usize == target {
             None
@@ -546,7 +555,7 @@ impl Resampler16k {
         Ok(Self { input_len: 0, stage })
     }
 
-    fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<()> {
         self.input_len += samples.len();
         let Some(stage) = self.stage.as_mut() else {
             out.extend_from_slice(samples);
@@ -562,7 +571,7 @@ impl Resampler16k {
     }
 
     /// Flush the tail so the output is exactly as long as the input (at 16 kHz).
-    fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
+    pub(crate) fn finish(&mut self, out: &mut Vec<f32>) -> Result<()> {
         let Some(stage) = self.stage.as_mut() else {
             return Ok(());
         };

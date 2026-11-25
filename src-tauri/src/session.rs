@@ -726,8 +726,10 @@ impl SessionLoop {
         // The chord keys are down from now, not from when the mic opens (tens of ms; over a second
         // on a cold or Bluetooth mic): an earlier dictation must not paste meanwhile (I-1).
         self.shared.hold_recording.store(mode == Mode::Hold, Ordering::SeqCst);
+        crate::meetings::dictation_hook(true, started);
         // The microphone first: nothing else may delay the first word.
         if let Err(err) = rec.start(wav) {
+            crate::meetings::dictation_hook(false, Instant::now());
             self.shared.hold_recording.store(false, Ordering::SeqCst);
             tracing::error!(error = %err, "cannot start recording");
             self.popup.set(PopupState::Error { message: "Wren couldn't open your microphone.".into() }, false);
@@ -835,6 +837,7 @@ impl SessionLoop {
         if let Some(rec) = self.env.recorder() {
             rec.cancel();
         }
+        crate::meetings::dictation_hook(false, Instant::now());
         let stop_ms = ms(t.elapsed());
         self.shared.hold_recording.store(false, Ordering::SeqCst);
         self.popup.recording_ended();
@@ -845,12 +848,16 @@ impl SessionLoop {
     fn stop(&mut self, intent: Intent) {
         let Some(a) = self.active.take() else { return };
         let env = self.env.clone();
-        let Some(rec) = env.recorder() else { return };
+        let Some(rec) = env.recorder() else {
+            crate::meetings::dictation_hook(false, Instant::now());
+            return;
+        };
         // Spec §7: the target is the window in front when the dictation stops — read before stopping
         // (finishing the WAV takes a moment, and focus can move meanwhile).
         let target = env.foreground();
         let released = Instant::now();
         let stopped = rec.stop();
+        crate::meetings::dictation_hook(false, Instant::now());
         let stop_ms = ms(released.elapsed());
         self.shared.hold_recording.store(false, Ordering::SeqCst);
         if intent == Intent::Paste {

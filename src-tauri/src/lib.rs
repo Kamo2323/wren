@@ -9,6 +9,7 @@ pub mod dictionary;
 pub mod engine;
 pub mod hotkey;
 pub mod logging;
+pub mod meetings;
 pub mod paste;
 pub mod paths;
 pub mod pipeline;
@@ -22,6 +23,7 @@ pub mod updater;
 pub mod watcher;
 
 use parking_lot::RwLock;
+use std::sync::Arc;
 use paths::Paths;
 use session::app::Services;
 use settings::Settings;
@@ -40,7 +42,7 @@ pub struct AppState {
     pub settings: RwLock<Settings>,
     /// History, dictionary and stats. If the database could not be opened this is an
     /// unavailable store whose calls all return the reason; the app still runs.
-    pub store: Store,
+    pub store: Arc<Store>,
 }
 
 /// Open the database, or log why not and carry on with an unavailable store.
@@ -68,6 +70,10 @@ fn sweep_store(store: &Store, paths: &Paths) {
             "retention sweep"
         ),
         Err(err) => tracing::warn!(error = %err, "retention sweep failed"),
+    }
+    match store.meeting_sweep(chrono::Utc::now(), &paths.meetings_dir()) {
+        Ok(n) => tracing::info!(meetings_audio_deleted = n, "meeting retention sweep"),
+        Err(err) => tracing::warn!(error = %err, "meeting retention sweep failed"),
     }
 }
 
@@ -205,12 +211,25 @@ pub fn run() {
             // The database is opened here, after the plugins' setup, so a second launch (which
             // the single-instance plugin ends before this point) never opens, migrates or sweeps it.
             let store = open_store(&paths);
+            // A meeting still `recording`/`paused` in the database means Wren quit or crashed mid-meeting
+            // (meetings spec §5.5): it becomes `interrupted`, keeping everything transcribed so far.
+            if store.unavailable_reason().is_none() {
+                match store.mark_interrupted() {
+                    Ok(0) => {}
+                    Ok(n) => tracing::warn!(meetings = n, "meetings interrupted by the last shutdown"),
+                    Err(err) => tracing::warn!(error = %err, "could not mark interrupted meetings"),
+                }
+                // A crash leaves WAV headers up to 10 s behind the audio: fix them so ▶ plays everything.
+                for id in store.interrupted_with_audio().unwrap_or_default() {
+                    meetings::capture::wav::repair_meeting_audio(&paths.meeting_dir(&id));
+                }
+            }
             let updates_dir = paths.updates_dir();
             let logs_dir = paths.logs_dir();
             app.manage(AppState {
                 paths,
                 settings: RwLock::new(settings),
-                store,
+                store: Arc::new(store),
             });
             app.manage(updater::UpdaterService::new(
                 app.package_info().version.to_string(),
@@ -232,6 +251,8 @@ pub fn run() {
             // check only exercises the window: no sidecar, no hook.
             if !popup_check {
                 let services = session::app::start_services(app.handle())?;
+                let meetings = meetings::commands::build_service(app.handle(), services.env.clone());
+                app.manage(meetings::commands::Meetings(meetings));
                 app.manage(services);
                 updater::UpdaterService::start_background(app.handle().clone());
             }
@@ -323,6 +344,26 @@ pub fn run() {
             commands::popup_open_main,
             commands::popup_hit_rect,
             commands::main_ready,
+            meetings::commands::meeting_start,
+            meetings::commands::meeting_pause,
+            meetings::commands::meeting_resume,
+            meetings::commands::meeting_stop,
+            meetings::commands::meeting_stop_and_quit,
+            meetings::commands::meeting_active,
+            meetings::commands::meeting_list,
+            meetings::commands::meeting_get,
+            meetings::commands::meeting_update,
+            meetings::commands::meeting_rename_speaker,
+            meetings::commands::meeting_delete,
+            meetings::commands::meeting_audio_clip,
+            meetings::commands::system_audio_permission,
+            meetings::commands::open_system_audio_settings,
+            meetings::commands::meeting_enhance,
+            meetings::commands::meeting_generating,
+            meetings::commands::claude_key_status,
+            meetings::commands::claude_key_save,
+            meetings::commands::claude_key_remove,
+            meetings::commands::claude_spend_month,
             commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,
@@ -340,10 +381,11 @@ pub fn run() {
         .expect("error while building Wren")
         .run(move |app, event| {
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Ready = event
-                && (start_hidden || popup_check)
-            {
-                popup::prime_hidden_launch(app);
+            if let tauri::RunEvent::Ready = event {
+                meetings::quit_macos::install(app);
+                if start_hidden || popup_check {
+                    popup::prime_hidden_launch(app);
+                }
             }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
@@ -354,7 +396,22 @@ pub fn run() {
                     tray::show_main(app);
                 }
             }
+            // Cmd+Q, Dock → Quit, the app menu: with a meeting recording, ask first (spec §5.5).
+            // (macOS sends Cmd+Q / Dock → Quit through `applicationShouldTerminate:` instead, which never
+            // reaches here: see `meetings::quit_macos`.)
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event
+                && meetings::commands::recording(app)
+                && !meetings::commands::QUIT_CONFIRMED.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                api.prevent_exit();
+                meetings::commands::ask_before_quit(app);
+            }
             if let tauri::RunEvent::Exit = event {
+                // A meeting still recording ends properly (short drain, no paid notes request) rather
+                // than "interrupted".
+                if let Some(m) = app.try_state::<meetings::commands::Meetings>() {
+                    m.0.stop_for_quit(std::time::Duration::from_secs(3));
+                }
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {
                     services.shutdown();

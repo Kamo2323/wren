@@ -1,0 +1,1407 @@
+{
+  "title": "Meeting with Alex Example | Microsoft Teams",
+  "tree": {
+    "role": "Window",
+    "name": "Meeting with Alex Example | Microsoft Teams",
+    "help": "",
+    "value": "",
+    "automation_id": "",
+    "class": "TeamsWebView",
+    "states": [
+      "toggled_mixed"
+    ],
+    "children": [
+      {
+        "role": "Pane",
+        "name": "",
+        "help": "",
+        "value": "",
+        "automation_id": "",
+        "class": "TeamsOverlay",
+        "states": [
+          "toggled_mixed"
+        ],
+        "children": []
+      },
+      {
+        "role": "Pane",
+        "name": "",
+        "help": "",
+        "value": "",
+        "automation_id": "",
+        "class": "Chrome_WidgetWin_0",
+        "states": [
+          "toggled_mixed"
+        ],
+        "children": [
+          {
+            "role": "Pane",
+            "name": "",
+            "help": "",
+            "value": "",
+            "automation_id": "",
+            "class": "Chrome_WidgetWin_0",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Pane",
+            "name": "",
+            "help": "",
+            "value": "",
+            "automation_id": "",
+            "class": "Chrome_WidgetWin_0",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Pane",
+            "name": "",
+            "help": "",
+            "value": "",
+            "automation_id": "",
+            "class": "Chrome_WidgetWin_0",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Pane",
+            "name": "",
+            "help": "",
+            "value": "",
+            "automation_id": "",
+            "class": "Chrome_WidgetWin_0",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Pane",
+            "name": "Meeting with Alex Example | Microsoft Teams",
+            "help": "",
+            "value": "",
+            "automation_id": "",
+            "class": "Chrome_WidgetWin_1",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": [
+              {
+                "role": "Pane",
+                "name": "",
+                "help": "",
+                "value": "",
+                "automation_id": "",
+                "class": "Intermediate D3D Window",
+                "states": [
+                  "toggled_mixed"
+                ],
+                "children": []
+              },
+              {
+                "role": "Pane",
+                "name": "Meeting with Alex Example | Microsoft Teams - Web content",
+                "help": "",
+                "value": "",
+                "automation_id": "",
+                "class": "RootView",
+                "states": [
+                  "toggled_mixed"
+                ],
+                "children": [
+                  {
+                    "role": "Pane",
+                    "name": "",
+                    "help": "",
+                    "value": "",
+                    "automation_id": "",
+                    "class": "NonClientView",
+                    "states": [
+                      "toggled_mixed"
+                    ],
+                    "children": [
+                      {
+                        "role": "Pane",
+                        "name": "",
+                        "help": "",
+                        "value": "",
+                        "automation_id": "",
+                        "class": "EmbeddedBrowserTabRootView",
+                        "states": [
+                          "toggled_mixed"
+                        ],
+                        "children": []
+                      },
+                      {
+                        "role": "Pane",
+                        "name": "",
+                        "help": "",
+                        "value": "",
+                        "automation_id": "",
+                        "class": "NativeFrameView",
+                        "states": [
+                          "toggled_mixed"
+                        ],
+                        "children": [
+                          {
+                            "role": "Pane",
+                            "name": "",
+                            "help": "",
+                            "value": "",
+                            "automation_id": "",
+                            "class": "ClientView",
+                            "states": [
+                              "toggled_mixed"
+                            ],
+                            "children": [
+                              {
+                                "role": "Pane",
+                                "name": "Chrome Legacy Window",
+                                "help": "",
+                                "value": "",
+                                "automation_id": "43",
+                                "class": "Chrome_RenderWidgetHostHWND",
+                                "states": [
+                                  "toggled_mixed"
+                                ],
+                                "children": [
+                                  {
+                                    "role": "Document",
+                                    "name": "Meeting with Alex Example | Microsoft Teams",
+                                    "help": "",
+                                    "value": "",
+                                    "automation_id": "RootWebArea",
+                                    "class": "",
+                                    "states": [
+                                      "toggled_mixed"
+                                    ],
+                                    "children": [
+                                      {
+                                        "role": "Pane",
+                                        "name": "",
+                                        "help": "",
+                                        "value": "",
+                                        "automation_id": "",
+                                        "class": "",
+                                        "states": [
+                                          "toggled_mixed"
+                                        ],
+                                        "children": [
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "app",
+                                            "class": "",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": [
+                                              {
+                                                "role": "Group",
+                                                "name": "",
+                                                "help": "",
+                                                "value": "",
+                                                "automation_id": "",
+                                                "class": "___1bna0ji f10pi13n f22iagw f1vx9l62 f1l02sjl fly5x3f fprs0cq fy77jfu",
+                                                "states": [
+                                                  "toggled_mixed"
+                                                ],
+                                                "children": [
+                                                  {
+                                                    "role": "Group",
+                                                    "name": "",
+                                                    "help": "",
+                                                    "value": "",
+                                                    "automation_id": "",
+                                                    "class": "fui-AppLayout ___1qw8lf9 f1ewtqcl f13qh94s f1l02sjl f1immsc2 f6dzj5z f10pi13n fly5x3f f1eay3tv f1uxznzt fm9jat7 f138vucn",
+                                                    "states": [
+                                                      "toggled_mixed"
+                                                    ],
+                                                    "children": [
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___1w77opl f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 fibhlys fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1gh6hdm f6s8nf5 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": [
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "titlebar-end-slot-start",
+                                                                "class": "fui-Flex ___1gzszts f22iagw",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": []
+                                                              },
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "fui-Primitive",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": [
+                                                                  {
+                                                                    "role": "Button",
+                                                                    "name": "Settings and more, new activity",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "more-options-header",
+                                                                    "class": "fui-Button r1f29ykk ___qxlgbu0 fhovq9v f1p3nwhy f11589ue f1q5o8ev f1pdflbu f1s2aq7o f146ro5n f1s2uweq fr80ssc f1ukrpxl fecsdlb f139oj5f ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f17fgpbq fu97m5z ff3glw6 fy9rknc figsok6 fwrc4pm fazmxh f1jt17bm f10pi13n f1gl81tg fbmy5og fkam630 f12awlo f1tvt47b fq4mcun f1fig6q3",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": []
+                                                                  }
+                                                                ]
+                                                              },
+                                                              {
+                                                                "role": "Other",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "fui-Divider ___1ybvdys f122n59 f1ewtqcl f22iagw f1vx9l62 fepjonw f10pi13n fk6fouc fy9rknc figsok6 fwrc4pm f17mccla fyl8oag f16vkdww fhsnbul f1gw3sf2 f1ly5f7u f1s3tz6t f1wl9k8s f13zj6fq fkfq4zb f1vccso1 f1geml7w f1r7kh1m fjml6kk f16j7guv fx01ahm fl8d8yv fj1a37q f16gbxbe f1yq6w5o f9sc749 fhkwbjy flthirb f13hvwk3 f19onpk6 f1kyqvp9 fesgyo fzynn9s fekrn8e fjamq6b f1p2x7z2",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": []
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___cf0g930 f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 f1x1ewgs fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1gh6hdm fl4td7 f138vucn f1sil6mw f1p9o1ba f6s8nf5 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": []
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___6o1tt30 f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 f1x1ewgs fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1gh6hdm fl4td7 f138vucn f95hvjn faal97s f6s8nf5 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": [
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "fui-Flex vdi-occlusion ___111n4xs f13qh94s fxugw4r f1e8zem4 fxppcr1 f1m2n5bn f1a3p1vp fc5wo7j f8c585h f1xqy1su f4n8ehx fly5x3f f1a0xhq5 f1j5cklc f1o4mb00",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": [
+                                                                  {
+                                                                    "role": "ToolBar",
+                                                                    "name": "Calling indicators",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "indicators",
+                                                                    "class": "fui-Toolbar ___1z2su50 f22iagw f122n59 f1mk8lai fn45zha",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": [
+                                                                      {
+                                                                        "role": "Button",
+                                                                        "name": "Encryption status",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "e2ee-status",
+                                                                        "class": "fui-Button r1f29ykk ___1hyrc10 f1p3nwhy f11589ue f1q5o8ev f1pdflbu f1wf6e08 f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fkoldzo fhvnf4x fb6swo4 f1klyf7k f232fm2 f1l983o9 f1nhwcv0 f1gm6xmp fxoo9op f1v3eptx f1i0gk12 fd4bjan f1716v0x f1lcx95k fs5wusb f8wwgaz f6ixzk8 f90h6l f1uo6wrk fnvab1m f1c8e6bp f1rl9w6r fgibpt1 f1rifsds f7s0hx1 f1s184ao f1sw78cg",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Text",
+                                                                        "name": "Elapsed time --:--",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "call-duration-custom",
+                                                                        "class": "fui-Primitive ___1kzmhni f1wf6e08 f8wwgaz f6ixzk8 f90h6l f1uo6wrk fnvab1m fnokxdv f1c8e6bp f1rl9w6r fgibpt1 f1rifsds f7s0hx1 f1s184ao f1716v0x f1sw78cg f1lcx95k fs5wusb f122n59 f22iagw fmrv4ls f4d9j23 fv31uxg",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Group",
+                                                                            "name": "",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "",
+                                                                            "class": "fui-Primitive ___46gqwt0 fkfq4zb fz5stix f1hgmx08",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": [
+                                                                              {
+                                                                                "role": "Text",
+                                                                                "name": "--:--",
+                                                                                "help": "",
+                                                                                "value": "",
+                                                                                "automation_id": "",
+                                                                                "class": "",
+                                                                                "states": [
+                                                                                  "toggled_mixed"
+                                                                                ],
+                                                                                "children": []
+                                                                              }
+                                                                            ]
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  {
+                                                                    "role": "ToolBar",
+                                                                    "name": "Meeting controls",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "horizontalMiddleEnd",
+                                                                    "class": "fui-Toolbar ___16ujc90 f22iagw f122n59 f1mk8lai fn45zha fn9xixx fly5x3f fy77jfu f4d9j23",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": [
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "fui-SplitButton ___19qvvg7 ftuwxu6 fsxf2b5 f10pi13n fmrv4ls f14uur2j fye5tvs f1e8brtx fxp12j1 fr7y8no f1b65x5h f16kf41h ffl6mx9 f1mww3cx f1s184ao f1u36ktv fochlyj",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Mute mic",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "microphone-button",
+                                                                            "class": "fui-Button r1f29ykk ___1tpewav ftsixi f1pikq0 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f1pbes94 f1ww8sr4 fm6mtky f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1c8e6bp f1rl9w6r fgibpt1 f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f11qmguv f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj f1t7qfcu f3ekwtn f1pgg9pp f139t8ay fhsvb3z",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": [
+                                                                              {
+                                                                                "role": "Image",
+                                                                                "name": "",
+                                                                                "help": "",
+                                                                                "value": "",
+                                                                                "automation_id": "",
+                                                                                "class": "fui-Icon-filled",
+                                                                                "states": [
+                                                                                  "toggled_mixed"
+                                                                                ],
+                                                                                "children": []
+                                                                              },
+                                                                              {
+                                                                                "role": "Text",
+                                                                                "name": "Mic",
+                                                                                "help": "",
+                                                                                "value": "",
+                                                                                "automation_id": "",
+                                                                                "class": "",
+                                                                                "states": [
+                                                                                  "toggled_mixed"
+                                                                                ],
+                                                                                "children": []
+                                                                              }
+                                                                            ]
+                                                                          },
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Open audio options",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "audio-button-configure",
+                                                                            "class": "fui-Button r1f29ykk fui-MenuButton ___lj2yv30 ftsixi f1p3nwhy f11589ue f1q5o8ev f1pdflbu f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fkoldzo fhvnf4x fb6swo4 f1klyf7k f232fm2 f1l983o9 f1nhwcv0 f1gm6xmp fxoo9op f1v3eptx f1i0gk12 fd4bjan fag2o0 f1mk8lai ft85np5 fod5ikn fl43uef faaz57k f1b6alqh fjy1crr f8wwgaz f6ixzk8 f90h6l f1pz0jy7 flqlq6m f2h6dyk f15qmlyt fhrgqct fbl1me3 fm4hebn f1t501rb f1a1qpos f1w8la5n f7s0ghv f1qldqge f11uw3ap f1bhhu68 f1pgg9pp f139t8ay fhsvb3z f1lo3lyz fdh3rfj f1fq5hdo f5fd8tq f1pifiv3 f1i0ckl1 f1izix5q f11ysow2 fk8v0rs fubu1ax",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "fui-SplitButton ___19qvvg7 ftuwxu6 fsxf2b5 f10pi13n fmrv4ls f14uur2j fye5tvs f1e8brtx fxp12j1 fr7y8no f1b65x5h f16kf41h ffl6mx9 f1mww3cx f1s184ao f1u36ktv fochlyj",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Turn camera off",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "video-button",
+                                                                            "class": "fui-Button r1f29ykk ___1tpewav ftsixi f1pikq0 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f1pbes94 f1ww8sr4 fm6mtky f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1c8e6bp f1rl9w6r fgibpt1 f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f11qmguv f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj f1t7qfcu f3ekwtn f1pgg9pp f139t8ay fhsvb3z",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          },
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Open video options",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "video-button-configure",
+                                                                            "class": "fui-Button r1f29ykk fui-MenuButton ___lj2yv30 ftsixi f1p3nwhy f11589ue f1q5o8ev f1pdflbu f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fkoldzo fhvnf4x fb6swo4 f1klyf7k f232fm2 f1l983o9 f1nhwcv0 f1gm6xmp fxoo9op f1v3eptx f1i0gk12 fd4bjan fag2o0 f1mk8lai ft85np5 fod5ikn fl43uef faaz57k f1b6alqh fjy1crr f8wwgaz f6ixzk8 f90h6l f1pz0jy7 flqlq6m f2h6dyk f15qmlyt fhrgqct fbl1me3 fm4hebn f1t501rb f1a1qpos f1w8la5n f7s0ghv f1qldqge f11uw3ap f1bhhu68 f1pgg9pp f139t8ay fhsvb3z f1lo3lyz fdh3rfj f1fq5hdo f5fd8tq f1pifiv3 f1i0ckl1 f1izix5q f11ysow2 fk8v0rs fubu1ax",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Button",
+                                                                        "name": "Share",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "share-button",
+                                                                        "class": "fui-Button r1f29ykk ___1lj7lvq ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Other",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "divider-horizontalMiddleEnd/primary",
+                                                                        "class": "fui-Divider ___13yspvx f22iagw f1lwjmbk f1mk8lai f122n59 f1ewtqcl f1vx9l62 fqerorx f10pi13n fk6fouc fy9rknc figsok6 fwrc4pm f17mccla fyl8oag f16vkdww fhsnbul f1gw3sf2 f1ly5f7u f1s3tz6t f1wl9k8s f13zj6fq fkfq4zb f1vccso1 f1geml7w f1r7kh1m fjml6kk f16j7guv fx01ahm fl8d8yv fj1a37q f16gbxbe f1yq6w5o f9sc749 fhkwbjy flthirb f13hvwk3 f19onpk6 f1kyqvp9 fesgyo fzynn9s fekrn8e f9y3bi5 fkb7v5e f1uy6fau",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "___1htsh8o f1acs6jw f14t3ns0",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "React",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "reaction-menu-button",
+                                                                            "class": "fui-Button r1f29ykk ___1lj7lvq ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "___1htsh8o f1acs6jw f14t3ns0",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Chat",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "chat-button",
+                                                                            "class": "fui-Button r1f29ykk ___1lj7lvq ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "___1htsh8o f1acs6jw f14t3ns0",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "People",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "roster-button",
+                                                                            "class": "fui-Button r1f29ykk ___1lj7lvq ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Other",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "divider-horizontalMiddleEnd/secondary",
+                                                                        "class": "fui-Divider ___13yspvx f22iagw f1lwjmbk f1mk8lai f122n59 f1ewtqcl f1vx9l62 fqerorx f10pi13n fk6fouc fy9rknc figsok6 fwrc4pm f17mccla fyl8oag f16vkdww fhsnbul f1gw3sf2 f1ly5f7u f1s3tz6t f1wl9k8s f13zj6fq fkfq4zb f1vccso1 f1geml7w f1r7kh1m fjml6kk f16j7guv fx01ahm fl8d8yv fj1a37q f16gbxbe f1yq6w5o f9sc749 fhkwbjy flthirb f13hvwk3 f19onpk6 f1kyqvp9 fesgyo fzynn9s fekrn8e f9y3bi5 fkb7v5e f1uy6fau",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Button",
+                                                                        "name": "Record",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "recording-button",
+                                                                        "class": "fui-Button r1f29ykk ___1pts4gz ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Group",
+                                                                            "name": "",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "",
+                                                                            "class": "fui-Primitive ___1t2mu4m f10pi13n ftuwxu6",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          },
+                                                                          {
+                                                                            "role": "Text",
+                                                                            "name": "Record",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "",
+                                                                            "class": "",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Other",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "divider-horizontalMiddleEnd/collaborationCommunication",
+                                                                        "class": "fui-Divider ___13yspvx f22iagw f1lwjmbk f1mk8lai f122n59 f1ewtqcl f1vx9l62 fqerorx f10pi13n fk6fouc fy9rknc figsok6 fwrc4pm f17mccla fyl8oag f16vkdww fhsnbul f1gw3sf2 f1ly5f7u f1s3tz6t f1wl9k8s f13zj6fq fkfq4zb f1vccso1 f1geml7w f1r7kh1m fjml6kk f16j7guv fx01ahm fl8d8yv fj1a37q f16gbxbe f1yq6w5o f9sc749 fhkwbjy flthirb f13hvwk3 f19onpk6 f1kyqvp9 fesgyo fzynn9s fekrn8e f9y3bi5 fkb7v5e f1uy6fau",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "___5juo2j0 fkn17b6 f1bnoopa ffzw24k",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "More",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "callingButtons-showMoreBtn",
+                                                                            "class": "fui-Button r1f29ykk ___1lj7lvq ftsixi f1wf6e08 f1h648pw f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f8wwgaz f6ixzk8 f90h6l f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1pz0jy7 flqlq6m f2h6dyk f1q3txrk fm4hebn f1t501rb f11ggiuo f1wcy434 f7s0ghv f1msd6ry f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fochlyj",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  {
+                                                                    "role": "Group",
+                                                                    "name": "Calling controls",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "horizontalEnd",
+                                                                    "class": "fui-Toolbar ___1z2su50 f22iagw f122n59 f1mk8lai fn45zha",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": [
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "fui-SplitButton ___19qvvg7 ftuwxu6 fsxf2b5 f10pi13n fmrv4ls f14uur2j fye5tvs f1e8brtx fxp12j1 fr7y8no f1b65x5h f16kf41h ffl6mx9 f1mww3cx f1s184ao f1u36ktv fochlyj",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "Leave",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "hangup-button",
+                                                                            "class": "fui-Button r1f29ykk ___1t89j6p ftsixi f1pikq0 f1usghc4 f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fy5bs14 f1q1yqic fhvnf4x fb6swo4 f1klyf7k f232fm2 fwga7ee f1nhwcv0 f1gm6xmp f1xxsver f1v3eptx fivsta0 fd4bjan f3m6zum f1vx9l62 f10pi13n f1gl81tg f1k467in f1pbes94 f1ww8sr4 fitc7hk f1lgnp2a f1y456nd fi6h5r5 fnk82b3 f2whrd2 f9lva4z f1c8e6bp f1rl9w6r f1x9ycyh f1q3txrk f14sum64 f1t501rb f11ggiuo f1wcy434 fyuyapr f1msd6ry f11qmguv f1rqtxy5 f1hcleq7 fj41rt3 f1mk8lai f14z66ap fbu5pmn foyvh0e fzhs5ly fevtoev f14l7p3t f1n3b854 fochlyj f1t7qfcu f3ekwtn f1ypzkfl f1gslqch f12atjd6 f4c0n4k fmoas5d",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          },
+                                                                          {
+                                                                            "role": "Button",
+                                                                            "name": "More options",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "hangup-button-more-options",
+                                                                            "class": "fui-Button r1f29ykk fui-MenuButton ___oqfqsp0 ftsixi f1p3nwhy f11589ue f1q5o8ev f1pdflbu f1pikq0 f1usghc4 f1s2uweq fr80ssc f1ukrpxl fecsdlb fnokxdv ft1hn21 fuxngvv fkoldzo fhvnf4x fb6swo4 f1klyf7k f232fm2 f1l983o9 f1nhwcv0 f1gm6xmp fxoo9op f1v3eptx f1i0gk12 fd4bjan fag2o0 f1mk8lai ft85np5 fod5ikn fl43uef faaz57k f1b6alqh fjy1crr f8wwgaz f6ixzk8 f1b8fels f1pz0jy7 flqlq6m f1m1niyy f15qmlyt fhrgqct fbl1me3 f14sum64 f1t501rb f1a1qpos f1w8la5n f1l8d9pt f1qldqge f11uw3ap f1bhhu68 f1ypzkfl f139t8ay fmoas5d f1lo3lyz fdh3rfj f1fq5hdo f5fd8tq f1pifiv3 f1i0ckl1 f1izix5q f11ysow2 fk8v0rs fubu1ax fbu5pmn foyvh0e fzhs5ly fevtoev f14l7p3t f1n3b854 f9rgmui f12atjd6 f4c0n4k",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          }
+                                                                        ]
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  {
+                                                                    "role": "Other",
+                                                                    "name": "",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "DndLiveRegion-0",
+                                                                    "class": "",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": []
+                                                                  }
+                                                                ]
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___14v2gdm f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 fibhlys fav8ueh f1c6xg6v f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1gh6hdm fl4td7 f138vucn f19g0ac f779m3g fw3kmfy faal97s f6s8nf5 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": []
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___1vs2uut f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 fibhlys fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1yr5ccx f6vrf8r f3zaowa f1qt7zrk fl4td7 f12vwdbn f6s8nf5 f1temh1l f19oca9l f17mr8jo f1woachy fq9v74s fn0vn89",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "___px86z80 f1vx9l62",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": [
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "fui-Flex ___1m6cf63 f22iagw fly5x3f f1l02sjl",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": [
+                                                                  {
+                                                                    "role": "Group",
+                                                                    "name": "",
+                                                                    "help": "",
+                                                                    "value": "",
+                                                                    "automation_id": "",
+                                                                    "class": "fui-Flex ___qud7ig0 f22iagw f1vx9l62 fly5x3f f1l02sjl f10pi13n",
+                                                                    "states": [
+                                                                      "toggled_mixed"
+                                                                    ],
+                                                                    "children": [
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "___77lcry0 f10pi13n",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "fui-Flex ___99zx0i0 f22iagw fly5x3f f1l02sjl f10pi13n f1rmlqtg fqerorx f1neuvcm f1ponoqd",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": [
+                                                                          {
+                                                                            "role": "Group",
+                                                                            "name": "",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "",
+                                                                            "class": "fui-Flex ___pultml0 f22iagw f4d9j23 f122n59 fly5x3f f1l02sjl f1euv43f",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": []
+                                                                          },
+                                                                          {
+                                                                            "role": "Group",
+                                                                            "name": "Shared content view",
+                                                                            "help": "",
+                                                                            "value": "",
+                                                                            "automation_id": "",
+                                                                            "class": "fui-Flex ___1o5nuec f22iagw fly5x3f f1l02sjl f1jhi6b8 f1a3p1vp f1ngn1p8",
+                                                                            "states": [
+                                                                              "toggled_mixed"
+                                                                            ],
+                                                                            "children": [
+                                                                              {
+                                                                                "role": "Group",
+                                                                                "name": "",
+                                                                                "help": "",
+                                                                                "value": "",
+                                                                                "automation_id": "",
+                                                                                "class": "fui-Flex ___p2lnz80 f22iagw f1vx9l62 f1ktbn1t f3ev47i fpjto39 f1euv43f ffvuocu fdhnlf0 f8c585h",
+                                                                                "states": [
+                                                                                  "toggled_mixed"
+                                                                                ],
+                                                                                "children": []
+                                                                              },
+                                                                              {
+                                                                                "role": "Group",
+                                                                                "name": "",
+                                                                                "help": "",
+                                                                                "value": "",
+                                                                                "automation_id": "",
+                                                                                "class": "fui-Flex ___snveh70 f22iagw fbhxue7 f6jr5hl f10pi13n",
+                                                                                "states": [
+                                                                                  "toggled_mixed"
+                                                                                ],
+                                                                                "children": [
+                                                                                  {
+                                                                                    "role": "Image",
+                                                                                    "name": "Myself video, Alex Example, Unmuted, video is on, Fill frame, Has context menu",
+                                                                                    "help": "",
+                                                                                    "value": "",
+                                                                                    "automation_id": "menur37",
+                                                                                    "class": "fui-Primitive ___9cttsk0 f1l02sjl fc5wo7j f10pi13n ftqa4ok f2hkw1w f6sjvbl f1r00sp3 fhv2byn f2v6dyz f1j6vpng f1pniga2 f987i1v f1ffjurs f15bsgw9 f14e48fq f18yb2kv fd6o370 ffwy5si f914sq1 f57olzd f4stah7 f480a47 fs1por5 f1j1dirt f138vucn f1ovgixi f1a3p1vp f99sooz fxv2tmp fxf9f1y frcipv9 f1ijlm3k f1hylgxn f4ckpvx fd5x7wv f1139o99 f1dnetmh f17a2iyf f77y9vx f2df6js f11ef69 fqevjk0 fs357bs f1t8o7b4 f1plhosl f184fvru f19rjyp1 f139lvca f18denov f1st5mb5 f1h8ttsi f125zlrg fxfq4g0 f10k89sh f1v3ddo5 f1u2f2ga f184z5ki f36zor6 fzrne2r f13duamx fld8fdf fmu0uux f5btbjj",
+                                                                                    "states": [
+                                                                                      "toggled_mixed"
+                                                                                    ],
+                                                                                    "children": []
+                                                                                  }
+                                                                                ]
+                                                                              }
+                                                                            ]
+                                                                          }
+                                                                        ]
+                                                                      },
+                                                                      {
+                                                                        "role": "Group",
+                                                                        "name": "",
+                                                                        "help": "",
+                                                                        "value": "",
+                                                                        "automation_id": "",
+                                                                        "class": "fui-Flex ___lic3gj0 f22iagw f1vx9l62 f122n59 fd7ph1c f1euv43f f15twtuk ffngoj8 ffvuocu",
+                                                                        "states": [
+                                                                          "toggled_mixed"
+                                                                        ],
+                                                                        "children": []
+                                                                      }
+                                                                    ]
+                                                                  }
+                                                                ]
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___18rp110 f1ewtqcl feialds f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 fibhlys fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f1760aly f1pvy21g fb2y73i ffoc445 f4iuumn f1ceumfd f1xzzuro fmq4len f180iimo f1w2pcvc f19xy3ti f10vmkzp f1bvojbv f1o6stv4 f1gyt73z f1xbg3a5 fmpy2un f1fq42vu fwiofl5 f15jae4m f1a7nff fl4td7 f138vucn f1locze1 febqm8h f1sil6mw f1aehjj5 f23g7lg f6s8nf5 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": [
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "rrd10u0 fui-AriaLive__assertive",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": []
+                                                              },
+                                                              {
+                                                                "role": "Group",
+                                                                "name": "",
+                                                                "help": "",
+                                                                "value": "",
+                                                                "automation_id": "",
+                                                                "class": "rrd10u0 fui-AriaLive__polite",
+                                                                "states": [
+                                                                  "toggled_mixed"
+                                                                ],
+                                                                "children": []
+                                                              }
+                                                            ]
+                                                          }
+                                                        ]
+                                                      },
+                                                      {
+                                                        "role": "Group",
+                                                        "name": "",
+                                                        "help": "",
+                                                        "value": "",
+                                                        "automation_id": "",
+                                                        "class": "fui-AppLayoutArea ___ezfjj20 f1ewtqcl f1immsc2 f6dzj5z f10pi13n f1lvyeyc fg8on96 f12yfnp8 f1x1ewgs fav8ueh f19l78gq f1asspy ff8gh7k fyb0dc9 f5r9jcx f1pvy21g fb2y73i ffoc445 f4iuumn f1wp5v5y f1xzzuro f1a6ibm4 f9vhbt2 f1w2pcvc f113m0vi fq483zb f1bvojbv f1o6stv4 f1gyt73z fwiofl5 f15jae4m f1gh6hdm fl4td7 f138vucn f145mhtz fsxv6q3 f1hwi66u f1w3aflr f19sjy7d f19ayll7 fbz5t8k f1xunuz7 fxy6710 f1305ibp f1jtucq0 f1sy8t6p f1xcw3jt",
+                                                        "states": [
+                                                          "toggled_mixed"
+                                                        ],
+                                                        "children": [
+                                                          {
+                                                            "role": "Group",
+                                                            "name": "",
+                                                            "help": "",
+                                                            "value": "",
+                                                            "automation_id": "",
+                                                            "class": "",
+                                                            "states": [
+                                                              "toggled_mixed"
+                                                            ],
+                                                            "children": []
+                                                          }
+                                                        ]
+                                                      }
+                                                    ]
+                                                  }
+                                                ]
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "ui-paint-timing-container",
+                                            "class": "",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-Flex fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___1mxv9le f22iagw fly5x3f f1l02sjl f19n0e5 f16xq7d1 f1o700av fk6fouc fkhj508 figsok6 f8497fr fehpme3 f1lcaruh f19dog8a f1bsuimh f15twtuk f1vgc2s3 f9pox2d f1hrkyvm",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "fluent-default-layer-host",
+                                            "class": "",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": [
+                                              {
+                                                "role": "Group",
+                                                "name": "",
+                                                "help": "",
+                                                "value": "",
+                                                "automation_id": "LivePersonaCardRootElement",
+                                                "class": "lpc_ip_root_class LivePersonaCardScrollBar",
+                                                "states": [
+                                                  "toggled_mixed"
+                                                ],
+                                                "children": []
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          },
+                                          {
+                                            "role": "Group",
+                                            "name": "",
+                                            "help": "",
+                                            "value": "",
+                                            "automation_id": "",
+                                            "class": "fui-FluentProvider fui-FluentProviderr1p r1uy2qi7 ___f750ey0 f19n0e5 f3rmtva f1o700av fk6fouc fkhj508 figsok6 f8497fr f1euv43f f15twtuk f1vgc2s3 f1e31b4d fn14dot",
+                                            "states": [
+                                              "toggled_mixed"
+                                            ],
+                                            "children": []
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "role": "Pane",
+                                "name": "",
+                                "help": "",
+                                "value": "",
+                                "automation_id": "",
+                                "class": "EmbeddedBrowserDownloadView",
+                                "states": [
+                                  "toggled_mixed"
+                                ],
+                                "children": []
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "role": "Pane",
+        "name": "",
+        "help": "",
+        "value": "",
+        "automation_id": "",
+        "class": "TeamsVideo",
+        "states": [
+          "toggled_mixed"
+        ],
+        "children": []
+      },
+      {
+        "role": "TitleBar",
+        "name": "",
+        "help": "",
+        "value": "",
+        "automation_id": "TitleBar",
+        "class": "",
+        "states": [
+          "toggled_mixed"
+        ],
+        "children": [
+          {
+            "role": "Other",
+            "name": "System",
+            "help": "",
+            "value": "",
+            "automation_id": "SystemMenuBar",
+            "class": "",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": [
+              {
+                "role": "MenuItem",
+                "name": "System",
+                "help": "",
+                "value": "",
+                "automation_id": "",
+                "class": "",
+                "states": [
+                  "toggled_mixed"
+                ],
+                "children": []
+              }
+            ]
+          },
+          {
+            "role": "Button",
+            "name": "Minimise",
+            "help": "",
+            "value": "",
+            "automation_id": "Minimize-Restore",
+            "class": "",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Button",
+            "name": "Maximise",
+            "help": "",
+            "value": "",
+            "automation_id": "Maximize-Restore",
+            "class": "",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          },
+          {
+            "role": "Button",
+            "name": "Close",
+            "help": "",
+            "value": "",
+            "automation_id": "Close",
+            "class": "",
+            "states": [
+              "toggled_mixed"
+            ],
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}
