@@ -83,8 +83,11 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           RUN_NUMBER: ${{ github.run_number }}
+          # The repository was re-created on 2026-11-25 after v0.1.8, which reset run_number to 1.
+          # WREN_RUN_OFFSET (repository variable, 8) keeps new versions above the existing tags.
+          RUN_OFFSET: ${{ vars.WREN_RUN_OFFSET }}
         run: |
-          VER="$(node scripts/ci-release-meta.mjs bump --run-number "$RUN_NUMBER" --version "$INPUT_VERSION" | tr -d '\r\n')"
+          VER="$(node scripts/ci-release-meta.mjs bump --run-number "$((RUN_NUMBER + ${RUN_OFFSET:-0}))" --version "$INPUT_VERSION" | tr -d '\r\n')"
           if [ -z "$VER" ]; then
             echo "Failed to compute version" >&2
             exit 1

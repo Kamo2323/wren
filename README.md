@@ -178,3 +178,7 @@ if you want them gone too.
   tidies punctuation and wording, and it adds a little time to each dictation.
 - Unless a release is built with Authenticode signing turned on (`docs/RELEASING.md`), the installer
   is not code-signed, so Windows SmartScreen may warn the first time you run it.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
