@@ -77,8 +77,8 @@ const S = {
   liTask: "margin: 0 0 4px; list-style-type: none;",
   quote: "margin: 0 0 14px; padding: 10px 14px; border-left: 3px solid #4f6bed; background: #f2f4fe; color: #1f2328;",
   table: "border-collapse: collapse; margin: 0 0 12px; font-size: 13.5px;",
-  th: "border: 1px solid #c9d1d9; padding: 6px 10px; text-align: left; vertical-align: top; background: #f3f5f7; font-weight: 600;",
-  td: "border: 1px solid #c9d1d9; padding: 6px 10px; text-align: left; vertical-align: top;",
+  th: "border: 1px solid #c9d1d9; padding: 6px 10px; text-align: left; vertical-align: top; background: #f3f5f7; color: #1f2328; font-weight: 600;",
+  td: "border: 1px solid #c9d1d9; padding: 6px 10px; text-align: left; vertical-align: top; color: #1f2328;",
   code: "font-family: Menlo, Consolas, monospace; font-size: 12.5px; background: #f3f5f7; padding: 1px 4px; border-radius: 3px;",
   pre: "font-family: Menlo, Consolas, monospace; font-size: 12.5px; background: #f3f5f7; padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; margin: 0 0 10px;",
   a: "color: #0b62d6; text-decoration: underline;",
@@ -206,6 +206,7 @@ html, body { margin: 0; padding: 0; background: #fff; }
 tr, li, blockquote, pre { break-inside: avoid; page-break-inside: avoid; }
 h1, h2, h3, h4 { break-after: avoid; page-break-after: avoid; }
 table { width: 100%; }
+thead { display: table-header-group; } /* repeat the header row on each page */
 </style></head><body>${emailHtml(md, meta)}</body></html>`;
 }
 
