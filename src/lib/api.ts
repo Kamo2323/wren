@@ -3,7 +3,8 @@
 // falls back to mock data from mock.ts, so the UI can be built and checked without the Rust side.
 // Add `?mock=empty` to the URL for the first-run (no data) look. Other mock switches (screenshots only):
 // `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`,
-// `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states), `?engine=failed|cpu`.
+// `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states), `?engine=failed|cpu|setup`,
+// `?setup=needed|running|paused|failed|nospace|starting|done|unsupported` (first-run speech setup).
 
 import type {
   AiCleanupStatus,
@@ -13,6 +14,8 @@ import type {
   FixWordResult,
   PopupState,
   Settings,
+  SetupPlan,
+  SetupStatus,
   Stats,
   TranscriptionRow,
   UiConstants,
@@ -67,7 +70,7 @@ const mock = {
       const t = mockParams.get("theme");
       return t === "dark" || t === "light" ? t : null;
     })(),
-    meetingName: "Maximilian",
+    meetingName: mockParams.get("name") ?? "",
     claudeModel: "claude-opus-5-5",
   } as Settings,
 };
@@ -265,6 +268,7 @@ export function normaliseEngineStatus(raw: unknown): EngineStatus {
     const t = tag.toLowerCase();
     if (t === "ready") return readyFrom(o);
     if (t === "failed" || t === "error") return { state: "failed", reason: String(o.reason ?? o.message ?? "") };
+    if (t === "needssetup") return { state: "needsSetup", reason: String(o.reason ?? "") };
   }
   if ("Ready" in o || "ready" in o) return readyFrom((o.Ready ?? o.ready) as Record<string, unknown>);
   if ("Failed" in o || "failed" in o) {
@@ -289,9 +293,128 @@ export const engineStatus = async (): Promise<EngineStatus> =>
 function mockEngine(): EngineStatus {
   const e = mockParams.get("engine");
   if (e === "failed") return { state: "failed", reason: "The speech engine stopped 5 times in 5 minutes." };
+  const setup = mockParams.get("setup");
+  if (e === "setup" || (setup && setup !== "done")) return { state: "needsSetup", reason: "Speech recognition isn't set up on this computer yet." };
   return { state: "ready", model: "large-v3-turbo", device: e === "cpu" ? "cpu" : "cuda", vramMb: e === "cpu" ? 0 : 1840 };
 }
 export const engineRestart = (): Promise<void> => (inTauri ? call("engine_restart") : later(undefined));
+
+// ---------- first-run speech setup ----------
+
+const mockSetupListeners = new Set<(s: SetupStatus) => void>();
+
+function mockPlan(done = false): SetupPlan {
+  const mac = detectMockPlatform() === "macos";
+  const parts = mac
+    ? [
+        { id: "runtime", label: "Speech engine (Python and its packages)", bytes: 371_674_623, done },
+        { id: "model:large-v3-turbo-q4", label: "Speech model (large-v3-turbo-q4)", bytes: 463_665_005, done },
+        { id: "model:small.en", label: "Backup model for slower computers (small.en)", bytes: 486_098_798, done },
+      ]
+    : [
+        { id: "runtime", label: "Speech engine (Python and its packages)", bytes: 1_508_612_025, done },
+        { id: "model:large-v3-turbo", label: "Speech model (large-v3-turbo)", bytes: 1_621_665_983, done },
+        { id: "model:small.en", label: "Backup model for slower computers (small.en)", bytes: 486_098_798, done },
+      ];
+  const downloadBytes = parts.filter((p) => !p.done).reduce((n, p) => n + p.bytes, 0);
+  return {
+    supported: mockParams.get("setup") !== "unsupported",
+    platform: mac ? "macos" : "windows",
+    location: mac ? "/Users/you/Library/Application Support/Wren" : "C:\\Users\\you\\AppData\\Local\\Wren",
+    parts,
+    downloadBytes,
+    neededBytes: done ? 0 : mac ? 2_620_000_000 : 6_210_000_000,
+    freeBytes: mockParams.get("setup") === "nospace" ? 3_400_000_000 : 212_400_000_000,
+    logPath: mac ? "/Users/you/Library/Application Support/Wren/logs/runtime-setup.log" : "C:\\Users\\you\\AppData\\Local\\Wren\\logs\\runtime-setup.log",
+  };
+}
+
+function initialMockSetup(): SetupStatus {
+  const mode = mockParams.get("setup");
+  const plan = mockPlan();
+  const reason = "Speech recognition isn't set up on this computer yet.";
+  switch (mode) {
+    case "needed":
+    case "unsupported":
+      return { state: "needed", reason, plan };
+    case "nospace":
+      return {
+        state: "failed",
+        plan,
+        step: "space",
+        message: "Wren needs about 6.2 GB free for speech setup, but only 3.4 GB is free on that drive. Free up some space, then try again.",
+        paused: false,
+      };
+    case "running":
+      return {
+        state: "running",
+        plan,
+        step: "models",
+        stepLabel: "Downloading the speech models",
+        stepIndex: 5,
+        stepCount: 6,
+        fraction: 0.62,
+        detail: "812 MB of 2.11 GB",
+      };
+    case "paused":
+      return { state: "failed", plan, step: "models", message: "Setup is paused. What has downloaded so far is kept, so it carries on from there.", paused: true };
+    case "failed":
+      return {
+        state: "failed",
+        plan,
+        step: "models",
+        message: "Couldn't download the speech models: cannot reach huggingface.co: no internet connection (or the server could not be reached)",
+        paused: false,
+      };
+    case "starting":
+      return { state: "starting", plan: mockPlan(true) };
+    case "done":
+      return { state: "done", model: "large-v3-turbo", device: "cuda" };
+    default:
+      return { state: "notNeeded" };
+  }
+}
+
+let mockSetupState: SetupStatus = initialMockSetup();
+function emitMockSetup(next: SetupStatus) {
+  mockSetupState = next;
+  mockSetupListeners.forEach((h) => h(structuredClone(next)));
+}
+let mockSetupCancelled = false;
+
+export const runtimeSetupStatus = (): Promise<SetupStatus> =>
+  inTauri ? call<SetupStatus>("runtime_setup_status") : later(structuredClone(mockSetupState));
+
+/** Start, resume, or (`repair`) re-check and repair the speech runtime. Progress arrives as events. */
+export const runtimeSetupStart = async (repair = false): Promise<void> => {
+  if (inTauri) return call("runtime_setup_start", { repair });
+  mockSetupCancelled = false;
+  const plan = mockPlan();
+  const steps: Array<[string, string, number]> = [
+    ["check", "Checking what's already here", 0.01],
+    ["uv", "Getting the installer", 0.02],
+    ["python", "Installing Python", 0.03],
+    ["packages", "Installing the speech engine", 0.42],
+    ["models", "Downloading the speech models", 0.97],
+  ];
+  for (const [i, [step, stepLabel, fraction]] of steps.entries()) {
+    if (mockSetupCancelled) {
+      emitMockSetup({ state: "failed", plan, step, message: "Setup is paused. What has downloaded so far is kept, so it carries on from there.", paused: true });
+      return;
+    }
+    emitMockSetup({ state: "running", plan, step, stepLabel, stepIndex: i + 1, stepCount: 6, fraction, detail: "" });
+    await later(undefined, 350);
+  }
+  emitMockSetup({ state: "starting", plan: mockPlan(true) });
+  await later(undefined, 700);
+  emitMockSetup({ state: "done", model: "large-v3-turbo", device: "cuda" });
+};
+
+export const runtimeSetupCancel = (): Promise<void> => {
+  if (inTauri) return call("runtime_setup_cancel");
+  mockSetupCancelled = true;
+  return later(undefined);
+};
 export const audioDevices = (): Promise<string[]> =>
   inTauri ? call("audio_devices") : later(["Microphone (Shure MV7)", "Headset Microphone (Jabra Evolve2 65)", "Microphone Array (Realtek)"]);
 /** `null` = follow the Windows default microphone. */
@@ -436,6 +559,13 @@ export const onPopupState = (h: (s: PopupState) => void) => on<PopupState>("popu
 export const onPopupLevel = (h: (level: number) => void) => on<number>("popup://level", h);
 export const onEngineStatus = (h: (s: EngineStatus) => void) => on<unknown>("app://engine-status", (raw) => h(normaliseEngineStatus(raw)));
 export const onHistoryChanged = (h: () => void) => on<unknown>("app://history-changed", () => h());
+export const onRuntimeSetup = (h: (s: SetupStatus) => void): Promise<Unlisten> => {
+  if (inTauri) return on<SetupStatus>("app://runtime-setup", h);
+  mockSetupListeners.add(h);
+  return Promise.resolve(() => {
+    mockSetupListeners.delete(h);
+  });
+};
 export const onUpdateStatus = (h: (s: UpdateStatus) => void): Promise<Unlisten> => {
   if (inTauri) return on<UpdateStatus>("app://update-status", h);
   mockUpdateListeners.add(h);

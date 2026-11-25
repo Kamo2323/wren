@@ -42,6 +42,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "blocking", "json"] }
 minisign-verify = "0.2"
+sha2 = "0.10"
 semver = "1"
 base64 = "0.22"
 futures-util = "0.3"

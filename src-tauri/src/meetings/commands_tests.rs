@@ -25,11 +25,12 @@ fn terminal_note_event_clears_the_generating_snapshot_before_the_run_drops() {
 #[test]
 fn settings_defaults_meeting_name_and_model() {
     let s = crate::settings::Settings::default();
-    assert_eq!(s.meeting_name, "Maximilian");
+    // No owner name on a fresh profile: meeting lines fall back to "Me" (`meeting_name()`).
+    assert_eq!(s.meeting_name, "");
     assert_eq!(s.claude_model, "claude-opus-5-5");
     // An older settings.json without the new fields loads with the defaults.
     let old: crate::settings::Settings = serde_json::from_str(r#"{"version":1,"typingWpm":40}"#).unwrap();
-    assert_eq!(old.meeting_name, "Maximilian");
+    assert_eq!(old.meeting_name, "");
     assert_eq!(old.claude_model, "claude-opus-5-5");
 }
 

@@ -1,0 +1,72 @@
+{
+  "_comment": "Pinned speech runtime for Wren's in-app first-run setup (src-tauri/src/runtime_setup). The developer scripts scripts/setup-runtime.ps1 and scripts/setup-runtime.sh use the same model repos and revisions (scripts/unit-tests.mjs checks they agree). Byte counts for Python and packages are estimates for the UI; model files are exact and SHA-256 verified.",
+  "version": 1,
+  "python": "3.12",
+  "uv": {
+    "version": "0.12.13",
+    "windows-x86_64": {
+      "url": "https://github.com/astral-sh/uv/releases/download/0.12.13/uv-x86_64-pc-windows-msvc.zip",
+      "sha256": "a86c9dc7bad9b03f388583b7187c05fe9951c2e0d392217e8fd43d97787f6ec2",
+      "size": 17612025,
+      "exe": "uv.exe"
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/astral-sh/uv/releases/download/0.12.13/uv-aarch64-apple-darwin.tar.gz",
+      "sha256": "7e6ddb9316acc00f2296c82ff4d99977870ee34b2f0ddcae9444d714db9364ed",
+      "size": 16674623,
+      "exe": "uv"
+    }
+  },
+  "platforms": {
+    "windows-x86_64": {
+      "project": "",
+      "verifyImports": ["ctranslate2", "faster_whisper"],
+      "pythonDownloadBytes": 30000000,
+      "packagesDownloadBytes": 1461000000,
+      "runtimeDiskBytes": 2470000000,
+      "models": ["large-v3-turbo", "small.en"]
+    },
+    "macos-aarch64": {
+      "project": "macos",
+      "verifyImports": ["mlx.core", "mlx_whisper", "faster_whisper"],
+      "pythonDownloadBytes": 20000000,
+      "packagesDownloadBytes": 335000000,
+      "runtimeDiskBytes": 1100000000,
+      "models": ["large-v3-turbo-q4", "small.en"]
+    }
+  },
+  "models": {
+    "large-v3-turbo": {
+      "repo": "dropbox-dash/faster-whisper-large-v3-turbo",
+      "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+      "required": ["model.bin"],
+      "files": [
+        { "name": "model.bin", "size": 1617884929, "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da" },
+        { "name": "config.json", "size": 2263, "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e" },
+        { "name": "preprocessor_config.json", "size": 340, "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711" },
+        { "name": "tokenizer.json", "size": 2710337, "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd" },
+        { "name": "vocabulary.json", "size": 1068114, "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1" }
+      ]
+    },
+    "large-v3-turbo-q4": {
+      "repo": "mlx-community/whisper-large-v3-turbo-q4",
+      "revision": "660c343bbf4e52ac257f0b7d952e5388e6f93bef",
+      "required": ["weights.npz"],
+      "files": [
+        { "name": "weights.npz", "size": 463664664, "sha256": "862bbc832b05f3f4ec19dd632b701d61a6d3f5c7906360a10d72a79870642a80" },
+        { "name": "config.json", "size": 341, "sha256": "538e24557b8f9bc504700add5e7bbe32087c2353001ff563e64772ad4398671a" }
+      ]
+    },
+    "small.en": {
+      "repo": "Systran/faster-whisper-small.en",
+      "revision": "d1d751a5f8271d482d14ca55d9e2deeebbae577f",
+      "required": ["model.bin"],
+      "files": [
+        { "name": "model.bin", "size": 483545366, "sha256": "62b2a45b05ee59acb4a5341b33ee35e041395d378d418a18acfe4c9e768ee37a" },
+        { "name": "config.json", "size": 2657, "sha256": "666a9605530ac1f61fa8177f3702b4dacec9966749e42610839fcc32661d5fae" },
+        { "name": "tokenizer.json", "size": 2128466, "sha256": "929c5252409436dce1b38a75d1abbcb5e132d170d8e324e4e04ed915fa2d22df" },
+        { "name": "vocabulary.txt", "size": 422309, "sha256": "ff77588746d3a2595d32ab5b69ffd7b95ce2441ac57533cb66fc3eb575a115cf" }
+      ]
+    }
+  }
+}

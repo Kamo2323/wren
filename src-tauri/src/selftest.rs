@@ -147,7 +147,7 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(EngineStatus::Ready { model, device, vram_mb }) => break (model, device, vram_mb),
-            Ok(EngineStatus::Failed { reason }) => return Err(reason),
+            Ok(EngineStatus::Failed { reason }) | Ok(EngineStatus::NeedsSetup { reason }) => return Err(reason),
             Ok(_) => {}
             Err(_) => return Err(format!("not ready after {} s", SIDECAR_READY_TIMEOUT_MS / 1000)),
         }

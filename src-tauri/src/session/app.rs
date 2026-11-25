@@ -306,6 +306,9 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
                     }
                     other => tracing::info!(ready = false, status = ?other, "engine status"),
                 }
+                if let Some(setup) = app.try_state::<crate::runtime_setup::Service>() {
+                    setup.on_engine_status(&status);
+                }
                 let _ = app.emit(EVENT_ENGINE_STATUS, &status);
             }
         })?;

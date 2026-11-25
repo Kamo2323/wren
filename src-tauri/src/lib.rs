@@ -14,6 +14,7 @@ pub mod paste;
 pub mod paths;
 pub mod pipeline;
 pub mod popup;
+pub mod runtime_setup;
 pub mod selftest;
 pub mod session;
 pub mod settings;
@@ -226,6 +227,18 @@ pub fn run() {
             }
             let updates_dir = paths.updates_dir();
             let logs_dir = paths.logs_dir();
+            // Before the engine starts: its first status may already be "needs setup".
+            {
+                let handle = app.handle().clone();
+                app.manage(runtime_setup::Service::new(
+                    runtime_setup::Layout::from_paths(&paths),
+                    &paths.runtime_python(),
+                    &settings.engine,
+                    Box::new(move |s| {
+                        let _ = tauri::Emitter::emit(&handle, runtime_setup::EVENT_SETUP, s);
+                    }),
+                ));
+            }
             app.manage(AppState {
                 paths,
                 settings: RwLock::new(settings),
@@ -367,6 +380,9 @@ pub fn run() {
             commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,
+            commands::runtime_setup_status,
+            commands::runtime_setup_start,
+            commands::runtime_setup_cancel,
             commands::audio_devices,
             commands::set_audio_device,
             commands::other_apps_running,
@@ -411,6 +427,10 @@ pub fn run() {
                 // than "interrupted".
                 if let Some(m) = app.try_state::<meetings::commands::Meetings>() {
                     m.0.stop_for_quit(std::time::Duration::from_secs(3));
+                }
+                // A running speech setup stops its download or installer now (it resumes next time).
+                if let Some(setup) = app.try_state::<runtime_setup::Service>() {
+                    setup.shutdown(std::time::Duration::from_secs(3));
                 }
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {

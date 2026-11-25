@@ -204,7 +204,7 @@ fn is_ready(s: &EngineStatus) -> bool {
 }
 
 fn is_failed(s: &EngineStatus) -> bool {
-    matches!(s, EngineStatus::Failed { .. })
+    matches!(s, EngineStatus::Failed { .. } | EngineStatus::NeedsSetup { .. })
 }
 
 fn is_cpu(s: &EngineStatus) -> bool {
@@ -943,7 +943,7 @@ fn wait_ready(env: &dyn Env, limit: Duration, waited: &mut bool) -> EngineReady 
     loop {
         match env.engine_status() {
             EngineStatus::Ready { model, device, .. } => return EngineReady::Yes { model, device },
-            EngineStatus::Failed { reason } => return EngineReady::No(reason),
+            EngineStatus::Failed { reason } | EngineStatus::NeedsSetup { reason } => return EngineReady::No(reason),
             EngineStatus::Starting | EngineStatus::WarmingUp => {
                 *waited = true;
                 if t.elapsed() >= limit {

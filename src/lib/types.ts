@@ -134,7 +134,47 @@ export type EngineStatus =
   | { state: "warming" }
   | { state: "ready"; model: string; device: "cuda" | "cpu" | string; vramMb: number }
   | { state: "failed"; reason: string }
+  /** First run: the speech runtime or model isn't installed yet (in-app setup fixes it). */
+  | { state: "needsSetup"; reason: string }
   | { state: "unknown" };
+
+/** One thing first-run speech setup installs (`runtime_setup::Part`). */
+export interface SetupPart {
+  id: string;
+  label: string;
+  bytes: number;
+  done: boolean;
+}
+
+/** What setup would do on this computer (`runtime_setup::Plan`). */
+export interface SetupPlan {
+  supported: boolean;
+  platform: "windows" | "macos" | "other";
+  location: string;
+  parts: SetupPart[];
+  downloadBytes: number;
+  neededBytes: number;
+  freeBytes: number | null;
+  logPath: string;
+}
+
+/** First-run speech setup (`runtime_setup::SetupStatus`, event `app://runtime-setup`). */
+export type SetupStatus =
+  | { state: "notNeeded" }
+  | { state: "needed"; reason: string; plan: SetupPlan }
+  | {
+      state: "running";
+      plan: SetupPlan;
+      step: string;
+      stepLabel: string;
+      stepIndex: number;
+      stepCount: number;
+      fraction: number;
+      detail: string;
+    }
+  | { state: "failed"; plan: SetupPlan; step: string; message: string; paused: boolean }
+  | { state: "starting"; plan: SetupPlan }
+  | { state: "done"; model: string; device: string };
 
 /** Task 9 `watcher_status`: whether the correction watcher runs, and the probe's verdict. */
 export interface WatcherStatus {

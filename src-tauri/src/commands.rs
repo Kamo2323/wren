@@ -372,6 +372,42 @@ pub fn engine_restart(services: State<'_, Services>) {
     services.env.engine().restart();
 }
 
+// ---- first-run speech setup ----
+
+#[tauri::command]
+pub fn runtime_setup_status(setup: State<'_, crate::runtime_setup::Service>) -> crate::runtime_setup::SetupStatus {
+    setup.status()
+}
+
+/// Starts, resumes or (with `repair`) re-checks and repairs the speech runtime and models. Returns
+/// at once; progress arrives as `app://runtime-setup` events.
+#[tauri::command(async)]
+pub fn runtime_setup_start(
+    app: AppHandle,
+    setup: State<'_, crate::runtime_setup::Service>,
+    services: State<'_, Services>,
+    repair: Option<bool>,
+) -> Result<(), String> {
+    let quiet = services.env.clone();
+    let fresh = services.env.clone();
+    let hooks = crate::runtime_setup::Hooks {
+        // Before files the engine may hold open are replaced (Windows locks open DLLs and models).
+        quiesce: Box::new(move || quiet.engine().shutdown()),
+        // A brand-new engine with the current settings; its Ready is what completes setup.
+        installed: Box::new(move || {
+            let engine = app.state::<AppState>().settings.read().engine.clone();
+            fresh.replace_engine(engine);
+        }),
+    };
+    setup.start(repair.unwrap_or(false), hooks)
+}
+
+/// Pause: the current step stops; downloaded files are kept for the next try.
+#[tauri::command]
+pub fn runtime_setup_cancel(setup: State<'_, crate::runtime_setup::Service>) {
+    setup.cancel();
+}
+
 #[tauri::command(async)]
 pub fn audio_devices() -> Vec<String> {
     crate::audio::list_input_devices()
