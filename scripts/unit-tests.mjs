@@ -342,6 +342,17 @@ test("notes export: email HTML is inline-styled, escaped and drops unsafe conten
   assert.ok(h.includes("☐ Book room") && h.includes("☑ Send deck"));
   assert.ok(h.includes("<code") && h.includes("a&lt;b"));
   assert.ok(!h.includes('<p style="margin: 0 0 10px;"></p>'), "a paragraph of only raw HTML leaves no empty <p>");
+});
+
+test("notes export: review fixes — multi-paragraph items, inline code entities", () => {
+  const h = emailHtml("- [ ] First para\n\n  Second para\n- plain item\n\nUse `&amp;` and `a<b`", NOTE_META);
+  const items = h.match(/<li [^>]*>[\s\S]*?<\/li>/g);
+  assert.equal(items.length, 2, h);
+  const opens = (s, re) => (s.match(re) || []).length;
+  for (const li of items) assert.equal(opens(li, /<p\b/g), opens(li, /<\/p>/g), `balanced <p> in ${li}`);
+  assert.ok(/<li [^>]*><p [^>]*>☐ First para<\/p><p [^>]*>Second para<\/p><\/li>/.test(items[0]), items[0]);
+  assert.ok(h.includes("&amp;amp;") && h.includes("a&lt;b"), "inline code keeps a literal &amp;");
+  assert.ok(plainText("`&amp;`", NOTE_META).includes("&amp;"));
   assert.ok(!/<(style|link|meta)\b/.test(h), "a fragment: no <style>, mail apps drop it");
 });
 
@@ -372,6 +383,16 @@ await testAsync("notes export: Word file is a real .docx with headings, table an
   const rels = await zip.file("word/_rels/document.xml.rels").async("string");
   assert.ok(rels.includes("https://example.com/p?a=1&amp;b=2"), "hyperlink kept");
   assert.ok(!rels.includes("javascript:"));
+});
+
+await testAsync("notes export: each numbered list in Word restarts at 1", async () => {
+  const zip = await JSZip.loadAsync(await buildDocx("1. a\n2. b\n\nBetween.\n\n1. c\n2. d", NOTE_META));
+  const xml = await zip.file("word/document.xml").async("string");
+  const ids = [...xml.matchAll(/<w:numId w:val="(\d+)"\/>/g)].map((m) => m[1]);
+  assert.equal(ids.length, 4, xml);
+  assert.equal(ids[0], ids[1]);
+  assert.equal(ids[2], ids[3]);
+  assert.notEqual(ids[0], ids[2], "second list uses its own numbering instance");
 });
 
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");

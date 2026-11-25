@@ -105,7 +105,7 @@ function inlineHtml(tokens: Token[] | undefined): string {
         out += `<del>${inlineHtml((t as Tokens.Del).tokens)}</del>`;
         break;
       case "codespan":
-        out += `<code style="${S.code}">${esc(unescapeEntities((t as Tokens.Codespan).text))}</code>`;
+        out += `<code style="${S.code}">${esc((t as Tokens.Codespan).text)}</code>`;
         break;
       case "br":
         out += "<br>";
@@ -154,7 +154,10 @@ function blocksHtml(tokens: Token[]): string {
         for (const item of l.items) {
           const box = item.task ? (item.checked ? "☑ " : "☐ ") : "";
           const inner = blocksHtml(item.tokens.filter((x) => x.type !== "checkbox"));
-          out += `<li style="${item.task ? S.liTask : S.li}">${box}${inner.replace(/^<p style="[^"]*">([\s\S]*)<\/p>$/, "$1")}</li>`;
+          // A single paragraph is unwrapped; with several, the box goes inside the first one.
+          const single = /^<p style="[^"]*">((?:(?!<\/p>)[\s\S])*)<\/p>$/.exec(inner);
+          const body = single ? box + single[1] : box ? inner.replace(/^(<p style="[^"]*">)?/, `$1${box}`) : inner;
+          out += `<li style="${item.task ? S.liTask : S.li}">${body}</li>`;
         }
         out += `</${tag}>`;
         break;
@@ -228,7 +231,7 @@ function inlinePlain(tokens: Token[] | undefined): string {
         out += inlinePlain((t as Tokens.Strong).tokens);
         break;
       case "codespan":
-        out += unescapeEntities((t as Tokens.Codespan).text);
+        out += (t as Tokens.Codespan).text; // marked keeps inline code raw
         break;
       case "br":
         out += "\n";
@@ -365,7 +368,7 @@ export async function buildDocx(md: string, meta: NoteMeta): Promise<Uint8Array>
           out.push(...runs((t as Tokens.Del).tokens, { ...st, strike: true }));
           break;
         case "codespan":
-          text(unescapeEntities((t as Tokens.Codespan).text), { code: true });
+          text((t as Tokens.Codespan).text, { code: true });
           break;
         case "br":
           out.push(new d.TextRun({ text: "", break: 1 }));
@@ -394,6 +397,7 @@ export async function buildDocx(md: string, meta: NoteMeta): Promise<Uint8Array>
   type Block = InstanceType<typeof d.Paragraph> | InstanceType<typeof d.Table>;
   const cellBorder = { style: d.BorderStyle.SINGLE, size: 4, color: "C9D1D9" };
 
+  let numberedLists = 0;
   function blocks(tokens: Token[], level = 0, inQuote = false): Block[] {
     const out: Block[] = [];
     const quote = inQuote
@@ -422,9 +426,12 @@ export async function buildDocx(md: string, meta: NoteMeta): Promise<Uint8Array>
         }
         case "list": {
           const l = t as Tokens.List;
+          // Each numbered list restarts at 1 (lists sharing one numbering instance would continue 3, 4…).
+          const instance = l.ordered ? ++numberedLists : 0;
           for (const item of l.items) {
             const parts = item.tokens.filter((x) => x.type !== "checkbox");
-            const firstInline = parts.find((x) => x.type === "text" || x.type === "paragraph") as Tokens.Text | Tokens.Paragraph | undefined;
+            const lead = parts[0];
+            const firstInline = lead && (lead.type === "text" || lead.type === "paragraph") ? (lead as Tokens.Text | Tokens.Paragraph) : undefined;
             const box = item.task ? [new d.TextRun(item.checked ? "☑ " : "☐ ")] : [];
             const children = [...box, ...(firstInline ? runs(firstInline.tokens) : [])];
             out.push(
@@ -434,7 +441,7 @@ export async function buildDocx(md: string, meta: NoteMeta): Promise<Uint8Array>
                 ...(item.task
                   ? { indent: { left: 360 * (level + 1) } }
                   : l.ordered
-                    ? { numbering: { reference: "wren-numbers", level: Math.min(level, 2) } }
+                    ? { numbering: { reference: "wren-numbers", level: Math.min(level, 2), instance } }
                     : { bullet: { level: Math.min(level, 2) } }),
               }),
             );
