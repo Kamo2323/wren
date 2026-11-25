@@ -42,6 +42,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "blocking", "json"] }
 minisign-verify = "0.2"
+sha2 = "0.10"
 semver = "1"
 base64 = "0.22"
 futures-util = "0.3"
@@ -49,6 +50,10 @@ tokio = { version = "1", features = ["time"] }
 keyring = "4"
 
 [target.'cfg(windows)'.dependencies]
+# Same versions Tauri's WebView2 layer (wry) already uses: lets Wren answer WebView2's microphone
+# permission request for its own page (`allow_own_microphone`), so a fresh profile shows no browser prompt.
+webview2-com = "0.39"
+windows-core = "0.62"
 # Meetings: Teams process-loopback capture (AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK).
 wasapi = "0.27"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_UI_HiDpi", "Win32_UI_Accessibility", "Win32_System_Com", "Win32_System_Variant", "Win32_System_RemoteDesktop", "Win32_System_Power", "Win32_Security", "Win32_System_ProcessStatus", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_Media_Audio", "Win32_System_Console"] }

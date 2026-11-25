@@ -34,10 +34,13 @@ function EmptyRecent({ kept, isMac }: { kept: string; isMac: boolean }) {
 export default function Home({
   typingWpm: typingWpmSetting,
   theme,
+  userName = "",
   onOpenHistory,
 }: {
   typingWpm?: number;
   theme: ResolvedTheme;
+  /** The name the user set in Settings ("" on a fresh profile: no name is assumed). */
+  userName?: string;
   onOpenHistory: () => void;
 }) {
   const constants = useConstants();
@@ -84,7 +87,7 @@ export default function Home({
   return (
     <div className="page page--home">
       <header className="home-heading">
-        <h1 className="page__title">Hi, Maximilian.</h1>
+        <h1 className="page__title">{userName.trim() ? `Hi, ${userName.trim()}.` : "Hi there."}</h1>
       </header>
 
       <WaveHero stats={stats} typingWpm={typingWpm} theme={theme} />

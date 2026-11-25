@@ -77,7 +77,8 @@ pub struct Settings {
     pub willow_seed_imported: bool,
     /// Colour theme preference: `None` follows Windows, or `Some("dark")` / `Some("light")`.
     pub theme: Option<String>,
-    /// Name on the user's own meeting lines ("Me"), meetings spec §5.3.
+    /// The user's name: on their own meeting lines (meetings spec §5.3) and the Home greeting.
+    /// Empty on a fresh profile (meeting lines then say "Me"); a name the user saved is kept.
     pub meeting_name: String,
     /// Claude model for enhanced meeting notes (meetings spec §5.4).
     pub claude_model: String,
@@ -97,7 +98,7 @@ impl Default for Settings {
             watcher_enabled: None,
             willow_seed_imported: false,
             theme: None,
-            meeting_name: "Maximilian".into(),
+            meeting_name: String::new(),
             claude_model: "claude-opus-5-5".into(),
         }
     }
@@ -196,6 +197,16 @@ mod tests {
         assert_eq!(s.engine, EngineSettings::default());
         assert!(!s.ai_cleanup.enabled);
         assert_eq!(s.theme, None);
+    }
+
+    #[test]
+    fn a_fresh_profile_assumes_no_name_and_a_saved_name_is_kept() {
+        assert_eq!(Settings::default().meeting_name, "");
+        let dir = temp_dir("name");
+        let _cleanup = Cleanup(dir.clone());
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"meetingName":"Sam"}"#).unwrap();
+        assert_eq!(Settings::load(&path).meeting_name, "Sam");
     }
 
     #[test]

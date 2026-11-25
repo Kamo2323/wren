@@ -45,6 +45,7 @@ import {
   Monitor,
   Moon,
   RotateCw,
+  Wrench,
   ShieldCheck,
   Sun,
   Trash2,
@@ -404,7 +405,7 @@ function MeetingNotesSection({
   isMac: boolean;
 }) {
   const toast = useToast();
-  const [name, setName] = useState(settings.meetingName ?? "Maximilian");
+  const [name, setName] = useState(settings.meetingName ?? "");
   const [keySaved, setKeySaved] = useState<boolean | null>(null);
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
@@ -452,8 +453,8 @@ function MeetingNotesSection({
   return (
     <Group id="meetings" title="Meeting notes" icon={<Users size={15} strokeWidth={2} />} tone="teal">
       <SetRow
-        title="Your name in meetings"
-        desc="Shown on your own lines in the transcript and used in the notes."
+        title="Your name"
+        desc="Used to greet you on Home, shown on your own lines in meeting transcripts and used in the notes. Left empty, your lines say “Me”."
         htmlFor="meeting-name"
         control={
           <input
@@ -461,10 +462,11 @@ function MeetingNotesSection({
             className="input"
             value={name}
             maxLength={60}
+            placeholder="Me"
             onChange={(e) => setName(e.target.value)}
             onBlur={() => {
               const n = name.trim();
-              if (!n) return setName(settings.meetingName);
+              setName(n);
               if (n !== settings.meetingName) void update({ meetingName: n });
             }}
           />
@@ -633,7 +635,17 @@ function AiSection({
 
 // ---------------------------------------------------------------- engine
 
-function EngineSection({ engine, settings, isMac }: { engine: EngineStatus; settings: SettingsData; isMac: boolean }) {
+function EngineSection({
+  engine,
+  settings,
+  isMac,
+  onRepair,
+}: {
+  engine: EngineStatus;
+  settings: SettingsData;
+  isMac: boolean;
+  onRepair?: () => void;
+}) {
   const [restarting, setRestarting] = useState(false);
   const toast = useToast();
   const words = engineWords(engine);
@@ -670,11 +682,24 @@ function EngineSection({ engine, settings, isMac }: { engine: EngineStatus; sett
       <SetRow
         title={words.text}
         dot={words.tone}
-        desc={engine.state === "failed" ? <span className="is-bad">{engine.reason || "The engine stopped."}</span> : `Turns your voice into text, on ${isMac ? "this Mac" : "this PC"}.`}
+        desc={
+          engine.state === "failed" || engine.state === "needsSetup" ? (
+            <span className="is-bad">{engine.reason || "The engine stopped."}</span>
+          ) : (
+            `Turns your voice into text, on ${isMac ? "this Mac" : "this PC"}.`
+          )
+        }
         control={
-          <Button size="sm" variant="secondary" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={restarting} onClick={() => void restart()}>
-            Restart engine
-          </Button>
+          <div className="setrow__buttons">
+            {onRepair && (engine.state === "failed" || engine.state === "needsSetup") && (
+              <Button size="sm" variant="primary" icon={<Wrench size={14} strokeWidth={2.2} />} onClick={onRepair}>
+                {engine.state === "needsSetup" ? "Set up speech" : "Repair speech setup"}
+              </Button>
+            )}
+            <Button size="sm" variant="secondary" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={restarting} onClick={() => void restart()}>
+              Restart engine
+            </Button>
+          </div>
         }
       >
         <dl className="specs">
@@ -897,6 +922,7 @@ export default function Settings({
   onInstallUpdate,
   themeChoice,
   onThemeChange,
+  onRepairSpeech,
 }: {
   engine: EngineStatus;
   others: string[];
@@ -907,6 +933,8 @@ export default function Settings({
   onInstallUpdate: () => Promise<void>;
   themeChoice: ThemeChoice;
   onThemeChange: (next: ThemeChoice) => Promise<void>;
+  /** Re-check the speech runtime and models and fix what is broken (opens the setup screen). */
+  onRepairSpeech?: () => void;
 }) {
   const constants = useConstants();
   const isMac = constants.platform === "macos";
@@ -1032,7 +1060,7 @@ export default function Settings({
             <WatcherSection settings={settings} update={update} />
             <AiSection settings={settings} update={update} isMac={isMac} />
             <MeetingNotesSection settings={settings} update={update} isMac={isMac} />
-            <EngineSection engine={engine} settings={settings} isMac={isMac} />
+            <EngineSection engine={engine} settings={settings} isMac={isMac} onRepair={onRepairSpeech} />
             <HistorySection />
 
             <Group

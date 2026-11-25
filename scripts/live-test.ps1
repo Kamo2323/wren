@@ -62,10 +62,11 @@ if (Get-Process -Name wren -ErrorAction SilentlyContinue) {
     exit 3
 }
 
-if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = 'C:\Wren\.cargo-target' }
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repo '.cargo-target' }
 $target = $env:CARGO_TARGET_DIR
 # Outside %LOCALAPPDATA% on purpose (MSIX redirection when launched from the Claude desktop app).
-if (-not $WorkDir) { $WorkDir = Join-Path (Split-Path $repo -Parent) 'wren-live-test' }
+# Inside this checkout (git-ignored) by default, so any clone works; -WorkDir moves it.
+if (-not $WorkDir) { $WorkDir = Join-Path $repo '.live-test' }
 New-Item -ItemType Directory -Force (Join-Path $WorkDir 'bin') | Out-Null
 
 function Test-HasMarker([string]$Path, [string]$Marker) {

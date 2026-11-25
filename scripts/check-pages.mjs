@@ -524,6 +524,56 @@ for (const theme of ["light", "dark"]) {
 }
 await page.setViewportSize({ width: 1200, height: 800 });
 
+// Fresh profile: no owner name in the greeting; a name the user set is used.
+await page.goto(`${base}/index.html#home`);
+await page.waitForSelector(".page--home");
+check("fresh profile greets without a name", (await page.locator(".page--home .page__title").textContent()) === "Hi there.");
+await page.goto(`${base}/index.html?name=Sam#home`);
+await page.waitForSelector(".page--home");
+check("a saved name is used in the greeting", await page.waitForFunction(() => document.querySelector(".page--home .page__title")?.textContent === "Hi, Sam.", null, { timeout: 3000 }).then(() => true, () => false));
+
+// First-run speech setup: opens on its own, shows sizes, runs to Ready only after "starting".
+await page.goto(`${base}/index.html?setup=needed#home`);
+await page.waitForSelector(".page--setup");
+check("missing speech runtime opens the setup screen", (await page.locator(".page--setup .page__title").textContent()) === "Set up speech recognition");
+check("setup lists what it downloads with sizes", (await page.locator(".setup-part").count()) === 3 && /GB/.test(await page.locator(".setup-space").textContent()));
+check("sidebar footer asks to set up speech", (await page.locator(".engine").textContent())?.includes("Set up speech"));
+await page.getByRole("button", { name: "Download and set up" }).click();
+await page.waitForSelector(".setup-bar");
+check("progress shows a step and a bar", (await page.locator(".setup-step__count").textContent())?.startsWith("Step"));
+await page.waitForSelector(".setup-ready", { timeout: 8000 });
+check("ready state appears after the engine warms up", (await page.locator(".setup-ready__title").textContent()) === "Speech is ready");
+check("ready state offers the microphone and try-it checks", (await page.locator(".setup-check").count()) >= 2);
+await page.getByRole("button", { name: "Start using Wren" }).click();
+await page.waitForSelector(".page--home");
+check("finishing setup goes Home", true);
+
+for (const [mode, text] of [["paused", "Continue setup"], ["failed", "Try again"], ["nospace", "Try again"]]) {
+  await page.goto(`${base}/index.html?setup=${mode}#home`);
+  await page.waitForSelector(".setup-alert");
+  check(`setup ${mode} explains itself and offers "${text}"`, (await page.getByRole("button", { name: text }).count()) === 1);
+}
+await page.goto(`${base}/index.html?setup=nospace&again=1#home`);
+await page.waitForSelector(".setup-space");
+check("not enough space is flagged", await page.locator(".setup-space.is-bad").count() === 1);
+await page.goto(`${base}/index.html?setup=paused&again=1#home`);
+await page.waitForSelector(".setup-alert");
+await page.getByRole("button", { name: "Continue setup" }).click();
+await page.waitForSelector(".setup-ready", { timeout: 8000 });
+check("a paused setup resumes to Ready", true);
+for (const theme of ["light", "dark"]) {
+  for (const [w, h] of [[1200, 800], [960, 640]]) {
+    await page.setViewportSize({ width: w, height: h });
+    for (const mode of ["needed", "running", "failed", "done"]) {
+      await page.goto(`${base}/index.html?theme=${theme}&setup=${mode}#setup`);
+      await page.waitForSelector(".setup-card");
+      const over = await page.evaluate(() => { const p = document.querySelector(".panel"); return p ? p.scrollWidth - p.clientWidth : 0; });
+      check(`setup ${mode} no horizontal overflow ${theme} ${w}x${h}`, over <= 0, `${over}px`);
+    }
+  }
+}
+await page.setViewportSize({ width: 1200, height: 800 });
+
 await browser.close();
 server.close();
 console.log(failed ? `${failed} check(s) failed` : "all checks passed");

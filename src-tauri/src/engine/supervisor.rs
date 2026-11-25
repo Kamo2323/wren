@@ -214,6 +214,20 @@ impl Supervisor {
             if force_cpu {
                 tracing::warn!(pre_ready_crashes, "speech engine keeps crashing while loading; trying the CPU model");
             }
+            // First run: no runtime or model yet. Wait for setup (it restarts us) instead of failing
+            // in a loop; this is not a failure and does not count towards giving up.
+            if let Some(reason) = crate::runtime_setup::engine_files_missing(&self.cfg.python, &self.cfg.models_dir, &self.cfg.settings) {
+                tracing::info!(%reason, "speech engine waiting for setup");
+                self.set_status(EngineStatus::NeedsSetup { reason });
+                match self.control_rx.recv() {
+                    Ok(Control::Restart) => {
+                        failures.clear();
+                        pre_ready_crashes = 0;
+                        continue;
+                    }
+                    Ok(Control::Shutdown) | Err(_) => break,
+                }
+            }
             self.set_status(EngineStatus::Starting);
             *self.last_problem.lock() = None;
             let outcome = match self.launch(force_cpu) {
@@ -950,12 +964,20 @@ for line in sys.stdin:
         let cfg = EngineConfig::from_paths(&Paths::under(&dir), &EngineSettings::default());
         let (tx, rx) = crossbeam_channel::unbounded();
         let engine = Engine::start_with(cfg, tx);
-        // First failure → Starting again (waiting out the back-off), never Ready.
-        assert!(wait_for(&rx, Duration::from_millis(1_500), is_ready).is_none());
+        // No runtime: it waits for setup (no launch, no crash loop), never Ready.
+        let waiting = wait_for(&rx, Duration::from_millis(1_500), |s| matches!(s, EngineStatus::NeedsSetup { .. }));
+        assert!(matches!(waiting, Some(EngineStatus::NeedsSetup { reason }) if reason.contains("isn't set up")));
+        assert!(wait_for(&rx, Duration::from_millis(500), is_ready).is_none());
         assert_eq!(engine.transcribe(req("x", "a.wav"), Duration::from_secs(1)), Err(EngineError::NotReady));
+        // A restart without the files still just waits (setup has not run).
+        engine.restart();
+        assert!(matches!(
+            wait_for(&rx, Duration::from_millis(1_500), |s| matches!(s, EngineStatus::NeedsSetup { .. })),
+            Some(EngineStatus::NeedsSetup { .. })
+        ) || matches!(engine.status(), EngineStatus::NeedsSetup { .. }));
         let t0 = Instant::now();
         drop(engine);
-        assert!(t0.elapsed() < Duration::from_secs(2), "shutdown does not wait out the back-off");
+        assert!(t0.elapsed() < Duration::from_secs(2), "shutdown does not wait");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

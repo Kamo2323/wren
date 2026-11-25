@@ -13,7 +13,7 @@
   Run scripts/live-test.ps1 -Wren <exe> -WorkDir <dir> first so <dir>\home holds dictations.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\real-screens.ps1 -TestHome C:\Wren-wt\wren-live-test\home
+  powershell -ExecutionPolicy Bypass -File scripts\real-screens.ps1 -TestHome .live-test\home
 #>
 param(
     [Parameter(Mandatory = $true)][string]$TestHome,

@@ -5920,6 +5920,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "similar",
  "strsim",
  "tauri",
@@ -5934,7 +5935,9 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wasapi",
+ "webview2-com",
  "windows 0.61.3",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

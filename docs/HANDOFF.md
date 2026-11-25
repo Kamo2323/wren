@@ -1,5 +1,130 @@
 # Wren — handoff and decision log
 
+## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
+
+Branch `t3/speech-onboarding-portability`, based on `origin/main` 09c8cfd (the two unrelated Teams
+commits fb41104/d3988fb were dropped from this branch). Not merged, no PR yet (parent agent files it).
+Teams/Meetings capture, transcripts and Claude notes are untouched.
+
+### Completed
+- **First-run speech setup in the app** (`src-tauri/src/runtime_setup/`, `src/pages/Setup.tsx`): pinned
+  manifest `sidecar/runtime-manifest.json` (uv 0.12.13 + SHA-256, Python 3.12, every model file with
+  size + SHA-256). Downloads resume with HTTP Range; venv built in `runtime/.venv.staging` and swapped
+  in only after `import` works; Wren-made model folders replaced, others moved aside; `setup-cache/`
+  removed on success (uv's package cache freed right after the swap). Engine waits in a new
+  `NeedsSetup` state instead of crash-looping; setup is Done only when the real engine says Ready.
+  UI: sizes/free space, step progress, Pause/Continue, errors + Try again, ready check (mic meter,
+  macOS Accessibility row, try-it box). Settings → Speech engine → Repair speech setup.
+- **Profile portability**: default name is now empty (meeting lines say "Me", Home says "Hi there.");
+  a saved `meetingName` is kept (Maximilian's settings.json has it saved). Settings label "Your name".
+- **Build portability**: release/live-test default to `<checkout>\.cargo-target`, `.release-out`,
+  `.live-test` (git-ignored); `release.sh` → `.release-out-macos`. No owner paths in script defaults.
+- **Updater**: anonymous by default; token/`gh` fallback only with `WREN_UPDATE_PRIVATE=1` (build or run
+  time). Build-time `WREN_UPDATE_REPO=owner/repo|none` + `WREN_UPDATE_PUBKEY` for forks. macOS update
+  helper no longer re-signs a Developer ID build.
+- **Release workflow**: `WREN_SIGN_WINDOWS` / `WREN_SIGN_MACOS` variables request Authenticode or
+  Developer ID + notarization; fail closed (missing secrets, failed verify, publish-time proof file).
+  Details: `docs/RELEASING.md`. `scripts/sign-windows.ps1` (import / Tauri overlay / verify).
+- Test seam `WREN_TEST_NO_HOTKEY=1` (like `WREN_TEST_AUDIO`).
+- Windows: WebView2 microphone permission auto-allowed for Wren's own page only (fresh profiles got
+  a "tauri.localhost wants to use your microphones" bubble).
+
+### Proof (raw numbers; screenshots and logs in `C:\Users\maxha\.t3\proof\wren-speech-onboarding\`)
+- `cargo test --lib`: 431 passed, 0 failed, 15 ignored; 0 build warnings. `node scripts/unit-tests.mjs`:
+  30 PASS. `npm run build` ok. `node scripts/check-pages.mjs`: 144 PASS. `nsis-template.mjs --check` ok.
+- Real app, empty profile: offline error → online setup (uv, Python, packages in ~3 min, models) →
+  pause → continue → hard kill mid-download → relaunch resumes → warm-up → Ready.
+  `wren --selftest` on that runtime: SELFTEST PASS, large-v3-turbo on CUDA, warm-up clip 277 ms.
+- Existing runtime (read-only via `WREN_RUNTIME_ROOT`): no setup shown, engine Ready, files unchanged.
+- Installer payload: wren.exe + `_up_/sidecar` (py, both uv.lock files, warmup.wav), no Python/models.
+- Authenticode wiring with a throwaway self-signed cert: installer, packaged wren.exe, uninstaller and
+  NSIS plugins signed + timestamped; `-RequireTrusted` and the unsigned build correctly fail.
+
+### Found by the real run and fixed (6178cca, a5306e5)
+- Pause after the runtime swap left the engine "Speech stopped" → now restarts into needs-setup.
+- Kill during the backup-model download reported setup finished → stays open until complete.
+- WebView2 mic prompt blocked the ready check (and the Settings mic test on fresh installs).
+- CI verify pointed at `target\release\wren.exe` (unsigned leftover) → now verifies the payload.
+
+### NOT done / needs Maximilian or other hardware
+- **macOS not run** (no Mac here): setup flow (MLX, `/usr/bin/tar`, statvfs), mac UI rows, the
+  `macos_apply_script` change (syntax-checked with `sh -n` only), Developer ID/notarization steps.
+- **No trusted publisher certificate / Apple Developer account**: real Authenticode `-RequireTrusted`
+  and notarization are unproven; the workflow has never run with signing on.
+- **Chord dictate → paste not run live**: his Wren was running and both would react to the chord.
+  Engine transcription was proven by the self-test. To finish: quit Wren, then
+  `scripts\live-test.ps1 -Wren <proof exe>` with the proof profile (`WREN_RUNTIME_ROOT`).
+- Resume offset (Range) is proven by unit tests; the live log doesn't record byte offsets.
+- **Decision for Maximilian**: while the repo is private, his installs no longer update anonymously.
+  Set repo variable `WREN_UPDATE_PRIVATE=1` (CI builds keep the gh fallback) or user env
+  `WREN_UPDATE_PRIVATE=1` on his PCs; remove before going public.
+- App identifier `com.maximilian.wren` kept on purpose (changing it breaks upgrades, WebView2 data
+  and macOS permissions). Sidecar pytest not run (no sidecar Python changed).
+
+### Review round 1 (Sol) — disposition (commits eac58fc, 2eb6250)
+- **S1 fixed.** Engine status events carry the engine's generation (`session::app::tagged_status`);
+  stale engines' events reach neither the UI nor setup; setup completes on the Ready of the engine it
+  started (set under the status lock, so no race). Test `a_no_change_repair_waits_for_the_new_engine…`;
+  live: no-change repair on a complete profile → Done (log: gen 0 "shut down" `current:false`, gen 1 Ready).
+- **S2 fixed.** `setup-repair-pending` marker written before anything changes, cleared only on the new
+  engine's Ready; a pause, plain retry (`repair=false`) or relaunch repairs again. Tests
+  `repair_intent_survives_pause_retry_and_relaunch…`, `a_readable_but_corrupt_model_fails_the_repair_check`.
+  Live: same-size zeroed `tokenizer.json` → repair → app killed → relaunch reopens setup ("A speech
+  repair didn't finish") → plain retry ran `repair: true` → only that file re-fetched, pinned hash restored.
+- **S3 fixed.** Plan, preflight (`space_needed`, one function for both) and progress count only what is
+  left (`.part` + staged files). Percent labelled "overall", detail "models: x of y". Test
+  `a_partial_download_only_counts_what_is_left`; live: after pause, main model 1.1 GB left (532 MB kept),
+  needs 1.9 GB instead of 2.4 GB.
+- **S4 fixed.** `examples/verify_update.rs` runs the app's `verify_signature` with the key built into the
+  same build; both release jobs run it after signing; update-signing exit codes checked. Local: official
+  key vs throwaway-signed file → FAIL; matching fork key → OK; wrong version → FAIL.
+- **S5 fixed.** uv only runs when unpacked this run from the re-hashed archive; cleanup only deletes files.
+  Live: a planted fake `uv.exe` in `setup-cache` was replaced, never run.
+- **Self-test CPU fallback fixed.** Passes when the clip transcribes, names the device. Live:
+  CUDA → `large-v3-turbo ready on cuda … 272 ms` PASS; `CUDA_VISIBLE_DEVICES=-1` + unreachable proxy →
+  `small.en ready on cpu (processor fallback, no CUDA: slower) … 1547 ms` PASS.
+- **Found in the live proofs and fixed (2eb6250):** a reopened setup didn't say why and offered "Download
+  about 1 MB"; now it shows the reason and labels the button Check and repair / Continue setup.
+- A real network drop happened during the round-2 run: the clear "connection dropped… try again" error,
+  partial kept, retry finished the download.
+- Checks at eac58fc: Rust lib 435 passed, 0 failed, 15 ignored, 0 warnings (lib + examples); 30 JS unit
+  tests, 144 page checks, frontend build OK; workflow YAML valid. 2eb6250 (UI only): tsc + 144 page checks.
+- Round-2 screenshots: `C:\Users\maxha\.t3\proof\wren-speech-onboarding\screenshots\r2-01-first-run-setup-screen.png`,
+  `r2-02-progress-packages-overall.png`, `r2-03-progress-models-overall.png`,
+  `r2-04-resume-counts-only-what-is-left.png`, `12-repair-reopens-after-crash.png` (before the 2eb6250 wording).
+  Self-test logs: `selftest-cuda.txt`, `selftest-cpu-fallback.txt` in the same folder.
+
+### Review round 2 — disposition (commit afc923b; S4/S5 handled by the parent in its own worktree)
+- **S3 (staged files) fixed.** `download::fetch` deletes a finished staged file that fails its pinned
+  checksum or size before downloading its replacement (never installed models: only the setup cache).
+  `staged_bytes` credits exact-size finished files and `.part` files no bigger than the file; wrong-size
+  finished files and oversized `.part` files count nothing. Tests:
+  `a_damaged_finished_file_is_removed_before_its_replacement_downloads` (full-size corrupt, oversized,
+  short; fails with the fix disabled), `a_damaged_finished_file_next_to_a_partial_one_resumes_the_partial`
+  (Range resume kept), `staged_bytes_count_only_what_a_resume_keeps`.
+- **R2-1 (engine swap order) fixed.** `EngineSwap` takes the generation inside the swap turn, so
+  generation order is install order and the installed engine is always current. `replace_engine`
+  returns a floor; setup completes on the first Ready of any engine installed after it (settings saves
+  and manual restarts converge; no gating needed). Callers reviewed: `save_settings` (floor ignored),
+  setup's `installed` hook (floor awaited), `engine_restart` (same engine, same generation). Tests:
+  `generations_follow_install_order_under_overlapping_replacements` (8 overlapping swaps),
+  `a_settings_change_that_overtakes_setups_engine_still_completes_setup`. Live: repair → setup's engine
+  (gen 1) overtaken by a beam-size save (gen 2) → gen 1 events `current:false` → Done on gen 2's Ready
+  in 6 s; setting restored (gen 3 Ready). Script: `C:\Users\maxha\.t3\proof\wren-speech-onboarding\tools\overlap.mjs`.
+- Checks at afc923b: Rust lib 440 passed, 0 failed, 15 ignored; 0 warnings (lib + examples); JS unit
+  tests pass. One run saw `meetings::session::tests::backlog_is_capped_and_marked_not_transcribed` fail
+  (pre-existing fixed 300 ms sleep under load); 5/5 alone and the next full run passed. Not touched.
+
+### Remaining gaps (exact)
+- macOS: nothing run here (parent has a Mac for independent proof).
+- Trusted Authenticode / Developer ID / notarization: no credentials; never run with signing on.
+- The CI `verify_update` step was proven locally in debug only, not in Actions.
+- Chord dictate → paste not run live (his Wren running); engine transcription proven by self-test.
+- No live low-disk test; the space check for a resume is unit-tested.
+
+### Next step
+Parent: independent review, then PR from `t3/speech-onboarding-portability` to `main`.
+
 ## Status (2026-11-24, building) — Meetings feature on branch `feat/meetings`
 
 - Plan: `docs/superpowers/plans/2026-11-24-meetings.md` (native execution). Ledger with every ruling:

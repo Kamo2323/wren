@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened Runtime exceptions for the Developer ID (notarized) release build only
+     (src-tauri/tauri.macos-release.json, used by .github/workflows/release.yml when WREN_SIGN_MACOS=true).
+     Local scripts/release.sh builds sign without the Hardened Runtime and do not use this file. -->
+<plist version="1.0">
+<dict>
+  <!-- Dictation and meeting capture record the microphone (NSMicrophoneUsageDescription). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- Pasting into the frontmost app (NSAppleEventsUsageDescription). -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

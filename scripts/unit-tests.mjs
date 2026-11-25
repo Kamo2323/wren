@@ -272,5 +272,21 @@ test("footerLabel", () => {
   assert.ok(footerLabel({ ...note, model: "claude-sonnet-5-5" }, () => "x").startsWith("Claude Sonnet 5.5"));
 });
 
+test("developer setup scripts pin the same runtime as the in-app setup", () => {
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const manifest = JSON.parse(readFileSync(join(root, "sidecar", "runtime-manifest.json"), "utf8"));
+  const ps1 = readFileSync(join(root, "scripts", "setup-runtime.ps1"), "utf8");
+  const sh = readFileSync(join(root, "scripts", "setup-runtime.sh"), "utf8");
+  assert.ok(ps1.includes(`$PythonVersion = '${manifest.python}'`), "setup-runtime.ps1 Python version");
+  assert.ok(sh.includes(`PYTHON_VERSION="${manifest.python}"`), "setup-runtime.sh Python version");
+  for (const [script, text, platform] of [["setup-runtime.ps1", ps1, "windows-x86_64"], ["setup-runtime.sh", sh, "macos-aarch64"]]) {
+    for (const name of manifest.platforms[platform].models) {
+      const { repo, revision } = manifest.models[name];
+      assert.ok(text.includes(repo), `${script} pins ${name} to ${repo}`);
+      assert.ok(text.includes(revision), `${script} pins ${name} at ${revision}`);
+    }
+  }
+});
+
 console.log(failed ? `${failed} test(s) failed` : "all unit tests passed");
 process.exit(failed ? 1 : 0);

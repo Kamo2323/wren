@@ -31,6 +31,9 @@ pub enum EngineStatus {
     Ready { model: String, device: String, vram_mb: u64 },
     /// Gave up (too many failures) or shut down. `reason` is user-facing.
     Failed { reason: String },
+    /// The runtime or the main model is not installed yet (first run): nothing is launched until
+    /// in-app setup puts the files in place and restarts the engine. `reason` is user-facing.
+    NeedsSetup { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,6 +380,10 @@ mod tests {
         let s = EngineStatus::Ready { model: "m".into(), device: "cpu".into(), vram_mb: 0 };
         assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"state":"ready","model":"m","device":"cpu","vramMb":0}"#);
         assert_eq!(serde_json::to_string(&EngineStatus::WarmingUp).unwrap(), r#"{"state":"warmingUp"}"#);
+        assert_eq!(
+            serde_json::to_string(&EngineStatus::NeedsSetup { reason: "r".into() }).unwrap(),
+            r#"{"state":"needsSetup","reason":"r"}"#
+        );
     }
 
     #[test]

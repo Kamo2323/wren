@@ -1,7 +1,7 @@
 // Main window shell: soft-gradient sidebar, full-bleed stage with Dark/Light switcher, toasts,
 // and the app-wide banner when another dictation app (Willow, Glaido) is running.
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import type { EngineStatus, Settings as SettingsData, UpdateStatus } from "./lib/types";
+import type { EngineStatus, Settings as SettingsData, SetupStatus, UpdateStatus } from "./lib/types";
 import {
   accessibilityStatus,
   engineStatus,
@@ -9,9 +9,13 @@ import {
   mainReady,
   onEngineStatus,
   onOpenUpdates,
+  onRuntimeSetup,
   onUpdateStatus,
   openAccessibilitySettings,
   otherAppsRunning,
+  runtimeSetupCancel,
+  runtimeSetupStart,
+  runtimeSetupStatus,
   saveSettings,
   setWindowTheme,
   subscribe,
@@ -42,6 +46,7 @@ import History from "./pages/History";
 import Dictionary from "./pages/Dictionary";
 import Stats from "./pages/Stats";
 import Settings from "./pages/Settings";
+import Setup from "./pages/Setup";
 
 /** The entrance choreography plays once per app session; after this, pages switch instantly. */
 const SETTLE_MS = 1400;
@@ -53,7 +58,13 @@ const TITLES: Record<PageId, string> = {
   dictionary: "Dictionary",
   stats: "Stats",
   settings: "Settings",
+  setup: "Speech setup",
 };
+
+/** Setup states that need the user (or are in progress). */
+function setupActive(s: SetupStatus): boolean {
+  return s.state === "needed" || s.state === "running" || s.state === "failed" || s.state === "starting";
+}
 
 function initialPage(): PageId {
   const h = location.hash.replace("#", "") as PageId;
@@ -71,6 +82,9 @@ function todayHeading(): string {
 function AppShell() {
   const [page, setPage] = useState<PageId>(initialPage);
   const [engine, setEngine] = useState<EngineStatus>({ state: "unknown" });
+  const [setup, setSetup] = useState<SetupStatus>({ state: "notNeeded" });
+  const [savedSettings, setSavedSettings] = useState<SettingsData | null>(null);
+  const setupShownRef = useRef(false);
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const [typingWpm, setTypingWpm] = useState<number | undefined>(undefined);
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => readCachedTheme());
@@ -152,13 +166,25 @@ function AppShell() {
     void getSettings()
       .then((s) => {
         settingsRef.current = s;
+        setSavedSettings(s);
         setTypingWpm(s.typingWpm);
         if (!urlThemeOverride()) {
           setThemeChoice(normalizeThemePreference(s.theme));
         }
       })
       .catch(() => {});
+    void runtimeSetupStatus()
+      .then((s) => {
+        setSetup(s);
+        // First run: open straight on setup (once; the user may wander off to Settings meanwhile).
+        if (setupActive(s) && !setupShownRef.current) {
+          setupShownRef.current = true;
+          setPage("setup");
+        }
+      })
+      .catch(() => {});
     return subscribe([
+      onRuntimeSetup(setSetup),
       onEngineStatus(setEngine),
       onUpdateStatus(setUpdate),
       onOpenUpdates(() => {
@@ -209,6 +235,7 @@ function AppShell() {
 
   const onSaved = useCallback((s: SettingsData) => {
     settingsRef.current = s;
+    setSavedSettings(s);
     setTypingWpm(s.typingWpm);
     setThemeChoice(normalizeThemePreference(s.theme));
   }, []);
@@ -233,9 +260,30 @@ function AppShell() {
   }, []);
 
   const openEngine = useCallback(() => {
+    if (engine.state === "needsSetup" || setupActive(setup)) {
+      setPage("setup");
+      return;
+    }
     setPage("settings");
     setSettingsFocus({ group: "engine", at: Date.now() });
-  }, []);
+  }, [engine.state, setup]);
+
+  const startSetup = useCallback(
+    async (repair = false) => {
+      setPage("setup");
+      try {
+        await runtimeSetupStart(repair);
+      } catch (e) {
+        toast.show(e instanceof Error ? e.message : String(e || "Couldn't start speech setup."), { tone: "danger" });
+      }
+    },
+    [toast],
+  );
+
+  const finishSetup = useCallback(() => {
+    setSetup({ state: "notNeeded" });
+    select("home");
+  }, [select]);
 
   const othersKey = others.join(",");
   const showBanner = others.length > 0 && bannerHiddenFor !== othersKey;
@@ -251,6 +299,7 @@ function AppShell() {
         update={update}
         onInstallUpdate={() => void installUpdate()}
         meetingLive={meetingLive}
+        setup={setup}
       />
       {confirmQuit && <QuitConfirm onClose={() => setConfirmQuit(false)} />}
       <main className="panel" ref={panelRef}>
@@ -300,7 +349,23 @@ function AppShell() {
 
           <Fragment key={page}>
             {page === "home" && (
-              <Home typingWpm={typingWpm} theme={resolvedTheme} onOpenHistory={() => select("history")} />
+              <Home
+                typingWpm={typingWpm}
+                theme={resolvedTheme}
+                userName={savedSettings?.meetingName ?? ""}
+                onOpenHistory={() => select("history")}
+              />
+            )}
+            {page === "setup" && (
+              <Setup
+                setup={setup}
+                engine={engine}
+                isMac={constants.platform === "macos"}
+                micDevice={savedSettings?.micDevice ?? null}
+                onStart={() => void startSetup(setup.state === "failed" && setup.step === "engine")}
+                onPause={() => void runtimeSetupCancel()}
+                onFinish={finishSetup}
+              />
             )}
             {page === "meetings" && <Meetings onOpenSettings={openMeetingSettings} />}
             {page === "history" && <History />}
@@ -317,6 +382,7 @@ function AppShell() {
                 onInstallUpdate={installUpdate}
                 themeChoice={themeChoice}
                 onThemeChange={switchTheme}
+                onRepairSpeech={() => void startSetup(true)}
               />
             )}
           </Fragment>

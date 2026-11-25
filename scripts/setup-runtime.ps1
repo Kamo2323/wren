@@ -15,7 +15,7 @@
   Folder holding pyproject.toml and uv.lock. Defaults to ..\sidecar next to this script.
 
 .PARAMETER ModelSource
-  Optional folder that already holds copies of the model folders (for example C:\Wren\bench\models).
+  Optional folder that already holds copies of the model folders (for example bench\models in this checkout).
   A missing model is seeded from there first; the Hugging Face check then confirms every file matches
   the pinned revision and downloads anything that does not.
 
@@ -31,9 +31,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $PythonVersion = '3.12'
 
-# name -> repo + the revision the benchmark tested (docs/research/stt-benchmark.md).
+# name -> repo + the revision the benchmark tested (docs/research/stt-benchmark.md). Must match
+# sidecar/runtime-manifest.json (the in-app setup's pins); scripts/unit-tests.mjs checks they agree.
 $ModelRepos = [ordered]@{
-    'large-v3-turbo' = @{ Repo = 'mobiuslabsgmbh/faster-whisper-large-v3-turbo'; Revision = '0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf' }
+    'large-v3-turbo' = @{ Repo = 'dropbox-dash/faster-whisper-large-v3-turbo'; Revision = '0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf' }
     'small.en'       = @{ Repo = 'Systran/faster-whisper-small.en'; Revision = 'd1d751a5f8271d482d14ca55d9e2deeebbae577f' }
 }
 

@@ -1,8 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
-import type { EngineStatus, UpdateStatus } from "../lib/types";
+import type { EngineStatus, SetupStatus, UpdateStatus } from "../lib/types";
 import { BookA, ChartColumn, Download, History, House, RotateCw, Settings, Users, WrenTile } from "./Icon";
 
-export type PageId = "home" | "meetings" | "history" | "dictionary" | "stats" | "settings";
+export type PageId = "home" | "meetings" | "history" | "dictionary" | "stats" | "settings" | "setup";
 
 const MAIN: Array<{ id: PageId; label: string; icon: ReactNode }> = [
   { id: "home", label: "Home", icon: <House size={18} strokeWidth={1.9} /> },
@@ -117,6 +117,8 @@ export function engineWords(s: EngineStatus): { tone: "ok" | "busy" | "warn" | "
       return { tone: "busy", text: "Starting" };
     case "failed":
       return { tone: "bad", text: "Speech stopped", detail: s.reason || "The speech engine stopped" };
+    case "needsSetup":
+      return { tone: "warn", text: "Set up speech", detail: s.reason || "Speech recognition isn't set up yet" };
     default:
       return { tone: "busy", text: "Connecting" };
   }
@@ -130,6 +132,7 @@ export function Sidebar({
   update,
   onInstallUpdate,
   meetingLive = false,
+  setup,
 }: {
   page: PageId;
   onSelect: (p: PageId) => void;
@@ -139,9 +142,16 @@ export function Sidebar({
   onInstallUpdate: () => void;
   /** A meeting is recording: a red dot on the Meetings item. */
   meetingLive?: boolean;
+  /** First-run speech setup: while it runs, the footer shows its progress instead of the engine. */
+  setup?: SetupStatus;
 }) {
-  const status = engineWords(engine);
-  const actionable = status.tone === "warn" || status.tone === "bad";
+  const status =
+    setup?.state === "running"
+      ? { tone: "busy" as const, text: `Setting up · ${Math.round(setup.fraction * 100)}%`, detail: setup.stepLabel }
+      : setup?.state === "starting"
+        ? { tone: "busy" as const, text: "Starting speech", detail: "The speech engine is warming up" }
+        : engineWords(engine);
+  const actionable = status.tone === "warn" || status.tone === "bad" || setup?.state === "running" || setup?.state === "starting";
   return (
     <aside className="sidebar" aria-label="Wren sidebar">
       <div className="sidebar__brand">
@@ -160,7 +170,7 @@ export function Sidebar({
           <button
             type="button"
             className={`engine engine--${status.tone} engine--action`}
-            title={`${status.detail ?? status.text}. Open the speech settings.`}
+            title={`${status.detail ?? status.text}. ${engine.state === "needsSetup" || setup?.state === "running" ? "Open speech setup." : "Open the speech settings."}`}
             onClick={onOpenEngine}
           >
             <span className="engine__dot" />

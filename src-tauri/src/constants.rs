@@ -287,9 +287,10 @@ pub const AI_CLEANUP_PULL_TIMEOUT_MS: u64 = 1_800_000;
 
 // ---- App updater (GitHub Releases) ----
 
-/// GitHub repository that publishes signed Wren releases (`latest.json` + NSIS installer).
-pub const UPDATE_REPO_OWNER: &str = "Kamo2323";
-pub const UPDATE_REPO_NAME: &str = "wren";
+/// GitHub repository that publishes the official signed Wren releases (`latest.json` + installers).
+/// A build can point elsewhere (a fork's own releases) or turn updates off with `WREN_UPDATE_REPO`
+/// at build time; see `updater::UpdateSource`.
+pub const UPDATE_REPO_DEFAULT: &str = "Kamo2323/wren";
 /// Base64-encoded minisign public key matching the `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret.
 pub const UPDATE_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzRjQzQkQ1MEQ3NTc4RDcKUldUWGVIVU4xVHYwRTBMTHFTNFFHQUpNczUwM2p4MW14V1lkc1R2UWNidHVQbEpwZzlCeVkvcFoK";
 /// Wait this long after start-up before the first silent update check, so start-up and engine

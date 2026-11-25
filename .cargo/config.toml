@@ -1,4 +1,4 @@
 # Cross-platform build configuration.
 # Note: Windows local release/live-test scripts (scripts/release.ps1, scripts/live-test.ps1)
-# set CARGO_TARGET_DIR='C:\Wren\.cargo-target' directly; CI overrides CARGO_TARGET_DIR per job.
+# default CARGO_TARGET_DIR to <checkout>\.cargo-target (git-ignored); CI overrides it per job.
 # Keeping target-dir unset here allows native builds on both Windows and macOS.

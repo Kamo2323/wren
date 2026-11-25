@@ -33,16 +33,19 @@ param(
     [switch]$Launch,
     [string]$StageDir = ''
 )
+# Defaults are inside this checkout (git-ignored), so any clone builds without owner-specific paths.
+# Override with -StageDir / $env:WREN_STAGE_DIR and $env:CARGO_TARGET_DIR.
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Wren'
 $exe = Join-Path $installDir 'wren.exe'
 $dataRoot = Join-Path $env:LOCALAPPDATA 'Wren'
 $settingsRoot = Join-Path $env:APPDATA 'Wren'
-if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = 'C:\Wren\.cargo-target' }
+if (-not $env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR = Join-Path $repo '.cargo-target' }
 $target = $env:CARGO_TARGET_DIR
 # Outside %LOCALAPPDATA% on purpose (see MSIX above).
-if (-not $StageDir) { $StageDir = Join-Path (Split-Path $repo -Parent) 'wren-release' }
+if (-not $StageDir -and $env:WREN_STAGE_DIR) { $StageDir = $env:WREN_STAGE_DIR }
+if (-not $StageDir) { $StageDir = Join-Path $repo '.release-out' }
 New-Item -ItemType Directory -Force $StageDir | Out-Null
 $version = (Get-Content (Join-Path $repo 'src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json).version
 $setupName = "Wren_${version}_x64-setup.exe"

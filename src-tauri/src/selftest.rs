@@ -147,7 +147,7 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
         let left = deadline.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok(EngineStatus::Ready { model, device, vram_mb }) => break (model, device, vram_mb),
-            Ok(EngineStatus::Failed { reason }) => return Err(reason),
+            Ok(EngineStatus::Failed { reason }) | Ok(EngineStatus::NeedsSetup { reason }) => return Err(reason),
             Ok(_) => {}
             Err(_) => return Err(format!("not ready after {} s", SIDECAR_READY_TIMEOUT_MS / 1000)),
         }
@@ -182,14 +182,19 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
     let accelerated = device == "mlx";
     #[cfg(not(target_os = "macos"))]
     let accelerated = device == "cuda";
-    if !accelerated {
-        #[cfg(target_os = "macos")]
-        return Err(format!("ready on {device}, not Apple Silicon MLX (CPU fallback)"));
-        #[cfg(not(target_os = "macos"))]
-        return Err(format!("ready on {device}, not CUDA (CPU fallback)"));
-    }
     if !missing.is_empty() {
-        return Err(format!("the warm-up clip did not give the expected words (missing {missing:?})"));
+        return Err(format!("the warm-up clip did not give the expected words (missing {missing:?}; device {device})"));
+    }
+    #[cfg(target_os = "macos")]
+    let accelerator = "Apple Silicon MLX";
+    #[cfg(not(target_os = "macos"))]
+    let accelerator = "CUDA";
+    if !accelerated {
+        // A supported fallback (no usable GPU): it transcribed the clip correctly, so it passes, and
+        // says plainly that it is the slower processor path.
+        return Ok(format!(
+            "{model} ready on {device} (processor fallback, no {accelerator}: slower) in {ready_ms} ms; warm-up clip transcribed in {took} ms"
+        ));
     }
     #[cfg(target_os = "macos")]
     let mem_label = "MB RAM";

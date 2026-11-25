@@ -14,6 +14,7 @@ pub mod paste;
 pub mod paths;
 pub mod pipeline;
 pub mod popup;
+pub mod runtime_setup;
 pub mod selftest;
 pub mod session;
 pub mod settings;
@@ -146,6 +147,50 @@ pub fn apply_window_theme(win: &tauri::WebviewWindow, theme: Option<&str>) {
     }
 }
 
+/// WebView2 asks "tauri.localhost wants to use your microphones" the first time Wren's own page
+/// opens the microphone (the setup screen's and Settings' level meters). That page is Wren itself,
+/// so it is allowed without a browser prompt; Windows' own microphone privacy setting still applies.
+/// Any other origin, and every other permission, keeps WebView2's default.
+#[cfg(windows)]
+fn allow_own_microphone(win: &tauri::WebviewWindow) {
+    let result = win.with_webview(|wv| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        };
+        use webview2_com::PermissionRequestedEventHandler;
+        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let mut token: i64 = 0;
+        let handler = PermissionRequestedEventHandler::create(Box::new(|_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+            args.PermissionKind(&mut kind)?;
+            if kind != COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                return Ok(());
+            }
+            let mut uri = windows_core::PWSTR::null();
+            args.Uri(&mut uri)?;
+            if own_origin(&webview2_com::take_pwstr(uri)) {
+                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+            }
+            Ok(())
+        }));
+        if let Err(err) = core.add_PermissionRequested(&handler, &mut token) {
+            tracing::warn!(error = %err, "cannot watch WebView2 permission requests");
+        }
+    });
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "cannot reach the main window's WebView2");
+    }
+}
+
+/// Wren's own page: the bundled app (`tauri.localhost`) or the dev server.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn own_origin(uri: &str) -> bool {
+    ["http://tauri.localhost/", "https://tauri.localhost/", "http://localhost:1420/"]
+        .iter()
+        .any(|o| uri.starts_with(o) || uri == o.trim_end_matches('/'))
+}
+
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let start_hidden = args.iter().any(|a| a == "--hidden");
@@ -226,6 +271,18 @@ pub fn run() {
             }
             let updates_dir = paths.updates_dir();
             let logs_dir = paths.logs_dir();
+            // Before the engine starts: its first status may already be "needs setup".
+            {
+                let handle = app.handle().clone();
+                app.manage(runtime_setup::Service::new(
+                    runtime_setup::Layout::from_paths(&paths),
+                    &paths.runtime_python(),
+                    &settings.engine,
+                    Box::new(move |s| {
+                        let _ = tauri::Emitter::emit(&handle, runtime_setup::EVENT_SETUP, s);
+                    }),
+                ));
+            }
             app.manage(AppState {
                 paths,
                 settings: RwLock::new(settings),
@@ -268,6 +325,8 @@ pub fn run() {
             if let Some(main) = app.get_webview_window(tray::MAIN_LABEL) {
                 let theme = app.state::<AppState>().settings.read().theme.clone();
                 apply_window_theme(&main, theme.as_deref());
+                #[cfg(windows)]
+                allow_own_microphone(&main);
             }
             if start_hidden || popup_check {
                 #[cfg(target_os = "macos")]
@@ -367,6 +426,9 @@ pub fn run() {
             commands::popup_open_mic_settings,
             commands::engine_status,
             commands::engine_restart,
+            commands::runtime_setup_status,
+            commands::runtime_setup_start,
+            commands::runtime_setup_cancel,
             commands::audio_devices,
             commands::set_audio_device,
             commands::other_apps_running,
@@ -412,6 +474,10 @@ pub fn run() {
                 if let Some(m) = app.try_state::<meetings::commands::Meetings>() {
                     m.0.stop_for_quit(std::time::Duration::from_secs(3));
                 }
+                // A running speech setup stops its download or installer now (it resumes next time).
+                if let Some(setup) = app.try_state::<runtime_setup::Service>() {
+                    setup.shutdown(std::time::Duration::from_secs(3));
+                }
                 // Unhook, stop the sidecar, put back a clipboard a paste still owes (paste::flush).
                 if let Some(services) = app.try_state::<Services>() {
                     services.shutdown();
@@ -419,4 +485,17 @@ pub fn run() {
                 tracing::info!("Wren stopped");
             }
         });
+}
+
+#[cfg(test)]
+mod origin_tests {
+    #[test]
+    fn only_wrens_own_page_gets_the_microphone() {
+        for ok in ["http://tauri.localhost/", "http://tauri.localhost/index.html#setup", "https://tauri.localhost/x", "http://localhost:1420/"] {
+            assert!(super::own_origin(ok), "{ok}");
+        }
+        for bad in ["http://tauri.localhost.evil.com/", "https://example.com/", "http://localhost:1421/", "file:///C:/x.html", ""] {
+            assert!(!super::own_origin(bad), "{bad}");
+        }
+    }
 }
