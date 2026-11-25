@@ -345,6 +345,45 @@ await page.locator(".md a").first().click();
 await wait(200);
 check("links in notes don't navigate Wren's window", page.url() === urlBefore);
 check("…and go to the browser instead", (await page.evaluate(() => window.__wrenOpenedLink)) === "https://example.com/pricing");
+// Export: Copy writes formatted HTML + clean text; Word builds a real .docx; Share/PDF only on macOS.
+{
+  const lastExport = () => page.evaluate(() => window.__wrenExport);
+  const actions = page.locator(".enh-bar .enh-actions");
+  check("notes toolbar on Windows: Copy, Word, Regenerate (no Share/PDF yet)",
+    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Word|Regenerate");
+  await actions.getByRole("button", { name: "Copy" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "copy");
+  const copied = await lastExport();
+  check("Copy puts formatted HTML on the clipboard (inline-styled table, title)",
+    /<table [^>]*style="border-collapse/.test(copied.html) && copied.html.includes(">Weekly sync with Sarah</h1>") && !copied.html.includes("<img"));
+  check("Copy's plain text has no Markdown symbols",
+    copied.plain.startsWith("Weekly sync with Sarah\n") &&!/\*\*|##|\| |\]\(/.test(copied.plain) && copied.plain.includes("In short:"), copied.plain.slice(0, 120));
+  check("Copy confirms with a toast", (await page.locator(".toast").last().textContent())?.includes("Notes copied"));
+  await actions.getByRole("button", { name: "Word" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "docx", null, { timeout: 10000 });
+  const word = await lastExport();
+  check("Word builds a .docx (zip) named after the meeting",
+    word.bytes.slice(0, 4).join(",") === "80,75,3,4" && word.bytes.length > 3000 && /^Weekly sync with Sarah – .* \(Medium notes\)$/.test(word.name), `${word.bytes.length} bytes, ${word.name}`);
+  const openSync = async (query) => {
+    await page.goto(`${base}/index.html${query}#meetings`);
+    await page.locator(".meeting-card", { hasText: "Weekly sync with Sarah" }).click();
+    await page.waitForSelector(".enh-bar .enh-actions");
+  };
+  await openSync("?platform=macos");
+  check("notes toolbar on macOS: Copy, Share, PDF, Word, Regenerate",
+    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Share|PDF|Word|Regenerate");
+  await actions.getByRole("button", { name: "PDF" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "pdf");
+  const pdf = await lastExport();
+  check("PDF gets a complete printable page", pdf.html.startsWith("<!doctype html>") && pdf.html.includes("@page"));
+  await actions.getByRole("button", { name: "Share" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "share");
+  const share = await lastExport();
+  const box = await actions.getByRole("button", { name: "Share" }).boundingBox();
+  check("Share anchors the menu at the Share button and sets the subject",
+    share.subject === "Weekly sync with Sarah" && Math.abs(share.rect[0] - box.x) < 1 && Math.abs(share.rect[1] - box.y) < 1, JSON.stringify(share.rect));
+  await openSync("");
+}
 check("enhanced footer shows model, tokens and cost", /Claude Opus 5\.5 · [\d.]+k tokens · ~\$\d+\.\d\d/.test((await page.locator(".enh-footer").textContent()) ?? ""));
 await page.getByRole("button", { name: "Short", exact: true }).click();
 await page.waitForSelector(".enh-writing", { timeout: 2000 }).catch(() => {});
