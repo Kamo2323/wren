@@ -325,6 +325,18 @@ await page.waitForSelector(".meeting-view");
 check("ended meeting opens on the Enhanced tab", (await selectedTab())?.startsWith("Enhanced"));
 await page.waitForSelector(".md h2");
 check("enhanced notes render markdown headings", (await page.locator(".md h2").first().textContent()) === "Summary");
+{
+  // Drag across the first paragraph with the mouse: the notes must be selectable like a document.
+  const para = page.locator(".md p").first();
+  const box = await para.boundingBox();
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + Math.min(box.width - 2, 220), box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const picked = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+  check("enhanced notes text can be drag-selected", picked.trim().length >= 5, JSON.stringify(picked.slice(0, 40)));
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+}
 check("notes open with an 'In short' headline box", (await page.locator(".md > blockquote:first-child").textContent())?.includes("In short"));
 check("raw HTML in notes is never rendered (no remote loads)", (await page.locator(".md img, .md video, .md [src]").count()) === 0);
 check("action items render as a table", (await page.locator(".md table th").allTextContents()).join("|").includes("Owner"));

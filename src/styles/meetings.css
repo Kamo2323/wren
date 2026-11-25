@@ -689,6 +689,13 @@ button.trun__name:hover {
   line-height: 1.65;
   color: var(--ink);
   overflow-wrap: anywhere;
+  /* The app turns selection off on <body>; notes are a document, so drag-select + ⌘C work here. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.md a {
+  cursor: pointer;
 }
 .md > :first-child {
   margin-top: 0;
