@@ -37,7 +37,13 @@ function SpaceLine({ plan }: { plan: SetupPlan }) {
   const short = plan.freeBytes != null && plan.neededBytes > 0 && plan.freeBytes < plan.neededBytes;
   return (
     <p className={`setup-space ${short ? "is-bad" : ""}`}>
-      Download about <strong className="num">{sizeLabel(plan.downloadBytes)}</strong>
+      {plan.downloadBytes > 0 ? (
+        <>
+          Download about <strong className="num">{sizeLabel(plan.downloadBytes)}</strong>
+        </>
+      ) : (
+        <>Nothing new to download unless Wren finds a damaged file</>
+      )}
       {plan.neededBytes > 0 && (
         <>
           {" "}
@@ -60,7 +66,10 @@ function deviceWords(plan: SetupPlan): string {
     : "Uses your NVIDIA graphics card if you have one, otherwise the processor (slower). Everything runs on this PC.";
 }
 
-function Intro({ plan, onStart }: { plan: SetupPlan; onStart: () => void }) {
+function Intro({ plan, reason, onStart }: { plan: SetupPlan; reason: string; onStart: () => void }) {
+  // Not the first run: say why setup is open again (an unfinished download or repair).
+  const resuming = plan.parts.some((p) => p.done);
+  const label = plan.downloadBytes === 0 ? "Check and repair" : resuming ? "Continue setup" : "Download and set up";
   if (!plan.supported) {
     return (
       <div className="setup-card">
@@ -76,6 +85,12 @@ function Intro({ plan, onStart }: { plan: SetupPlan; onStart: () => void }) {
   }
   return (
     <div className="setup-card">
+      {resuming && reason && (
+        <div className="setup-alert" role="status">
+          <Info size={18} strokeWidth={2.1} aria-hidden="true" />
+          <p>{reason}</p>
+        </div>
+      )}
       <PartsList plan={plan} />
       <SpaceLine plan={plan} />
       <ul className="setup-notes">
@@ -97,7 +112,7 @@ function Intro({ plan, onStart }: { plan: SetupPlan; onStart: () => void }) {
       </ul>
       <div className="setup-actions">
         <Button variant="primary" icon={<Download size={15} strokeWidth={2.2} />} onClick={onStart}>
-          Download and set up
+          {label}
         </Button>
       </div>
     </div>
@@ -328,7 +343,7 @@ export default function Setup({
           </p>
         )}
       </header>
-      {setup.state === "needed" && <Intro plan={setup.plan} onStart={onStart} />}
+      {setup.state === "needed" && <Intro plan={setup.plan} reason={setup.reason} onStart={onStart} />}
       {setup.state === "running" && <Running status={setup} onPause={onPause} />}
       {setup.state === "failed" && <Stopped status={setup} onRetry={onStart} />}
       {setup.state === "starting" && <Warming engine={engine} />}
