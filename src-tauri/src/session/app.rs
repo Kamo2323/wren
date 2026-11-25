@@ -2,7 +2,7 @@
 //! the popup window and the clipboard. `start_services` builds and starts all of it from `setup`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -42,7 +42,11 @@ pub struct AppEnv {
     recorder: Option<Arc<AudioRecorder>>,
     /// Replaced (not restarted) when the engine settings change.
     engine: RwLock<Arc<Engine>>,
-    status_tx: Sender<EngineStatus>,
+    /// Status of every engine, tagged with the engine's generation (see `tagged_status`).
+    status_tx: Sender<(u64, EngineStatus)>,
+    /// Generation of the current engine: 0 at launch, +1 for each replacement. Events of older
+    /// engines (e.g. the "shut down" of the one being replaced) never reach the UI or speech setup.
+    engine_gen: Arc<AtomicU64>,
     /// One engine replacement at a time (shutdown + start + swap under one lock)…
     engine_swap: Mutex<()>,
     /// …and while it runs the engine reports `Starting`, so a finishing dictation waits for the new
@@ -89,7 +93,10 @@ impl AppEnv {
 
     /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
     /// background; dictations meanwhile wait for it like a warm-up (the status reads `Starting`).
-    pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) {
+    /// Returns the new engine's generation, fixed before this returns, so a caller can wait for
+    /// that engine's own Ready and not mistake the old engine's last events for it.
+    pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) -> u64 {
+        let generation = self.engine_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let me = self.clone();
         let spawned = std::thread::Builder::new().name("wren-engine-replace".into()).spawn(move || {
             let _one_at_a_time = me.engine_swap.lock();
@@ -97,15 +104,16 @@ impl AppEnv {
             me.swapping.store(true, Ordering::SeqCst);
             me.engine().shutdown();
             // After the old engine's last status, so the UI shows the gap as starting.
-            let _ = me.status_tx.send(EngineStatus::Starting);
+            let _ = me.status_tx.send((generation, EngineStatus::Starting));
             let paths = me.state().paths.clone();
-            let fresh = Arc::new(Engine::start(&paths, &settings, me.status_tx.clone()));
+            let fresh = Arc::new(Engine::start(&paths, &settings, tagged_status(me.status_tx.clone(), generation)));
             *me.engine.write() = fresh;
             me.swapping.store(false, Ordering::SeqCst);
         });
         if let Err(err) = spawned {
             tracing::error!(error = %err, "cannot restart the speech engine");
         }
+        generation
     }
 
     /// On quit: unhook, stop the sidecar, and put back any clipboard a paste still owes.
@@ -258,6 +266,23 @@ impl Env for AppEnv {
     }
 }
 
+/// A status sender for one engine: everything it reports reaches `to` tagged with `generation`.
+/// (The forwarding thread ends when the engine, and with it this sender, is dropped.)
+pub(crate) fn tagged_status(to: Sender<(u64, EngineStatus)>, generation: u64) -> Sender<EngineStatus> {
+    let (tx, rx) = crossbeam_channel::unbounded::<EngineStatus>();
+    let spawned = std::thread::Builder::new().name("wren-engine-tag".into()).spawn(move || {
+        for status in rx {
+            if to.send((generation, status)).is_err() {
+                break;
+            }
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::error!(error = %err, "cannot forward the speech engine's status");
+    }
+    tx
+}
+
 /// Everything started at launch, kept in Tauri's managed state.
 pub struct Services {
     pub env: Arc<AppEnv>,
@@ -304,20 +329,27 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
     }
 
     // Speech engine, its status forwarded to the UI.
-    let (status_tx, status_rx) = crossbeam_channel::unbounded::<EngineStatus>();
-    let engine = Engine::start(&state.paths, &settings.engine, status_tx.clone());
+    let (status_tx, status_rx) = crossbeam_channel::unbounded::<(u64, EngineStatus)>();
+    let engine_gen = Arc::new(AtomicU64::new(0));
+    let engine = Engine::start(&state.paths, &settings.engine, tagged_status(status_tx.clone(), 0));
     {
         let app = app.clone();
+        let current_gen = engine_gen.clone();
         std::thread::Builder::new().name("wren-engine-status".into()).spawn(move || {
-            for status in status_rx {
+            for (generation, status) in status_rx {
+                let current = generation == current_gen.load(Ordering::SeqCst);
                 match &status {
                     EngineStatus::Ready { model, device, vram_mb } => {
-                        tracing::info!(ready = true, %model, %device, vram_mb, "engine status")
+                        tracing::info!(ready = true, %model, %device, vram_mb, generation, current, "engine status")
                     }
-                    other => tracing::info!(ready = false, status = ?other, "engine status"),
+                    other => tracing::info!(ready = false, status = ?other, generation, current, "engine status"),
+                }
+                if !current {
+                    // A replaced engine's last words ("shut down"): not the app's engine any more.
+                    continue;
                 }
                 if let Some(setup) = app.try_state::<crate::runtime_setup::Service>() {
-                    setup.on_engine_status(&status);
+                    setup.on_engine_status(generation, &status);
                 }
                 let _ = app.emit(EVENT_ENGINE_STATUS, &status);
             }
@@ -355,6 +387,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         recorder,
         engine: RwLock::new(Arc::new(engine)),
         status_tx,
+        engine_gen,
         engine_swap: Mutex::new(()),
         swapping: AtomicBool::new(false),
         hotkey: Mutex::new(hotkey),

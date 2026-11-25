@@ -10,6 +10,11 @@ GitHub Release. This page lists every switch it reads and what each one needs.
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) | Ed25519 (minisign) key that signs `.exe` / `.app.tar.gz` for the in-app updater. Installed copies verify it against the public key built into the app before running anything. |
 
+Both build jobs then run `cargo run --release --example verify_update -- <file> <file.sig> <version>`:
+the app's own `updater::verify_signature` with the key built into this very build. A signing key that
+doesn't match the app's public key (or a signature bound to another version) fails the run before
+anything is published. Local check: `cargo run --example verify_update -- <file> <file.sig> <version>`.
+
 ## Code signing (optional, fail closed)
 
 Signing is off unless asked for. When it is asked for, a missing secret, a failed signature check,

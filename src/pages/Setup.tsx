@@ -122,7 +122,9 @@ function Running({ status, onPause }: { status: Extract<SetupStatus, { state: "r
           Step {status.stepIndex} of {status.stepCount}
         </span>
         <span className="setup-step__label">{status.stepLabel}</span>
-        <span className="setup-step__pct num">{pct}%</span>
+        <span className="setup-step__pct num">
+          {pct}% <span className="setup-step__overall">overall</span>
+        </span>
       </div>
       <ProgressBar fraction={status.fraction} label="Speech setup progress" />
       <p className="setup-detail">{status.detail || " "}</p>

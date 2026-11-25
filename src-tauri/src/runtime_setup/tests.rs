@@ -221,6 +221,116 @@ fn service(l: &Layout) -> (Service, Arc<Mutex<Vec<SetupStatus>>>) {
     (svc, seen)
 }
 
+/// The state a finished run leaves: files in place, waiting for engine `generation`.
+fn starting(svc: &Service, l: &Layout, generation: u64) {
+    *svc.inner.awaiting.lock() = Some(generation);
+    svc.inner.set(SetupStatus::Starting { plan: plan(l) });
+}
+
+#[test]
+fn a_no_change_repair_waits_for_the_new_engine_not_the_old_ones_shutdown() {
+    let root = temp("s1");
+    let l = layout_in(&root);
+    let (svc, _) = service(&l);
+    // Repair found nothing to change and started engine 5 in place of engine 4.
+    starting(&svc, &l, 5);
+    // The old engine's last words arrive first (it is being shut down) ...
+    svc.on_engine_status(4, &EngineStatus::Failed { reason: "The speech engine has been shut down.".into() });
+    svc.on_engine_status(4, &EngineStatus::Ready { model: "old".into(), device: "cuda".into(), vram_mb: 1 });
+    assert!(matches!(svc.status(), SetupStatus::Starting { .. }), "nothing from the old engine counts");
+    // ... then the new one warms up and is Ready.
+    svc.on_engine_status(5, &EngineStatus::Starting);
+    svc.on_engine_status(5, &EngineStatus::WarmingUp);
+    svc.on_engine_status(5, &EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
+    assert_eq!(svc.status(), SetupStatus::Done { model: "large-v3-turbo".into(), device: "cuda".into() });
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn repair_intent_survives_pause_retry_and_relaunch_and_ends_only_on_the_new_engines_ready() {
+    let root = temp("s2");
+    let l = layout_in(&root);
+    fake_installed(&l); // every file "looks" present, as a readable but corrupt model would
+    set_repair_pending(&l).unwrap();
+    assert!(effective_repair(&l, false), "a plain retry still repairs");
+
+    // Relaunch: setup reopens although the files look fine, and a working engine doesn't close it.
+    let (svc, _) = service(&l);
+    assert!(matches!(svc.status(), SetupStatus::Needed { ref reason, .. } if reason.contains("repair")));
+    svc.on_engine_status(0, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
+    assert!(matches!(svc.status(), SetupStatus::Needed { .. }));
+
+    // Pause during the run: the intent stays.
+    svc.inner.cancel.store(true, Ordering::SeqCst);
+    let hooks = Hooks { quiesce: Box::new(|| {}), installed: Box::new(|| 1) };
+    if manifest::platform().is_some() {
+        let err = svc.inner.run(true, &hooks).unwrap_err();
+        assert!(err.1.downcast_ref::<Cancelled>().is_some(), "{:#}", err.1);
+    }
+    assert!(repair_pending(&l));
+    let (svc, _) = service(&l);
+    assert!(matches!(svc.status(), SetupStatus::Needed { .. }), "relaunch after the pause");
+
+    // Finished: only the new engine's Ready (generation 3) clears it, not an older engine's.
+    starting(&svc, &l, 3);
+    svc.on_engine_status(2, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
+    assert!(repair_pending(&l));
+    svc.on_engine_status(3, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
+    assert!(!repair_pending(&l));
+    let (svc, _) = service(&l);
+    assert_eq!(svc.status(), SetupStatus::NotNeeded);
+    assert!(venv_python(&l.venv()).is_file(), "the usable runtime was kept");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_readable_but_corrupt_model_fails_the_repair_check() {
+    let root = temp("corrupt");
+    let good = b"the real weights".to_vec();
+    let m = pins(&[("model.bin", &good)]);
+    let dir = root.join("tiny");
+    std::fs::create_dir_all(&dir).unwrap();
+    // Same size, wrong bytes: present to the quick check, caught by the full one.
+    std::fs::write(dir.join("model.bin"), b"the fake weights").unwrap();
+    assert!(m.present_in(&dir));
+    assert!(!model_verified(&dir, &m, &AtomicBool::new(false)).unwrap());
+    std::fs::write(dir.join("model.bin"), &good).unwrap();
+    assert!(model_verified(&dir, &m, &AtomicBool::new(false)).unwrap());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_partial_download_only_counts_what_is_left() {
+    let Some((pins, uv)) = manifest::platform() else { return };
+    let root = temp("s3");
+    let l = layout_in(&root);
+    fake_installed(&l);
+    let name = &pins.models[0];
+    let m = &manifest::manifest().models[name];
+    std::fs::remove_dir_all(l.models.join(name)).unwrap();
+    // An earlier try got 1 GB of model.bin (set_len: no data written; removed at the end) and every small file.
+    let stage = l.cache.join("models").join(name);
+    std::fs::create_dir_all(&stage).unwrap();
+    let big = m.files.iter().max_by_key(|f| f.size).unwrap();
+    let have = 1_000_000_000u64.min(big.size - 1);
+    std::fs::OpenOptions::new().create(true).write(true).open(download::part_path(&stage.join(&big.name))).unwrap().set_len(have).unwrap();
+    for f in m.files.iter().filter(|f| f.name != big.name) {
+        std::fs::write(stage.join(&f.name), vec![0u8; f.size as usize]).unwrap();
+    }
+    let small: u64 = m.files.iter().filter(|f| f.name != big.name).map(|f| f.size).sum();
+    assert_eq!(staged_bytes(&l.cache, name, m), have + small);
+    let p = plan(&l);
+    let left = m.bytes() - have - small;
+    assert_eq!(p.download_bytes, left, "the screen shows only what is still to download");
+    assert_eq!(p.needed_bytes, left + SPACE_MARGIN_BYTES, "and asks only for room for that");
+    // The run's own space check agrees: with less free space than the whole model but enough for
+    // the rest, a resume is allowed.
+    let need = space_needed(true, pins, uv, left);
+    assert_eq!(need, p.needed_bytes);
+    assert!(need < m.bytes(), "a realistic resume fits where a fresh download would not");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn done_only_after_the_real_engine_is_ready() {
     let root = temp("svc");
@@ -228,17 +338,17 @@ fn done_only_after_the_real_engine_is_ready() {
     let (svc, seen) = service(&l);
     assert!(matches!(svc.status(), SetupStatus::Needed { .. }));
     // Files in place, engine warming: not done yet.
-    svc.inner.set(SetupStatus::Starting { plan: plan(&l) });
-    svc.on_engine_status(&EngineStatus::Starting);
-    svc.on_engine_status(&EngineStatus::WarmingUp);
+    starting(&svc, &l, 0);
+    svc.on_engine_status(0, &EngineStatus::Starting);
+    svc.on_engine_status(0, &EngineStatus::WarmingUp);
     assert!(matches!(svc.status(), SetupStatus::Starting { .. }));
-    svc.on_engine_status(&EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
+    svc.on_engine_status(0, &EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
     assert_eq!(svc.status(), SetupStatus::Done { model: "large-v3-turbo".into(), device: "cuda".into() });
     assert!(matches!(seen.lock().last(), Some(SetupStatus::Done { .. })), "the UI was told");
 
     // A failed warm-up after setup is shown as a setup error with the engine's reason.
-    svc.inner.set(SetupStatus::Starting { plan: plan(&l) });
-    svc.on_engine_status(&EngineStatus::Failed { reason: "no speech model could be loaded".into() });
+    starting(&svc, &l, 0);
+    svc.on_engine_status(0, &EngineStatus::Failed { reason: "no speech model could be loaded".into() });
     match svc.status() {
         SetupStatus::Failed { step, message, paused, .. } => {
             assert_eq!(step, "engine");
@@ -254,9 +364,9 @@ fn a_ready_engine_clears_needed_and_a_lost_runtime_brings_it_back() {
     let root = temp("svc2");
     let l = layout_in(&root);
     let (svc, _) = service(&l);
-    svc.on_engine_status(&EngineStatus::Ready { model: "m".into(), device: "cpu".into(), vram_mb: 0 });
+    svc.on_engine_status(0, &EngineStatus::Ready { model: "m".into(), device: "cpu".into(), vram_mb: 0 });
     assert_eq!(svc.status(), SetupStatus::NotNeeded);
-    svc.on_engine_status(&EngineStatus::NeedsSetup { reason: "gone".into() });
+    svc.on_engine_status(0, &EngineStatus::NeedsSetup { reason: "gone".into() });
     assert!(matches!(svc.status(), SetupStatus::Needed { reason, .. } if reason == "gone"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -282,7 +392,7 @@ fn an_unfinished_setup_stays_open_even_when_the_main_model_works() {
     std::fs::create_dir_all(l.cache.join("models").join(&pins.models[1])).unwrap();
     let (svc, _) = service(&l);
     assert!(matches!(svc.status(), SetupStatus::Needed { ref reason, .. } if reason.contains("didn't finish")));
-    svc.on_engine_status(&EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
+    svc.on_engine_status(0, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
     assert!(matches!(svc.status(), SetupStatus::Needed { .. }), "a working main model does not close an unfinished setup");
     // Without Wren's setup folder a missing backup model is the user's own business (e.g. a script install).
     std::fs::remove_dir_all(&l.cache).unwrap();

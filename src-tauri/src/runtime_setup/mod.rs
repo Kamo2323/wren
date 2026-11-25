@@ -167,12 +167,64 @@ pub fn engine_files_missing(python: &Path, models_dir: &Path, settings: &EngineS
 /// missing: e.g. it was paused or Wren quit while the backup model downloaded. The main model may
 /// already work, but setup stays open until everything it promised is in place.
 fn unfinished(layout: &Layout) -> Option<String> {
+    if repair_pending(layout) {
+        return Some("A speech repair didn't finish: Wren checks every file again when you continue.".into());
+    }
     if !layout.cache.exists() {
         return None;
     }
     let (pins, _) = manifest::platform()?;
     let missing = pins.models.iter().any(|n| !manifest::manifest().models[n].present_in(&layout.models.join(n)));
     missing.then(|| "Speech setup didn't finish: some files are still to download.".to_string())
+}
+
+/// A repair asked for (Settings, or a retry after the engine failed) is written down before
+/// anything changes and only cleared once the new engine is Ready, so a pause, a plain "Try again"
+/// or a relaunch can't quietly skip the full check (a readable but corrupt model looks present).
+fn repair_marker(layout: &Layout) -> PathBuf {
+    layout.cache.with_file_name("setup-repair-pending")
+}
+
+/// A run repairs when asked to, or when an earlier repair has not finished yet.
+pub(crate) fn effective_repair(layout: &Layout, requested: bool) -> bool {
+    requested || repair_pending(layout)
+}
+
+/// Free space a run needs: room for what is still to download, the unpacked runtime (with uv's
+/// temporary package cache) if it must be built, and a margin. The setup screen shows the same.
+pub(crate) fn space_needed(venv_ok: bool, pins: &PlatformPins, uv: &UvBuild, remaining_model_bytes: u64) -> u64 {
+    let mut needed = remaining_model_bytes;
+    if !venv_ok {
+        needed += uv.size + pins.packages_download_bytes + pins.runtime_disk_bytes;
+    }
+    if needed > 0 { needed + SPACE_MARGIN_BYTES } else { 0 }
+}
+
+pub(crate) fn repair_pending(layout: &Layout) -> bool {
+    repair_marker(layout).is_file()
+}
+
+fn set_repair_pending(layout: &Layout) -> std::io::Result<()> {
+    let marker = repair_marker(layout);
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(marker, chrono::Utc::now().to_rfc3339())
+}
+
+/// Bytes of model `name` already downloaded into the setup cache by an earlier, interrupted try
+/// (finished files and `.part` files). A resumed download only fetches — and only needs room
+/// for — the rest.
+pub(crate) fn staged_bytes(cache: &Path, name: &str, m: &ModelPins) -> u64 {
+    let stage = cache.join("models").join(name);
+    m.files
+        .iter()
+        .map(|f| {
+            let done = std::fs::metadata(stage.join(&f.name)).map(|x| x.len()).unwrap_or(0);
+            let part = std::fs::metadata(download::part_path(&stage.join(&f.name))).map(|x| x.len()).unwrap_or(0);
+            done.max(part).min(f.size)
+        })
+        .sum()
 }
 
 fn platform_label() -> &'static str {
@@ -207,26 +259,25 @@ pub fn plan(layout: &Layout) -> Plan {
         bytes: uv.size + pins.python_download_bytes + pins.packages_download_bytes,
         done: venv_done,
     });
-    if !venv_done {
-        plan.needed_bytes += uv.size + pins.packages_download_bytes + pins.runtime_disk_bytes;
-    }
+    let mut remaining_models = 0u64;
     for (i, name) in pins.models.iter().enumerate() {
         let m = &manifest::manifest().models[name];
         let done = m.present_in(&layout.models.join(name));
+        // What is still to come down (an interrupted download keeps what it already has).
+        let remaining = m.bytes().saturating_sub(staged_bytes(&layout.cache, name, m));
         plan.parts.push(Part {
             id: format!("model:{name}"),
             label: if i == 0 { format!("Speech model ({name})") } else { format!("Backup model for slower computers ({name})") },
-            bytes: m.bytes(),
+            bytes: if done { m.bytes() } else { remaining },
             done,
         });
         if !done {
-            plan.needed_bytes += m.bytes();
+            remaining_models += remaining;
         }
     }
     plan.download_bytes = plan.parts.iter().filter(|p| !p.done).map(|p| p.bytes).sum();
-    if plan.needed_bytes > 0 {
-        plan.needed_bytes += SPACE_MARGIN_BYTES;
-    }
+    // The same sum the run checks before it starts.
+    plan.needed_bytes = space_needed(venv_done, pins, uv, remaining_models);
     plan
 }
 
@@ -238,7 +289,8 @@ pub struct Hooks {
     pub quiesce: Box<dyn Fn() + Send + Sync>,
     /// Start a fresh engine with the current settings: after a finished setup (its Ready completes
     /// setup), and after a run that stopped the engine and then stopped early.
-    pub installed: Box<dyn Fn() + Send + Sync>,
+    /// Returns the new engine's generation: setup completes on that engine's own Ready only.
+    pub installed: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
 type Emit = Box<dyn Fn(&SetupStatus) + Send + Sync>;
@@ -252,6 +304,8 @@ struct Inner {
     /// This run stopped the engine (to replace files it may hold); a run that then stops early
     /// must start a fresh one so the app never sits on a stopped engine.
     quiesced: AtomicBool,
+    /// Generation of the engine started by the last finished run (see `Hooks::installed`).
+    awaiting: Mutex<Option<u64>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -276,6 +330,7 @@ impl Service {
                 cancel: AtomicBool::new(false),
                 running: AtomicBool::new(false),
                 quiesced: AtomicBool::new(false),
+                awaiting: Mutex::new(None),
                 worker: Mutex::new(None),
             }),
         }
@@ -302,8 +357,15 @@ impl Service {
         if self.inner.running.swap(true, Ordering::SeqCst) {
             return Err("Speech setup is already running.".into());
         }
+        // Written before anything changes; a retry or relaunch then repairs again (see `repair_marker`).
+        if repair && let Err(e) = set_repair_pending(&self.inner.layout) {
+            self.inner.running.store(false, Ordering::SeqCst);
+            return Err(format!("Couldn't start the repair ({e})."));
+        }
+        let repair = effective_repair(&self.inner.layout, repair);
         self.inner.cancel.store(false, Ordering::SeqCst);
         self.inner.quiesced.store(false, Ordering::SeqCst);
+        *self.inner.awaiting.lock() = None;
         if let Some(old) = self.inner.worker.lock().take() {
             let _ = old.join();
         }
@@ -357,11 +419,21 @@ impl Service {
     }
 
     /// Engine status changes: setup is only Done when the real engine says Ready.
-    pub fn on_engine_status(&self, engine: &EngineStatus) {
+    /// `generation` identifies the engine that sent it (see `session::app::tagged_status`): while
+    /// Starting, only the engine this setup started counts, so the old engine's "shut down" can't
+    /// fail a repair and the new engine's Ready can't be missed.
+    pub fn on_engine_status(&self, generation: u64, engine: &EngineStatus) {
+        let mut s = self.inner.status.lock();
+        let awaited = *self.inner.awaiting.lock();
+        if matches!(*s, SetupStatus::Starting { .. }) && awaited != Some(generation) {
+            return;
+        }
         let next = {
-            let s = self.inner.status.lock();
             match (&*s, engine) {
                 (SetupStatus::Starting { .. }, EngineStatus::Ready { model, device, .. }) => {
+                    // The repair (if any) is complete only now: the new engine really works.
+                    let _ = std::fs::remove_file(repair_marker(&self.inner.layout));
+                    *self.inner.awaiting.lock() = None;
                     Some(SetupStatus::Done { model: model.clone(), device: device.clone() })
                 }
                 (SetupStatus::Starting { plan }, EngineStatus::Failed { reason }) => Some(SetupStatus::Failed {
@@ -387,7 +459,8 @@ impl Service {
             }
         };
         if let Some(n) = next {
-            self.inner.set(n);
+            *s = n.clone();
+            (self.inner.emit)(&n);
         }
     }
 }
@@ -507,7 +580,14 @@ impl Inner {
         self.log(&format!("runtime usable: {venv_ok}; models to fetch: {models_needed:?}"));
 
         // 2. Steps, weighted by what has to come down.
-        let model_bytes: u64 = models_needed.iter().map(|n| manifest::manifest().models[n].bytes()).sum();
+        // Only what is still to come down: an interrupted download keeps its finished and `.part` files.
+        let model_bytes: u64 = models_needed
+            .iter()
+            .map(|n| {
+                let m = &manifest::manifest().models[n];
+                m.bytes().saturating_sub(staged_bytes(&layout.cache, n, m))
+            })
+            .sum();
         let mut steps = vec![Step { id: "check", label: "Checking what's already here", weight: 0.01 }];
         if !venv_ok {
             steps.push(Step { id: "uv", label: "Getting the installer", weight: uv.size as f64 });
@@ -524,12 +604,8 @@ impl Inner {
         progress.begin("check", "");
 
         // 3. Space, now that we know exactly what is needed.
-        let mut needed = model_bytes;
-        if !venv_ok {
-            needed += uv.size + pins.packages_download_bytes + pins.runtime_disk_bytes;
-        }
+        let needed = space_needed(venv_ok, pins, uv, model_bytes);
         if needed > 0 {
-            needed += SPACE_MARGIN_BYTES;
             if let Some(free) = free_space(&layout.runtime)
                 && free < needed
             {
@@ -558,20 +634,24 @@ impl Inner {
             swap_venv(layout).at("packages")?;
             self.log("runtime swapped in");
             // The packages are in the venv now: uv's copy (about the same size again) can go at once.
-            self.clean_uv_cache(&uv_exe);
+            self.clean_uv_cache();
         }
 
         // 5. Models.
         if !models_needed.is_empty() {
             let client = download::client().at("models")?;
             progress.begin("models", "");
-            let total = model_bytes;
+            // Progress counts every byte of the models (finished parts included); the step's share
+            // of the bar is only what was still to download.
+            let full: u64 = models_needed.iter().map(|n| manifest::manifest().models[n].bytes()).sum();
+            let already = full.saturating_sub(model_bytes);
             let mut base = 0u64;
             for name in &models_needed {
                 let m = &manifest::manifest().models[name];
                 let mut on_progress = |done: u64| {
                     let all = base + done;
-                    progress.update(all as f64 / total.max(1) as f64, &format!("{} of {}", mb(all), mb(total)));
+                    let fetched = all.saturating_sub(already);
+                    progress.update(fetched as f64 / model_bytes.max(1) as f64, &format!("models: {} of {}", mb(all), mb(full)));
                 };
                 install_model(&client, &layout.hf_base, name, m, &layout.models, &layout.cache, &self.cancel, &mut on_progress, &|| {
                     self.quiesce(hooks)
@@ -586,9 +666,16 @@ impl Inner {
         write_runtime_marker(layout, pins);
         progress.begin("engine", "Loading the model and transcribing a short test clip.");
         let final_plan = plan(layout);
-        self.set(SetupStatus::Starting { plan: final_plan });
         self.log("files in place; starting the engine");
-        (hooks.installed)();
+        {
+            // Under the status lock, so not even the new engine's first event can arrive before we
+            // know which engine to wait for.
+            let mut st = self.status.lock();
+            let generation = (hooks.installed)();
+            *self.awaiting.lock() = Some(generation);
+            *st = SetupStatus::Starting { plan: final_plan };
+            (self.emit)(&st);
+        }
         self.clean_cache();
         Ok(())
     }
@@ -597,6 +684,9 @@ impl Inner {
         let dir = self.layout.cache.join("uv");
         let exe_name = Path::new(&uv.exe).file_name().unwrap_or_default().to_os_string();
         let ready = dir.join("bin").join(&exe_name);
+        // Never run a uv left over from an earlier try: only one unpacked, this run, from the
+        // archive just checked against its pinned SHA-256 (a cached archive is re-hashed by `fetch`).
+        let _ = std::fs::remove_file(&ready);
         let version_ok = |exe: &Path| -> bool {
             let mut cmd = Command::new(exe);
             cmd.arg("--version");
@@ -606,9 +696,6 @@ impl Inner {
                 .filter(|o| o.status.success())
                 .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains(&manifest::manifest().uv.version))
         };
-        if ready.is_file() && version_ok(&ready) {
-            return Ok(ready);
-        }
         let archive_name = uv.url.rsplit('/').next().unwrap_or("uv-archive");
         let archive = dir.join(archive_name);
         let size = uv.size;
@@ -766,21 +853,13 @@ impl Inner {
         }
     }
 
-    fn clean_uv_cache(&self, uv: &Path) {
-        let dir = self.layout.cache.join("uv-cache");
-        if uv.is_file() && dir.exists() {
-            let mut cmd = Command::new(uv);
-            cmd.args(["cache", "clean"]).env("UV_CACHE_DIR", &dir).stdout(Stdio::null()).stderr(Stdio::null());
-            hide_window(&mut cmd);
-            let _ = cmd.status();
-        }
-        let _ = remove_tree(&dir);
+    /// Plain file removal (read-only flags cleared): no program from the cache is ever run for it.
+    fn clean_uv_cache(&self) {
+        let _ = remove_tree(&self.layout.cache.join("uv-cache"));
     }
 
     /// After success the temporary files (uv, its package cache, staged downloads) go.
     fn clean_cache(&self) {
-        let uv = self.layout.cache.join("uv").join("bin").join(if cfg!(windows) { "uv.exe" } else { "uv" });
-        self.clean_uv_cache(&uv);
         if let Err(e) = remove_tree(&self.layout.cache) {
             self.log(&format!("could not remove {} ({e}); it is safe to delete", self.layout.cache.display()));
         }

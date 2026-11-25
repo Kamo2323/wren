@@ -354,7 +354,7 @@ function initialMockSetup(): SetupStatus {
         stepIndex: 5,
         stepCount: 6,
         fraction: 0.62,
-        detail: "812 MB of 2.11 GB",
+        detail: "models: 812 MB of 2.11 GB",
       };
     case "paused":
       return { state: "failed", plan, step: "models", message: "Setup is paused. What has downloaded so far is kept, so it carries on from there.", paused: true };

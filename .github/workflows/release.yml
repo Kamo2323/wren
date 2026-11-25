@@ -223,6 +223,7 @@ jobs:
             throw "Expected installer not found at $installerPath"
           }
           npx tauri signer sign --app-version $ver $installerPath
+          if ($LASTEXITCODE -ne 0) { throw "signing the update installer failed (exit $LASTEXITCODE)" }
           if (-not (Test-Path -LiteralPath "$installerPath.sig")) {
             throw "Expected signature not found at $installerPath.sig"
           }
@@ -232,6 +233,19 @@ jobs:
           # Read by the publish job: a release that asked for signing must carry this proof.
           $auth = Get-AuthenticodeSignature -LiteralPath $installerPath
           [IO.File]::WriteAllText((Join-Path (Get-Location) 'dist-release-win\signing-windows.txt'), "authenticode=$($auth.Status)`n")
+
+      - name: Verify the update signature with the app's own key
+        shell: pwsh
+        env:
+          # Same build id as the app build, so the library is not rebuilt for a different marker.
+          WREN_BUILD_ID: ${{ needs.prepare.outputs.build_id }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Built from this checkout with the same WREN_UPDATE_* settings as wren.exe, calling the
+          # app's own updater::verify_signature: a key mismatch fails here, not on users' machines.
+          $file = "dist-release-win\Wren_$($env:VERSION)_x64-setup.exe"
+          cargo run --release --manifest-path src-tauri/Cargo.toml --example verify_update -- $file "$file.sig" $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "the update installer does not verify with the key built into Wren" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -395,6 +409,15 @@ jobs:
         run: |
           [ -n "${WREN_SIGNING_KEYCHAIN:-}" ] && security delete-keychain "$WREN_SIGNING_KEYCHAIN" || true
           rm -f "${APPLE_API_KEY_PATH:-/nonexistent}"
+
+      - name: Verify the update signature with the app's own key
+        env:
+          WREN_BUILD_ID: ${{ needs.prepare.outputs.build_id }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Same check as on Windows: the app's own verify_signature with the key built into Wren.
+          FILE="dist-release-mac/Wren_${VERSION}_aarch64.app.tar.gz"
+          cargo run --release --target aarch64-apple-darwin --manifest-path src-tauri/Cargo.toml --example verify_update -- "$FILE" "$FILE.sig" "$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:

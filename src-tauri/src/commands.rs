@@ -396,7 +396,7 @@ pub fn runtime_setup_start(
         // A brand-new engine with the current settings; its Ready is what completes setup.
         installed: Box::new(move || {
             let engine = app.state::<AppState>().settings.read().engine.clone();
-            fresh.replace_engine(engine);
+            fresh.replace_engine(engine)
         }),
     };
     setup.start(repair.unwrap_or(false), hooks)

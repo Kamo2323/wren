@@ -182,14 +182,19 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
     let accelerated = device == "mlx";
     #[cfg(not(target_os = "macos"))]
     let accelerated = device == "cuda";
-    if !accelerated {
-        #[cfg(target_os = "macos")]
-        return Err(format!("ready on {device}, not Apple Silicon MLX (CPU fallback)"));
-        #[cfg(not(target_os = "macos"))]
-        return Err(format!("ready on {device}, not CUDA (CPU fallback)"));
-    }
     if !missing.is_empty() {
-        return Err(format!("the warm-up clip did not give the expected words (missing {missing:?})"));
+        return Err(format!("the warm-up clip did not give the expected words (missing {missing:?}; device {device})"));
+    }
+    #[cfg(target_os = "macos")]
+    let accelerator = "Apple Silicon MLX";
+    #[cfg(not(target_os = "macos"))]
+    let accelerator = "CUDA";
+    if !accelerated {
+        // A supported fallback (no usable GPU): it transcribed the clip correctly, so it passes, and
+        // says plainly that it is the slower processor path.
+        return Ok(format!(
+            "{model} ready on {device} (processor fallback, no {accelerator}: slower) in {ready_ms} ms; warm-up clip transcribed in {took} ms"
+        ));
     }
     #[cfg(target_os = "macos")]
     let mem_label = "MB RAM";
