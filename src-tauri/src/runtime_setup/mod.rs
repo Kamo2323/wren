@@ -703,8 +703,12 @@ impl Inner {
             progress.update(b as f64 / size as f64, &format!("{} of {}", mb(b), mb(size)))
         })?;
         let unpack = dir.join("unpack");
-        let _ = std::fs::remove_dir_all(&unpack);
-        std::fs::create_dir_all(&unpack)?;
+        match std::fs::remove_dir_all(&unpack) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context("cannot clear the previous uv extraction"),
+        }
+        std::fs::create_dir(&unpack).context("cannot create a fresh uv extraction directory")?;
         extract(&archive, &unpack)?;
         let found = find_file(&unpack, &exe_name).ok_or_else(|| anyhow!("{} was not in the downloaded archive", exe_name.to_string_lossy()))?;
         std::fs::create_dir_all(dir.join("bin"))?;

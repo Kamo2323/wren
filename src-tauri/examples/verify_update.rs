@@ -15,9 +15,16 @@ fn main() {
         eprintln!("usage: verify_update <file> <file.sig> <version>");
         std::process::exit(2);
     };
-    let Some(source) = update_source() else {
-        println!("UPDATE SIGNATURE SKIPPED: this build has no update source (WREN_UPDATE_REPO=none)");
-        return;
+    let source = match update_source() {
+        Ok(Some(source)) => source,
+        Ok(None) => {
+            println!("UPDATE SIGNATURE SKIPPED: this build has no update source (WREN_UPDATE_REPO=none)");
+            return;
+        }
+        Err(reason) => {
+            eprintln!("UPDATE SIGNATURE FAIL: {reason}");
+            std::process::exit(1);
+        }
     };
     let payload = match std::fs::read(file) {
         Ok(b) => b,

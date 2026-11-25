@@ -46,26 +46,26 @@ pub struct UpdateSource {
     pub public_key_b64: String,
 }
 
-/// `WREN_UPDATE_REPO` value → source. Unset/empty = official; `none`/`off`/`disabled` = no updates;
-/// anything that isn't a plain `owner/repo` also turns updates off rather than guessing.
-pub fn parse_update_source(repo: Option<&str>, pubkey: Option<&str>) -> Option<UpdateSource> {
+/// Unset or empty uses the official source. An explicit opt-out returns no source.
+/// Malformed values are errors so release verification cannot mistake them for an opt-out.
+pub fn parse_update_source(repo: Option<&str>, pubkey: Option<&str>) -> Result<Option<UpdateSource>, &'static str> {
     let repo = repo.map(str::trim).filter(|r| !r.is_empty()).unwrap_or(UPDATE_REPO_DEFAULT);
     if ["none", "off", "disabled", "0"].iter().any(|w| repo.eq_ignore_ascii_case(w)) {
-        return None;
+        return Ok(None);
     }
     let ok = |s: &str| {
         !s.is_empty() && !s.starts_with('.') && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     };
-    let (owner, name) = repo.split_once('/')?;
-    if !ok(owner) || !ok(name) || name.contains('/') {
-        return None;
-    }
+    let (owner, name) = repo
+        .split_once('/')
+        .filter(|(owner, name)| ok(owner) && ok(name))
+        .ok_or("WREN_UPDATE_REPO must be owner/repo or none")?;
     let key = pubkey.map(str::trim).filter(|k| !k.is_empty()).unwrap_or(UPDATE_PUBLIC_KEY);
-    Some(UpdateSource { owner: owner.into(), repo: name.into(), public_key_b64: key.into() })
+    Ok(Some(UpdateSource { owner: owner.into(), repo: name.into(), public_key_b64: key.into() }))
 }
 
-/// This build's update source (`None` = built without updates).
-pub fn update_source() -> Option<UpdateSource> {
+/// This build's configured update source.
+pub fn update_source() -> Result<Option<UpdateSource>, &'static str> {
     parse_update_source(option_env!("WREN_UPDATE_REPO"), option_env!("WREN_UPDATE_PUBKEY"))
 }
 
@@ -207,7 +207,11 @@ pub struct UpdaterConfig {
 impl UpdaterConfig {
     pub fn production(current_version: String) -> Self {
         let private = private_mode(option_env!("WREN_UPDATE_PRIVATE"), std::env::var("WREN_UPDATE_PRIVATE").ok().as_deref());
-        match update_source() {
+        let source = update_source().unwrap_or_else(|reason| {
+            tracing::warn!(reason, "updates disabled: invalid build configuration");
+            None
+        });
+        match source {
             Some(src) => Self {
                 public_latest_url: format!("https://github.com/{}/{}/releases/latest/download/latest.json", src.owner, src.repo),
                 api_latest_release_url: format!("https://api.github.com/repos/{}/{}/releases/latest", src.owner, src.repo),
@@ -1835,17 +1839,17 @@ mod tests {
 
     #[test]
     fn update_source_is_official_by_default_and_configurable_for_forks() {
-        let official = parse_update_source(None, None).unwrap();
+        let official = parse_update_source(None, None).unwrap().unwrap();
         assert_eq!((official.owner.as_str(), official.repo.as_str()), ("Kamo2323", "wren"));
         assert_eq!(official.public_key_b64, UPDATE_PUBLIC_KEY);
-        assert_eq!(parse_update_source(Some("  "), Some("")), Some(official.clone()));
-        let fork = parse_update_source(Some("someone/wren-fork"), Some("Zm9ya2tleQ==")).unwrap();
+        assert_eq!(parse_update_source(Some("  "), Some("")), Ok(Some(official)));
+        let fork = parse_update_source(Some("someone/wren-fork"), Some("Zm9ya2tleQ==")).unwrap().unwrap();
         assert_eq!((fork.owner.as_str(), fork.repo.as_str(), fork.public_key_b64.as_str()), ("someone", "wren-fork", "Zm9ya2tleQ=="));
         for off in ["none", "OFF", "disabled", "0"] {
-            assert_eq!(parse_update_source(Some(off), None), None, "{off}");
+            assert_eq!(parse_update_source(Some(off), None), Ok(None), "{off}");
         }
         for bad in ["nope", "a/b/c", "a b/c", "../x", "/x", "x/"] {
-            assert_eq!(parse_update_source(Some(bad), None), None, "{bad} is refused, not guessed");
+            assert!(parse_update_source(Some(bad), None).is_err(), "{bad} is invalid, not an opt-out");
         }
     }
 
