@@ -44,9 +44,14 @@
   passed. Live 3/3 clips heard, dictation p50 220 ms idle → 228 ms recording. The live run used AllSound playback.
   The mute regressions used a fake Teams reader with SQLite, and the tray test simulated a throttled debounce.
   A real two-participant Teams call and native hidden-webview timing still need live confirmation.
-- **Next on the Mac checkout:** `git pull --ff-only origin feat/meetings`. Preserve held boundary audio through a
-  health-check reconnect, address a stale rate on the waiting Teams-only candidate, and reset AX wake backoff between
-  calls. Run the full Mac verification. Then run one final regular council, stop, and report to Maximilian.
+- **R4 Mac fixes done by Sol (1dc8a7d, 248786c):** Mac lib 457 passed, 0 warnings, mac_tap live 8/8, live meeting
+  3/3 with p50 1078→1085 ms (the Claude step was not run on the Mac: blocked by the approval check).
+- **FINAL council round 5 (at 248786c): Opus 8/10, Sol 5/10, Gemini 8/10.** Still open: the 60 s mute carry-over
+  only covers time inside a Teams reading (each ≤ 1 s), so a reading gap of over ~1 s while muted can save a line as
+  unmuted (Sol critical, Gemini important; verified in `speakers.rs::muted_during`). Other open items are in the
+  ledger ("Council R5 …"): ordinary Quit dropping a failed notes draft, Mac held-audio flush at a guessed rate,
+  unbounded WASAPI activation wait, a 3 s wait for every Me line after a call ends, a double 15 s wait on quit.
+- **STOPPED (2026-11-25):** waiting for Maximilian's decision. Nothing merged to main.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
