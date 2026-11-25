@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use wasapi::{initialize_mta, AudioCaptureClient, AudioClient, Direction, Handle, SampleType, StreamMode, WaveFormat};
+use wasapi::{AudioCaptureClient, AudioClient, Direction, Handle, SampleType, StreamMode, WaveFormat};
 
 const RATE: u64 = 16_000;
 /// How often the loop wakes when nothing arrives, and the size of padding blocks.
@@ -153,7 +153,8 @@ impl AudioSource for TeamsLoopback {
         let stop = self.stop.clone();
         let target = self.target;
         let thread = std::thread::Builder::new().name("wren-teams-audio".into()).spawn(move || {
-            let _ = initialize_mta().ok();
+            // The clients below must be dropped before leaving the COM apartment.
+            let _com = crate::watcher::uia::ComMta::join();
             let started = Instant::now();
             let (mut client, mut mode, mut pid) = connect(target);
             {
