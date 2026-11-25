@@ -80,6 +80,11 @@ pub fn fetch(
         progress(size);
         return Ok(());
     }
+    // A finished file that fails its checksum (or has the wrong size) is never resumed from. Remove
+    // it before its replacement downloads beside it, so the two never need room at the same time.
+    if dest.is_file() {
+        std::fs::remove_file(dest).with_context(|| format!("cannot remove the damaged {}", dest.display()))?;
+    }
     let part = part_path(dest);
     let mut have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     if have > size {
@@ -300,6 +305,41 @@ pub(crate) mod tests {
         std::fs::write(part_path(&dest), &data[..1000]).unwrap();
         fetch(&client().unwrap(), &format!("{}/m.bin", srv.url), &dest, data.len() as u64, &sha_hex(&data), &AtomicBool::new(false), &mut |_| {}).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_finished_file_is_removed_before_its_replacement_downloads() {
+        let data = body(800_000);
+        let srv = serve(vec![("/m.bin".into(), data.clone())], None, true);
+        for (case, stale) in [("full-size corrupt", vec![9u8; data.len()]), ("oversized", vec![9u8; data.len() + 5_000]), ("short", vec![9u8; 1_000])] {
+            let dir = temp("damaged");
+            let dest = dir.join("m.bin");
+            std::fs::write(&dest, &stale).unwrap();
+            let mut gone_before_first_byte = None;
+            fetch(&client().unwrap(), &format!("{}/m.bin", srv.url), &dest, data.len() as u64, &sha_hex(&data), &AtomicBool::new(false), &mut |b| {
+                if b > 0 && gone_before_first_byte.is_none() {
+                    gone_before_first_byte = Some(!dest.exists());
+                }
+            })
+            .unwrap();
+            assert_eq!(gone_before_first_byte, Some(true), "{case}: removed before the replacement took any room");
+            assert_eq!(std::fs::read(&dest).unwrap(), data, "{case}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_damaged_finished_file_next_to_a_partial_one_resumes_the_partial() {
+        let data = body(900_000);
+        let srv = serve(vec![("/m.bin".into(), data.clone())], None, true);
+        let dir = temp("damaged-part");
+        let dest = dir.join("m.bin");
+        std::fs::write(&dest, vec![1u8; data.len() + 10]).unwrap(); // oversized leftover
+        std::fs::write(part_path(&dest), &data[..300_000]).unwrap(); // a good partial
+        fetch(&client().unwrap(), &format!("{}/m.bin", srv.url), &dest, data.len() as u64, &sha_hex(&data), &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+        assert_eq!(srv.ranges.lock().last().copied().flatten(), Some(300_000), "the legitimate resume still happens");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

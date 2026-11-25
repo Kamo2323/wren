@@ -212,9 +212,13 @@ fn set_repair_pending(layout: &Layout) -> std::io::Result<()> {
     std::fs::write(marker, chrono::Utc::now().to_rfc3339())
 }
 
-/// Bytes of model `name` already downloaded into the setup cache by an earlier, interrupted try
-/// (finished files and `.part` files). A resumed download only fetches — and only needs room
-/// for — the rest.
+/// Bytes of model `name` already downloaded into the setup cache by an earlier, interrupted try,
+/// counting only what a resume really keeps (sizes only: the UI never hashes big files):
+/// - a finished file of exactly the pinned size counts in full. If it then fails its checksum,
+///   `download::fetch` deletes it before re-downloading, so its space is freed first and the
+///   estimate of room needed still holds;
+/// - a finished file of the wrong size is deleted, not resumed: it counts for nothing;
+/// - a `.part` no bigger than the file resumes and counts; a bigger one restarts and counts nothing.
 pub(crate) fn staged_bytes(cache: &Path, name: &str, m: &ModelPins) -> u64 {
     let stage = cache.join("models").join(name);
     m.files
@@ -222,7 +226,13 @@ pub(crate) fn staged_bytes(cache: &Path, name: &str, m: &ModelPins) -> u64 {
         .map(|f| {
             let done = std::fs::metadata(stage.join(&f.name)).map(|x| x.len()).unwrap_or(0);
             let part = std::fs::metadata(download::part_path(&stage.join(&f.name))).map(|x| x.len()).unwrap_or(0);
-            done.max(part).min(f.size)
+            if done == f.size {
+                f.size
+            } else if part <= f.size {
+                part
+            } else {
+                0
+            }
         })
         .sum()
 }
@@ -289,7 +299,8 @@ pub struct Hooks {
     pub quiesce: Box<dyn Fn() + Send + Sync>,
     /// Start a fresh engine with the current settings: after a finished setup (its Ready completes
     /// setup), and after a run that stopped the engine and then stopped early.
-    /// Returns the new engine's generation: setup completes on that engine's own Ready only.
+    /// Returns a generation floor (`AppEnv::replace_engine`): setup completes on the first Ready of
+    /// an engine installed after the call, so a settings change that overtakes it still finishes setup.
     pub installed: Box<dyn Fn() -> u64 + Send + Sync>,
 }
 
@@ -304,7 +315,7 @@ struct Inner {
     /// This run stopped the engine (to replace files it may hold); a run that then stops early
     /// must start a fresh one so the app never sits on a stopped engine.
     quiesced: AtomicBool,
-    /// Generation of the engine started by the last finished run (see `Hooks::installed`).
+    /// Generation floor of the last finished run: only engines installed after it count (see `Hooks::installed`).
     awaiting: Mutex<Option<u64>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -419,13 +430,14 @@ impl Service {
     }
 
     /// Engine status changes: setup is only Done when the real engine says Ready.
-    /// `generation` identifies the engine that sent it (see `session::app::tagged_status`): while
-    /// Starting, only the engine this setup started counts, so the old engine's "shut down" can't
-    /// fail a repair and the new engine's Ready can't be missed.
+    /// `generation` identifies the installed engine that sent it (see `session::app::tagged_status`;
+    /// replaced engines' events never get here). While Starting, only an engine installed after the
+    /// run handed over counts: the old engine's "shut down" can't fail a repair, and if a settings
+    /// change replaces the engine setup started, the replacement's Ready completes setup instead.
     pub fn on_engine_status(&self, generation: u64, engine: &EngineStatus) {
         let mut s = self.inner.status.lock();
-        let awaited = *self.inner.awaiting.lock();
-        if matches!(*s, SetupStatus::Starting { .. }) && awaited != Some(generation) {
+        let floor = *self.inner.awaiting.lock();
+        if matches!(*s, SetupStatus::Starting { .. }) && !floor.is_some_and(|f| generation > f) {
             return;
         }
         let next = {
@@ -671,8 +683,8 @@ impl Inner {
             // Under the status lock, so not even the new engine's first event can arrive before we
             // know which engine to wait for.
             let mut st = self.status.lock();
-            let generation = (hooks.installed)();
-            *self.awaiting.lock() = Some(generation);
+            let floor = (hooks.installed)();
+            *self.awaiting.lock() = Some(floor);
             *st = SetupStatus::Starting { plan: final_plan };
             (self.emit)(&st);
         }

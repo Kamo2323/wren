@@ -221,9 +221,9 @@ fn service(l: &Layout) -> (Service, Arc<Mutex<Vec<SetupStatus>>>) {
     (svc, seen)
 }
 
-/// The state a finished run leaves: files in place, waiting for engine `generation`.
-fn starting(svc: &Service, l: &Layout, generation: u64) {
-    *svc.inner.awaiting.lock() = Some(generation);
+/// The state a finished run leaves: files in place, waiting for an engine installed after `floor`.
+fn starting(svc: &Service, l: &Layout, floor: u64) {
+    *svc.inner.awaiting.lock() = Some(floor);
     svc.inner.set(SetupStatus::Starting { plan: plan(l) });
 }
 
@@ -233,7 +233,7 @@ fn a_no_change_repair_waits_for_the_new_engine_not_the_old_ones_shutdown() {
     let l = layout_in(&root);
     let (svc, _) = service(&l);
     // Repair found nothing to change and started engine 5 in place of engine 4.
-    starting(&svc, &l, 5);
+    starting(&svc, &l, 4);
     // The old engine's last words arrive first (it is being shut down) ...
     svc.on_engine_status(4, &EngineStatus::Failed { reason: "The speech engine has been shut down.".into() });
     svc.on_engine_status(4, &EngineStatus::Ready { model: "old".into(), device: "cuda".into(), vram_mb: 1 });
@@ -243,6 +243,26 @@ fn a_no_change_repair_waits_for_the_new_engine_not_the_old_ones_shutdown() {
     svc.on_engine_status(5, &EngineStatus::WarmingUp);
     svc.on_engine_status(5, &EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
     assert_eq!(svc.status(), SetupStatus::Done { model: "large-v3-turbo".into(), device: "cuda".into() });
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_settings_change_that_overtakes_setups_engine_still_completes_setup() {
+    let root = temp("r21");
+    let l = layout_in(&root);
+    set_repair_pending(&l).unwrap();
+    let (svc, _) = service(&l);
+    // Setup handed over at generation 4; its engine (5) starts warming up ...
+    starting(&svc, &l, 4);
+    svc.on_engine_status(5, &EngineStatus::Starting);
+    svc.on_engine_status(5, &EngineStatus::WarmingUp);
+    // ... and a settings change replaces it (6) before it is Ready. Engine 5's events are stale from
+    // now on (the forwarder drops them); 6 is what's installed, and its Ready finishes setup.
+    svc.on_engine_status(6, &EngineStatus::Starting);
+    assert!(matches!(svc.status(), SetupStatus::Starting { .. }));
+    svc.on_engine_status(6, &EngineStatus::Ready { model: "small.en".into(), device: "cpu".into(), vram_mb: 0 });
+    assert_eq!(svc.status(), SetupStatus::Done { model: "small.en".into(), device: "cpu".into() });
+    assert!(!repair_pending(&l), "the repair ended on the converged engine's Ready");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -272,7 +292,7 @@ fn repair_intent_survives_pause_retry_and_relaunch_and_ends_only_on_the_new_engi
     assert!(matches!(svc.status(), SetupStatus::Needed { .. }), "relaunch after the pause");
 
     // Finished: only the new engine's Ready (generation 3) clears it, not an older engine's.
-    starting(&svc, &l, 3);
+    starting(&svc, &l, 2);
     svc.on_engine_status(2, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
     assert!(repair_pending(&l));
     svc.on_engine_status(3, &EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
@@ -332,6 +352,41 @@ fn a_partial_download_only_counts_what_is_left() {
 }
 
 #[test]
+fn staged_bytes_count_only_what_a_resume_keeps() {
+    let root = temp("staged");
+    let cache = root.join("cache");
+    let a = vec![1u8; 1000];
+    let m = pins(&[("model.bin", &a), ("config.json", b"{}")]);
+    let stage = cache.join("models").join("tiny");
+    std::fs::create_dir_all(&stage).unwrap();
+    let file = stage.join("model.bin");
+    let part = download::part_path(&file);
+    let set = |final_len: Option<u64>, part_len: Option<u64>| {
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(&part);
+        if let Some(n) = final_len {
+            std::fs::write(&file, vec![0u8; n as usize]).unwrap();
+        }
+        if let Some(n) = part_len {
+            std::fs::write(&part, vec![0u8; n as usize]).unwrap();
+        }
+    };
+    set(Some(1000), None);
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 1000, "full-size finished file");
+    set(Some(400), Some(250));
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 250, "a short finished file is deleted; the .part resumes");
+    set(Some(1500), None);
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 0, "an oversized finished file counts for nothing");
+    set(Some(1500), Some(600));
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 600, "oversized finished file + a good .part");
+    set(None, Some(1200));
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 0, "an oversized .part restarts");
+    set(None, Some(700));
+    assert_eq!(staged_bytes(&cache, "tiny", &m), 700);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn done_only_after_the_real_engine_is_ready() {
     let root = temp("svc");
     let l = layout_in(&root);
@@ -339,16 +394,16 @@ fn done_only_after_the_real_engine_is_ready() {
     assert!(matches!(svc.status(), SetupStatus::Needed { .. }));
     // Files in place, engine warming: not done yet.
     starting(&svc, &l, 0);
-    svc.on_engine_status(0, &EngineStatus::Starting);
-    svc.on_engine_status(0, &EngineStatus::WarmingUp);
+    svc.on_engine_status(1, &EngineStatus::Starting);
+    svc.on_engine_status(1, &EngineStatus::WarmingUp);
     assert!(matches!(svc.status(), SetupStatus::Starting { .. }));
-    svc.on_engine_status(0, &EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
+    svc.on_engine_status(1, &EngineStatus::Ready { model: "large-v3-turbo".into(), device: "cuda".into(), vram_mb: 1 });
     assert_eq!(svc.status(), SetupStatus::Done { model: "large-v3-turbo".into(), device: "cuda".into() });
     assert!(matches!(seen.lock().last(), Some(SetupStatus::Done { .. })), "the UI was told");
 
     // A failed warm-up after setup is shown as a setup error with the engine's reason.
     starting(&svc, &l, 0);
-    svc.on_engine_status(0, &EngineStatus::Failed { reason: "no speech model could be loaded".into() });
+    svc.on_engine_status(1, &EngineStatus::Failed { reason: "no speech model could be loaded".into() });
     match svc.status() {
         SetupStatus::Failed { step, message, paused, .. } => {
             assert_eq!(step, "engine");

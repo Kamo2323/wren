@@ -44,13 +44,10 @@ pub struct AppEnv {
     engine: RwLock<Arc<Engine>>,
     /// Status of every engine, tagged with the engine's generation (see `tagged_status`).
     status_tx: Sender<(u64, EngineStatus)>,
-    /// Generation of the current engine: 0 at launch, +1 for each replacement. Events of older
-    /// engines (e.g. the "shut down" of the one being replaced) never reach the UI or speech setup.
-    engine_gen: Arc<AtomicU64>,
-    /// One engine replacement at a time (shutdown + start + swap under one lock)…
-    engine_swap: Mutex<()>,
-    /// …and while it runs the engine reports `Starting`, so a finishing dictation waits for the new
-    /// engine instead of failing on the old one.
+    /// One engine replacement at a time, numbered in the order they really happen (see `EngineSwap`).
+    swap: EngineSwap,
+    /// While a replacement runs the engine reports `Starting`, so a finishing dictation waits for the
+    /// new engine instead of failing on the old one.
     swapping: AtomicBool,
     hotkey: Mutex<Option<HotkeyService>>,
     /// Kept so `Reinstall` can start the hotkey after launch (e.g. once macOS Accessibility is granted).
@@ -93,27 +90,32 @@ impl AppEnv {
 
     /// New engine settings: shut the old sidecar down (frees the GPU), start a new one. In the
     /// background; dictations meanwhile wait for it like a warm-up (the status reads `Starting`).
-    /// Returns the new engine's generation, fixed before this returns, so a caller can wait for
-    /// that engine's own Ready and not mistake the old engine's last events for it.
+    ///
+    /// Returns a floor: every engine installed after this call (this one, or a later replacement
+    /// that overtakes it, e.g. a settings change during speech setup) has a generation above it.
+    /// Speech setup waits for the first Ready above the floor, so overlapping replacements converge
+    /// on whichever engine ends up installed instead of waiting for one that was superseded.
     pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) -> u64 {
-        let generation = self.engine_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let floor = self.swap.current();
         let me = self.clone();
         let spawned = std::thread::Builder::new().name("wren-engine-replace".into()).spawn(move || {
-            let _one_at_a_time = me.engine_swap.lock();
-            tracing::info!("engine settings changed; restarting the speech engine");
-            me.swapping.store(true, Ordering::SeqCst);
-            me.engine().shutdown();
-            // After the old engine's last status, so the UI shows the gap as starting.
-            let _ = me.status_tx.send((generation, EngineStatus::Starting));
-            let paths = me.state().paths.clone();
-            let fresh = Arc::new(Engine::start(&paths, &settings, tagged_status(me.status_tx.clone(), generation)));
-            *me.engine.write() = fresh;
-            me.swapping.store(false, Ordering::SeqCst);
+            me.swap.run(|generation| {
+                tracing::info!(generation, "engine settings changed; restarting the speech engine");
+                me.swapping.store(true, Ordering::SeqCst);
+                // The generation is already bumped: the old engine's "shut down" is stale from here.
+                me.engine().shutdown();
+                // After the old engine's last status, so the UI shows the gap as starting.
+                let _ = me.status_tx.send((generation, EngineStatus::Starting));
+                let paths = me.state().paths.clone();
+                let fresh = Arc::new(Engine::start(&paths, &settings, tagged_status(me.status_tx.clone(), generation)));
+                *me.engine.write() = fresh;
+                me.swapping.store(false, Ordering::SeqCst);
+            })
         });
         if let Err(err) = spawned {
             tracing::error!(error = %err, "cannot restart the speech engine");
         }
-        generation
+        floor
     }
 
     /// On quit: unhook, stop the sidecar, and put back any clipboard a paste still owes.
@@ -266,6 +268,37 @@ impl Env for AppEnv {
     }
 }
 
+/// Engine replacements, strictly one at a time. The generation is taken inside the turn, so
+/// generation order is install order: the installed engine always has the newest generation, and
+/// its events are never mistaken for stale ones (nor an older engine's for current ones).
+pub(crate) struct EngineSwap {
+    generation: Arc<AtomicU64>,
+    turn: Mutex<()>,
+}
+
+impl EngineSwap {
+    pub(crate) fn new() -> Self {
+        Self { generation: Arc::new(AtomicU64::new(0)), turn: Mutex::new(()) }
+    }
+
+    /// Generation of the engine installed now (0 = the one started at launch).
+    pub(crate) fn current(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Shared counter for the status forwarder ("is this event from the installed engine?").
+    pub(crate) fn counter(&self) -> Arc<AtomicU64> {
+        self.generation.clone()
+    }
+
+    /// One replacement: waits its turn, takes the next generation, then runs `swap` with it.
+    pub(crate) fn run<T>(&self, swap: impl FnOnce(u64) -> T) -> T {
+        let _turn = self.turn.lock();
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        swap(generation)
+    }
+}
+
 /// A status sender for one engine: everything it reports reaches `to` tagged with `generation`.
 /// (The forwarding thread ends when the engine, and with it this sender, is dropped.)
 pub(crate) fn tagged_status(to: Sender<(u64, EngineStatus)>, generation: u64) -> Sender<EngineStatus> {
@@ -330,11 +363,11 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
 
     // Speech engine, its status forwarded to the UI.
     let (status_tx, status_rx) = crossbeam_channel::unbounded::<(u64, EngineStatus)>();
-    let engine_gen = Arc::new(AtomicU64::new(0));
+    let swap = EngineSwap::new();
     let engine = Engine::start(&state.paths, &settings.engine, tagged_status(status_tx.clone(), 0));
     {
         let app = app.clone();
-        let current_gen = engine_gen.clone();
+        let current_gen = swap.counter();
         std::thread::Builder::new().name("wren-engine-status".into()).spawn(move || {
             for (generation, status) in status_rx {
                 let current = generation == current_gen.load(Ordering::SeqCst);
@@ -387,8 +420,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
         recorder,
         engine: RwLock::new(Arc::new(engine)),
         status_tx,
-        engine_gen,
-        engine_swap: Mutex::new(()),
+        swap,
         swapping: AtomicBool::new(false),
         hotkey: Mutex::new(hotkey),
         hotkey_tx,
@@ -560,5 +592,52 @@ mod tests {
         assert!(peak as f32 <= SOUND_TICK_AMPLITUDE * i16::MAX as f32 + 1.0, "soft: {peak}");
         assert!(peak > 0);
         assert!(samples[0].unsigned_abs() < 50 && samples.last().unwrap().unsigned_abs() < 50, "no click at the ends");
+    }
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::EngineSwap;
+    use parking_lot::Mutex;
+    use std::sync::{Arc, Barrier};
+    use std::time::Duration;
+
+    /// Overlapping replacements (speech setup, a settings save, another settings save …) all asked
+    /// for at once: whatever order they get their turn in, generations follow install order, and the
+    /// engine left installed carries the newest generation — the one the status forwarder treats as
+    /// current. (Taking the generation before the turn, as before, let an older engine end up
+    /// installed with its events discarded.)
+    #[test]
+    fn generations_follow_install_order_under_overlapping_replacements() {
+        let swap = Arc::new(EngineSwap::new());
+        let installed = Arc::new(Mutex::new(0u64));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let n = 8;
+        let start = Arc::new(Barrier::new(n));
+        let floors: Vec<u64> = (0..n).map(|_| swap.current()).collect();
+        let threads: Vec<_> = (0..n)
+            .map(|i| {
+                let (swap, installed, order, start) = (swap.clone(), installed.clone(), order.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    // Uneven start-up so the turns are taken in a scrambled order.
+                    std::thread::sleep(Duration::from_millis(((i * 7) % 5) as u64));
+                    swap.run(|generation| {
+                        std::thread::sleep(Duration::from_millis(3)); // shut down old, start new
+                        *installed.lock() = generation;
+                        order.lock().push(generation);
+                    });
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let order = order.lock().clone();
+        assert_eq!(order, (1..=n as u64).collect::<Vec<_>>(), "install order is generation order");
+        assert_eq!(*installed.lock(), swap.current(), "the installed engine is the current generation");
+        // Every caller's floor (taken when it asked) is below the engine finally installed, so a
+        // waiter (speech setup) is released by it.
+        assert!(floors.iter().all(|f| *f < swap.current()));
     }
 }
