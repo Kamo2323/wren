@@ -60,7 +60,8 @@ permissions bug first because it stops his dad using Wren at all.
    attempt 1 was cancelled by GitHub — "job was not acquired by Runner of type hosted", macOS capacity — and the
    rerun passed). Signed by the same certificate as v0.1.11 (`certificate root = H"fcac734a…"`), so Macs already
    on v0.1.11 keep their permissions through this update.
-3. Before the next Windows release: set `WREN_RELEASE_PLATFORMS=both`; Windows pieces of the notes work.
+3. **Windows update: draft PR #4** (`feat/windows-notes-export`), brief at
+   `docs/superpowers/plans/2026-11-26-windows-notes-export.md`. Set `WREN_RELEASE_PLATFORMS=both` before merging it.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
 
