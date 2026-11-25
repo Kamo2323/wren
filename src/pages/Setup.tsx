@@ -81,15 +81,18 @@ function Intro({ plan, onStart }: { plan: SetupPlan; onStart: () => void }) {
       <ul className="setup-notes">
         <li>
           <Cpu size={14} strokeWidth={2} aria-hidden="true" />
-          {deviceWords(plan)}
+          <span>{deviceWords(plan)}</span>
         </li>
         <li>
           <ShieldCheck size={14} strokeWidth={2} aria-hidden="true" />
-          This one download is the only time Wren goes online for speech. What you say never leaves this computer.
+          <span>This one download is the only time Wren goes online for speech. What you say never leaves this computer.</span>
         </li>
         <li>
           <Info size={14} strokeWidth={2} aria-hidden="true" />
-          No admin rights needed. It installs into <span className="setup-path">{plan.location}</span> and can be paused at any time.
+          <span>
+            No admin rights needed. It installs into <span className="setup-path">{plan.location}</span> and can be paused at any
+            time.
+          </span>
         </li>
       </ul>
       <div className="setup-actions">

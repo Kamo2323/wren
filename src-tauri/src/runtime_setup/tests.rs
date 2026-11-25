@@ -272,6 +272,26 @@ fn an_installed_runtime_needs_no_setup() {
 }
 
 #[test]
+fn an_unfinished_setup_stays_open_even_when_the_main_model_works() {
+    let Some((pins, _)) = manifest::platform() else { return };
+    let root = temp("unfinished");
+    let l = layout_in(&root);
+    fake_installed(&l);
+    // Wren's own setup was interrupted while the backup model downloaded.
+    std::fs::remove_dir_all(l.models.join(&pins.models[1])).unwrap();
+    std::fs::create_dir_all(l.cache.join("models").join(&pins.models[1])).unwrap();
+    let (svc, _) = service(&l);
+    assert!(matches!(svc.status(), SetupStatus::Needed { ref reason, .. } if reason.contains("didn't finish")));
+    svc.on_engine_status(&EngineStatus::Ready { model: "m".into(), device: "cuda".into(), vram_mb: 1 });
+    assert!(matches!(svc.status(), SetupStatus::Needed { .. }), "a working main model does not close an unfinished setup");
+    // Without Wren's setup folder a missing backup model is the user's own business (e.g. a script install).
+    std::fs::remove_dir_all(&l.cache).unwrap();
+    let (svc, _) = service(&l);
+    assert_eq!(svc.status(), SetupStatus::NotNeeded);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn status_serialises_for_the_ui() {
     let s = SetupStatus::Failed { plan: plan(&layout_in(Path::new("/tmp/x"))), step: "models".into(), message: "m".into(), paused: true };
     let v = serde_json::to_value(&s).unwrap();

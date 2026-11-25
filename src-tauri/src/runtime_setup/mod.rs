@@ -163,6 +163,18 @@ pub fn engine_files_missing(python: &Path, models_dir: &Path, settings: &EngineS
     None
 }
 
+/// Wren's own setup started (its temporary folder is still there) and a pinned model is still
+/// missing: e.g. it was paused or Wren quit while the backup model downloaded. The main model may
+/// already work, but setup stays open until everything it promised is in place.
+fn unfinished(layout: &Layout) -> Option<String> {
+    if !layout.cache.exists() {
+        return None;
+    }
+    let (pins, _) = manifest::platform()?;
+    let missing = pins.models.iter().any(|n| !manifest::manifest().models[n].present_in(&layout.models.join(n)));
+    missing.then(|| "Speech setup didn't finish: some files are still to download.".to_string())
+}
+
 fn platform_label() -> &'static str {
     if cfg!(windows) {
         "windows"
@@ -224,6 +236,8 @@ pub fn plan(layout: &Layout) -> Plan {
 /// start a fresh one once everything is in place.
 pub struct Hooks {
     pub quiesce: Box<dyn Fn() + Send + Sync>,
+    /// Start a fresh engine with the current settings: after a finished setup (its Ready completes
+    /// setup), and after a run that stopped the engine and then stopped early.
     pub installed: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -235,6 +249,9 @@ struct Inner {
     emit: Emit,
     cancel: AtomicBool,
     running: AtomicBool,
+    /// This run stopped the engine (to replace files it may hold); a run that then stops early
+    /// must start a fresh one so the app never sits on a stopped engine.
+    quiesced: AtomicBool,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -246,7 +263,7 @@ pub struct Service {
 
 impl Service {
     pub fn new(layout: Layout, python: &Path, settings: &EngineSettings, emit: Emit) -> Self {
-        let initial = match engine_files_missing(python, &layout.models, settings) {
+        let initial = match engine_files_missing(python, &layout.models, settings).or_else(|| unfinished(&layout)) {
             Some(reason) => SetupStatus::Needed { reason, plan: plan(&layout) },
             None => SetupStatus::NotNeeded,
         };
@@ -258,6 +275,7 @@ impl Service {
                 emit,
                 cancel: AtomicBool::new(false),
                 running: AtomicBool::new(false),
+                quiesced: AtomicBool::new(false),
                 worker: Mutex::new(None),
             }),
         }
@@ -285,6 +303,7 @@ impl Service {
             return Err("Speech setup is already running.".into());
         }
         self.inner.cancel.store(false, Ordering::SeqCst);
+        self.inner.quiesced.store(false, Ordering::SeqCst);
         if let Some(old) = self.inner.worker.lock().take() {
             let _ = old.join();
         }
@@ -303,6 +322,10 @@ impl Service {
                     inner.log(&format!("stopped at {step}: {err:#}"));
                     tracing::warn!(%step, paused, error = %format!("{err:#}"), "speech setup stopped");
                     inner.set(SetupStatus::Failed { plan: plan(&inner.layout), step, message, paused });
+                    if inner.quiesced.swap(false, Ordering::SeqCst) {
+                        // It reports "needs setup" (or runs, if the files it needs are complete).
+                        (hooks.installed)();
+                    }
                 }
             }
             inner.running.store(false, Ordering::SeqCst);
@@ -356,7 +379,10 @@ impl Service {
                 (SetupStatus::NotNeeded, EngineStatus::NeedsSetup { reason }) if !self.is_running() => {
                     Some(SetupStatus::Needed { reason: reason.clone(), plan: plan(&self.inner.layout) })
                 }
-                (SetupStatus::Needed { .. }, EngineStatus::Ready { .. }) => Some(SetupStatus::NotNeeded),
+                // Files put in place another way (the developer scripts); not while Wren's own setup is unfinished.
+                (SetupStatus::Needed { .. }, EngineStatus::Ready { .. }) if unfinished(&self.inner.layout).is_none() => {
+                    Some(SetupStatus::NotNeeded)
+                }
                 _ => None,
             }
         };
@@ -528,9 +554,11 @@ impl Inner {
             progress.begin("packages", "This is the biggest part and can take a while.");
             self.install_packages(&uv_exe, pins, &mut progress).at("packages")?;
             self.check_cancel().at("packages")?;
-            (hooks.quiesce)();
+            self.quiesce(hooks);
             swap_venv(layout).at("packages")?;
             self.log("runtime swapped in");
+            // The packages are in the venv now: uv's copy (about the same size again) can go at once.
+            self.clean_uv_cache(&uv_exe);
         }
 
         // 5. Models.
@@ -546,7 +574,7 @@ impl Inner {
                     progress.update(all as f64 / total.max(1) as f64, &format!("{} of {}", mb(all), mb(total)));
                 };
                 install_model(&client, &layout.hf_base, name, m, &layout.models, &layout.cache, &self.cancel, &mut on_progress, &|| {
-                    (hooks.quiesce)()
+                    self.quiesce(hooks)
                 })
                 .at("models")?;
                 base += m.bytes();
@@ -732,15 +760,27 @@ impl Inner {
         Ok(())
     }
 
-    /// After success the temporary files (uv, its package cache, staged downloads) go.
-    fn clean_cache(&self) {
-        let uv = self.layout.cache.join("uv").join("bin").join(if cfg!(windows) { "uv.exe" } else { "uv" });
-        if uv.is_file() {
-            let mut cmd = Command::new(&uv);
-            cmd.args(["cache", "clean"]).env("UV_CACHE_DIR", self.layout.cache.join("uv-cache")).stdout(Stdio::null()).stderr(Stdio::null());
+    fn quiesce(&self, hooks: &Hooks) {
+        if !self.quiesced.swap(true, Ordering::SeqCst) {
+            (hooks.quiesce)();
+        }
+    }
+
+    fn clean_uv_cache(&self, uv: &Path) {
+        let dir = self.layout.cache.join("uv-cache");
+        if uv.is_file() && dir.exists() {
+            let mut cmd = Command::new(uv);
+            cmd.args(["cache", "clean"]).env("UV_CACHE_DIR", &dir).stdout(Stdio::null()).stderr(Stdio::null());
             hide_window(&mut cmd);
             let _ = cmd.status();
         }
+        let _ = remove_tree(&dir);
+    }
+
+    /// After success the temporary files (uv, its package cache, staged downloads) go.
+    fn clean_cache(&self) {
+        let uv = self.layout.cache.join("uv").join("bin").join(if cfg!(windows) { "uv.exe" } else { "uv" });
+        self.clean_uv_cache(&uv);
         if let Err(e) = remove_tree(&self.layout.cache) {
             self.log(&format!("could not remove {} ({e}); it is safe to delete", self.layout.cache.display()));
         }

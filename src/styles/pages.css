@@ -1355,6 +1355,9 @@
   line-height: 1.5;
   color: var(--sub);
 }
+.setup-notes li > span {
+  min-width: 0;
+}
 .setup-notes svg {
   flex: none;
   margin-top: 2px;
