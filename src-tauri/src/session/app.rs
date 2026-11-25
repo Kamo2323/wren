@@ -95,11 +95,11 @@ impl AppEnv {
     /// that overtakes it, e.g. a settings change during speech setup) has a generation above it.
     /// Speech setup waits for the first Ready above the floor, so overlapping replacements converge
     /// on whichever engine ends up installed instead of waiting for one that was superseded.
-    pub fn replace_engine(self: &Arc<Self>, settings: EngineSettings) -> u64 {
+    pub fn replace_engine(self: &Arc<Self>) -> u64 {
         let floor = self.swap.current();
         let me = self.clone();
         let spawned = std::thread::Builder::new().name("wren-engine-replace".into()).spawn(move || {
-            me.swap.run(|generation| {
+            me.swap.run(&me.state().settings, |generation, settings| {
                 tracing::info!(generation, "engine settings changed; restarting the speech engine");
                 me.swapping.store(true, Ordering::SeqCst);
                 // The generation is already bumped: the old engine's "shut down" is stale from here.
@@ -291,11 +291,12 @@ impl EngineSwap {
         self.generation.clone()
     }
 
-    /// One replacement: waits its turn, takes the next generation, then runs `swap` with it.
-    pub(crate) fn run<T>(&self, swap: impl FnOnce(u64) -> T) -> T {
+    /// A queued repair can run after a settings change, so read the saved settings in its turn.
+    pub(crate) fn run<T>(&self, settings: &RwLock<Settings>, swap: impl FnOnce(u64, EngineSettings) -> T) -> T {
         let _turn = self.turn.lock();
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        swap(generation)
+        let settings = settings.read().engine.clone();
+        swap(generation, settings)
     }
 }
 
@@ -598,7 +599,8 @@ mod tests {
 #[cfg(test)]
 mod swap_tests {
     use super::EngineSwap;
-    use parking_lot::Mutex;
+    use crate::settings::Settings;
+    use parking_lot::{Mutex, RwLock};
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
@@ -610,6 +612,7 @@ mod swap_tests {
     #[test]
     fn generations_follow_install_order_under_overlapping_replacements() {
         let swap = Arc::new(EngineSwap::new());
+        let settings = Arc::new(RwLock::new(Settings::default()));
         let installed = Arc::new(Mutex::new(0u64));
         let order = Arc::new(Mutex::new(Vec::new()));
         let n = 8;
@@ -618,11 +621,12 @@ mod swap_tests {
         let threads: Vec<_> = (0..n)
             .map(|i| {
                 let (swap, installed, order, start) = (swap.clone(), installed.clone(), order.clone(), start.clone());
+                let settings = settings.clone();
                 std::thread::spawn(move || {
                     start.wait();
                     // Uneven start-up so the turns are taken in a scrambled order.
                     std::thread::sleep(Duration::from_millis(((i * 7) % 5) as u64));
-                    swap.run(|generation| {
+                    swap.run(&settings, |generation, _| {
                         std::thread::sleep(Duration::from_millis(3)); // shut down old, start new
                         *installed.lock() = generation;
                         order.lock().push(generation);
@@ -639,5 +643,16 @@ mod swap_tests {
         // Every caller's floor (taken when it asked) is below the engine finally installed, so a
         // waiter (speech setup) is released by it.
         assert!(floors.iter().all(|f| *f < swap.current()));
+    }
+
+    #[test]
+    fn queued_repair_uses_saved_settings_when_a_newer_save_installs_first() {
+        let swap = EngineSwap::new();
+        let saved = RwLock::new(Settings::default());
+        let repair = || swap.run(&saved, |generation, engine| (generation, engine.beam_size));
+
+        saved.write().engine.beam_size = 4;
+        assert_eq!(swap.run(&saved, |generation, engine| (generation, engine.beam_size)), (1, 4));
+        assert_eq!(repair(), (2, 4));
     }
 }

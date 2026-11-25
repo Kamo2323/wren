@@ -98,7 +98,7 @@ pub fn save_settings(
         crate::apply_window_theme(&main, settings.theme.as_deref());
     }
     if old.engine != settings.engine {
-        services.env.replace_engine(settings.engine.clone());
+        services.env.replace_engine();
     }
     Ok(())
 }
@@ -383,7 +383,6 @@ pub fn runtime_setup_status(setup: State<'_, crate::runtime_setup::Service>) -> 
 /// at once; progress arrives as `app://runtime-setup` events.
 #[tauri::command(async)]
 pub fn runtime_setup_start(
-    app: AppHandle,
     setup: State<'_, crate::runtime_setup::Service>,
     services: State<'_, Services>,
     repair: Option<bool>,
@@ -394,10 +393,7 @@ pub fn runtime_setup_start(
         // Before files the engine may hold open are replaced (Windows locks open DLLs and models).
         quiesce: Box::new(move || quiet.engine().shutdown()),
         // A brand-new engine with the current settings; its Ready is what completes setup.
-        installed: Box::new(move || {
-            let engine = app.state::<AppState>().settings.read().engine.clone();
-            fresh.replace_engine(engine)
-        }),
+        installed: Box::new(move || fresh.replace_engine()),
     };
     setup.start(repair.unwrap_or(false), hooks)
 }
