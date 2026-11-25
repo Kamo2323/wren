@@ -33,8 +33,12 @@ permissions bug first because it stops his dad using Wren at all.
   for an app in ~/Applications exit 0, no password; screenshots fine (hint since shortened).
 - CI dry run 45628440589 (branch, Mac only, nothing published): success. `designated => identifier "com.maximilian.wren" and certificate root = H"fcac734a…"`; update signature verified with the app key.
 
+- **Released v0.1.11 (Mac only)** at 2026-11-25 14:17 UTC from `main` 309e58e (run 45630553676; Windows job
+  skipped; `latest.json` lists only `darwin-aarch64`). v0.1.10 was the dry run's number (never published).
+
 ### Not done / next
-1. Merge `feat/notes-export` → `main` for the **permissions release** (Mac-only), once the dry run is green.
+1. Confirm on dad's Mac and Maximilian's Mac: update to v0.1.11, press Fix permissions, allow, dictation and a
+   meeting work; then the next update keeps permissions with no clicks.
    After updating, each Mac needs **one** last reset (signature changes from ad-hoc/Apple Development to the
    cert): press Fix permissions and allow. On Maximilian's Mac the v0.1.9 helper may re-sign the first
    self-signed update with Apple Development, so his one reset may come one update later.
