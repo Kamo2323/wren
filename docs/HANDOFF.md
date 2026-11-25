@@ -94,6 +94,27 @@ Teams/Meetings capture, transcripts and Claude notes are untouched.
   `r2-04-resume-counts-only-what-is-left.png`, `12-repair-reopens-after-crash.png` (before the 2eb6250 wording).
   Self-test logs: `selftest-cuda.txt`, `selftest-cpu-fallback.txt` in the same folder.
 
+### Review round 2 — disposition (commit afc923b; S4/S5 handled by the parent in its own worktree)
+- **S3 (staged files) fixed.** `download::fetch` deletes a finished staged file that fails its pinned
+  checksum or size before downloading its replacement (never installed models: only the setup cache).
+  `staged_bytes` credits exact-size finished files and `.part` files no bigger than the file; wrong-size
+  finished files and oversized `.part` files count nothing. Tests:
+  `a_damaged_finished_file_is_removed_before_its_replacement_downloads` (full-size corrupt, oversized,
+  short; fails with the fix disabled), `a_damaged_finished_file_next_to_a_partial_one_resumes_the_partial`
+  (Range resume kept), `staged_bytes_count_only_what_a_resume_keeps`.
+- **R2-1 (engine swap order) fixed.** `EngineSwap` takes the generation inside the swap turn, so
+  generation order is install order and the installed engine is always current. `replace_engine`
+  returns a floor; setup completes on the first Ready of any engine installed after it (settings saves
+  and manual restarts converge; no gating needed). Callers reviewed: `save_settings` (floor ignored),
+  setup's `installed` hook (floor awaited), `engine_restart` (same engine, same generation). Tests:
+  `generations_follow_install_order_under_overlapping_replacements` (8 overlapping swaps),
+  `a_settings_change_that_overtakes_setups_engine_still_completes_setup`. Live: repair → setup's engine
+  (gen 1) overtaken by a beam-size save (gen 2) → gen 1 events `current:false` → Done on gen 2's Ready
+  in 6 s; setting restored (gen 3 Ready). Script: `C:\Users\maxha\.t3\proof\wren-speech-onboarding\tools\overlap.mjs`.
+- Checks at afc923b: Rust lib 440 passed, 0 failed, 15 ignored; 0 warnings (lib + examples); JS unit
+  tests pass. One run saw `meetings::session::tests::backlog_is_capped_and_marked_not_transcribed` fail
+  (pre-existing fixed 300 ms sleep under load); 5/5 alone and the next full run passed. Not touched.
+
 ### Remaining gaps (exact)
 - macOS: nothing run here (parent has a Mac for independent proof).
 - Trusted Authenticode / Developer ID / notarization: no credentials; never run with signing on.
