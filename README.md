@@ -47,11 +47,17 @@ Wren checks GitHub Releases silently on start-up (after a short delay) and every
   `%LOCALAPPDATA%\Programs\Wren\`, and relaunch Wren. Your history, dictionary, settings and speech
   models stay untouched.
 - Pushing changes to `main` on GitHub triggers [`.github/workflows/release.yml`](.github/workflows/release.yml),
-  which builds the Windows NSIS installer, signs it with the `TAURI_SIGNING_PRIVATE_KEY` Actions secret,
-  and publishes the GitHub Release (`latest.json` + installer + `.sig`).
-- While the GitHub repository is private, Wren automatically falls back to the GitHub API using your
-  local `gh auth token` (or `WREN_GITHUB_TOKEN` / `GITHUB_TOKEN`). Once the repository is public, it
-  downloads directly from GitHub Releases with no token needed.
+  which builds the Windows NSIS installer and the Apple Silicon app, signs the update files with the
+  `TAURI_SIGNING_PRIVATE_KEY` Actions secret, and publishes the GitHub Release (`latest.json` +
+  installers + `.sig`). Authenticode and Developer ID signing/notarization are opt-in and fail closed:
+  see [`docs/RELEASING.md`](docs/RELEASING.md).
+- Update checks are anonymous: Wren reads the public `latest.json` and never uses a GitHub token or the
+  `gh` CLI. Only in **private mode** (`WREN_UPDATE_PRIVATE=1`, in the environment Wren runs in or at
+  build time — for the owner's own machines while the repository is private) does it fall back to the
+  GitHub API with `WREN_GITHUB_TOKEN` / `GITHUB_TOKEN` / `gh auth token`.
+- Forks and unofficial builds choose their update source at build time: `WREN_UPDATE_REPO=owner/repo`
+  (with `WREN_UPDATE_PUBKEY` for their own signing key), or `WREN_UPDATE_REPO=none` to build without
+  updates. `WREN_DISABLE_UPDATER=1` stops the background checks of any build.
 
 ### Building and installing locally
 
@@ -68,11 +74,26 @@ Wren to quit, installs it silently for your user only (no admin prompt) and runs
 self-test. Running it again upgrades in place; your history, dictionary and settings stay. It prints
 where everything went and ends with `RELEASE OK` or `RELEASE FAIL`.
 
-The installer itself is `Wren_0.1.0_x64-setup.exe` (copied to `..\wren-release\` next to the repo);
-double-clicking it does the same install with a normal setup window. It puts a **Wren** shortcut in
-the Start menu.
+The installer itself is `Wren_0.1.0_x64-setup.exe` (copied to `.release-out\` in the checkout, or
+`-StageDir` / `WREN_STAGE_DIR`); double-clicking it does the same install with a normal setup window.
+It puts a **Wren** shortcut in the Start menu. Builds go to `.cargo-target\` in the checkout unless
+`CARGO_TARGET_DIR` is set. Nothing in a local build needs the release signing keys.
 
-First-time setup of the speech engine (Python runtime + models, ~2 GB, once per PC):
+### First run: speech setup inside the app
+
+The installer is small; the speech engine is not in it. On first launch Wren opens **Set up speech
+recognition**, which lists what it will download and how big it is (on Windows about 3.6 GB: a private
+Python, the engine's packages and two models; about 6 GB free needed while installing), checks free
+space, and installs everything into `%LOCALAPPDATA%\Wren` (macOS: `~/Library/Application Support/Wren`)
+with no admin rights, terminal, Python or uv needed. Every download is pinned and checksum-verified
+([`sidecar/runtime-manifest.json`](sidecar/runtime-manifest.json)). It can be paused, and after a pause,
+a dropped connection or a crash it carries on where it stopped. Setup only says ready once the real
+speech engine has loaded and transcribed its test clip; it then offers a microphone check and a box to
+try a dictation in. **Settings → Speech engine → Repair speech setup** re-checks every file and fixes
+what is broken without touching a working install. Each run is logged to
+`%LOCALAPPDATA%\Wren\logs\runtime-setup.log`.
+
+Developers can still build the same runtime from a terminal (needs uv):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\check-prereqs.ps1
@@ -91,6 +112,7 @@ starting with Windows (all three react to the same chord).
 | History database (text, dictionary, daily totals) | `%LOCALAPPDATA%\Wren\db\wren.db` |
 | Recordings (deleted with their text after 3 days) | `%LOCALAPPDATA%\Wren\audio\` |
 | Speech engine (Python venv) and models | `%LOCALAPPDATA%\Wren\runtime\`, `%LOCALAPPDATA%\Wren\models\` |
+| Unfinished speech-setup downloads (removed once setup succeeds) | `%LOCALAPPDATA%\Wren\setup-cache\` |
 | Logs (timings only, never your words) | `%LOCALAPPDATA%\Wren\logs\` |
 | Last self-test result | `%LOCALAPPDATA%\Wren\logs\selftest.txt` |
 
@@ -126,7 +148,9 @@ Screenshots of the real installed app (from test recordings, not real dictations
 `docs/screenshots/real/`; `scripts/real-screens.ps1 -TestHome <live-test work folder>\home` takes
 them again after a live test.
 
-Developer checks: `cd src-tauri; cargo test` (Rust), `cd sidecar; uv run pytest` (speech sidecar),
+Developer checks: `cd src-tauri; cargo test` (Rust; `WREN_ALLOW_NO_RUNTIME=1` skips the few tests that
+need an installed speech runtime), `node scripts/unit-tests.mjs`, `npm run build; node
+scripts/check-pages.mjs` (UI checks in a browser), `cd sidecar; uv run pytest` (speech sidecar),
 `npm run dev` / `npx tauri dev` (run from source).
 
 ## Uninstalling
@@ -152,4 +176,5 @@ if you want them gone too.
   text, and then nothing is learned.
 - The AI clean-up switch (off by default) needs Ollama running locally with a small model; it only
   tidies punctuation and wording, and it adds a little time to each dictation.
-- The installer is not code-signed, so Windows SmartScreen may warn the first time you run it.
+- Unless a release is built with Authenticode signing turned on (`docs/RELEASING.md`), the installer
+  is not code-signed, so Windows SmartScreen may warn the first time you run it.
