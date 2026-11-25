@@ -1,5 +1,47 @@
 # Wren — handoff and decision log
 
+## Status (2026-11-25) — Mac update: permissions survive updates; notes select/copy/export (branch `feat/notes-export`)
+
+Spec: `docs/superpowers/specs/2026-11-25-notes-export-design.md` (builder-checked; notes part not yet approved
+by Maximilian). Maximilian's priorities: **Mac first**, **Mac-only release** (Windows update later), and the
+permissions bug first because it stops his dad using Wren at all.
+
+### The permissions bug (dad's Mac after v0.1.9: "needs Accessibility / audio recording" though both are on)
+- Cause: no Apple signing secrets, so CI shipped **ad-hoc** signed apps. TCC ties permissions to the signature's
+  designated requirement; ad-hoc = this build's cdhash, so each update is a "new app". Toggling the switch doesn't
+  help (it belongs to the old signature); `tccutil reset` or remove (−) + re-add does.
+- Maximilian's MacBook was unaffected because the old update helper re-signs non-Developer-ID updates with a local
+  "Apple Development" identity (it has one; dad's Mac has none).
+- Fix (option A, Maximilian's choice; B = $99 Developer ID declined for now):
+  - Self-signed cert "Wren Self-Signed Code Signing" (20 yr). Backup: `%USERPROFILE%\Documents\Wren signing\`
+    (.p12 + password + README). Secrets `MAC_SELF_SIGNED_P12`, `MAC_SELF_SIGNED_P12_PASSWORD` set on Kamo2323/wren.
+  - CI `WREN_SIGN_MACOS=self-signed` (variable set) signs like the ad-hoc path with that identity and fails unless
+    the designated requirement names the certificate. Untrusted cert is fine; its keychain must be on the search
+    list (`--keychain` alone fails — tested on macOS 26.4).
+  - Updater helper keeps builds signed by that cert as shipped (`MAC_RELEASE_SIGNING_IDENTITY`).
+  - Updater: a release without this platform's entry = "up to date" (was an error).
+  - **Fix permissions** button (banner, Setup, Meetings card, Settings row) → `tccutil reset Accessibility|
+    Microphone|AudioCapture com.maximilian.wren` (no password needed) then the Accessibility prompt.
+  - CI `WREN_RELEASE_PLATFORMS=mac` (variable set) + `dry_run` input. Docs: `docs/RELEASING.md`.
+- Also done: enhanced notes are drag-selectable (`.md { user-select: text }`) + page check (fails without the fix).
+
+### Verified
+- Windows: Rust lib 443 passed / 0 failed, 0 build warnings; JS unit tests passed; page checks all passed.
+- MacBook (T3 child): 0 warnings, lib 498 passed; helper test with dummy bundles: self-signed update logged
+  "Keeping the published Wren release signature" and kept its Authority; ad-hoc control re-signed with Apple
+  Development; designated requirement identical across rebuilds (certificate leaf, no cdhash); `tccutil reset`
+  for an app in ~/Applications exit 0, no password; screenshots fine (hint since shortened).
+- CI dry run 45628440589 (branch, Mac only, nothing published): success. `designated => identifier "com.maximilian.wren" and certificate root = H"fcac734a…"`; update signature verified with the app key.
+
+### Not done / next
+1. Merge `feat/notes-export` → `main` for the **permissions release** (Mac-only), once the dry run is green.
+   After updating, each Mac needs **one** last reset (signature changes from ad-hoc/Apple Development to the
+   cert): press Fix permissions and allow. On Maximilian's Mac the v0.1.9 helper may re-sign the first
+   self-signed update with Apple Development, so his one reset may come one update later.
+2. Notes features (needs Maximilian's approval of the spec): formatted Copy (HTML+RTF+plain), Save as PDF,
+   Save as Word, Mac Share menu. Then writing-plans → build → live tests on the MacBook → Mac-only release.
+3. Before the next Windows release: set `WREN_RELEASE_PLATFORMS=both`; Windows pieces of the notes work.
+
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
 
 Branch `t3/speech-onboarding-portability`, based on `origin/main` 09c8cfd (the two unrelated Teams
