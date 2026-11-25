@@ -56,6 +56,10 @@ permissions bug first because it stops his dad using Wren at all.
    S8 (doubled margins) declined with the Mac measurement. Not proven: Mail compose subject (Mail not set up on
    the MacBook), clicking the buttons inside the installed Mac app (needs Automation permission for T3 Code).
    Pre-existing flaky test: `meetings::session::tests::backlog_is_capped_and_marked_not_transcribed` (300 ms sleep).
+   **Merged as PR #3 (squash f8e7fd6) and released v0.1.12 Mac-only** on 2026-11-25 18:54 UTC (run 45675231813;
+   attempt 1 was cancelled by GitHub — "job was not acquired by Runner of type hosted", macOS capacity — and the
+   rerun passed). Signed by the same certificate as v0.1.11 (`certificate root = H"fcac734a…"`), so Macs already
+   on v0.1.11 keep their permissions through this update.
 3. Before the next Windows release: set `WREN_RELEASE_PLATFORMS=both`; Windows pieces of the notes work.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
