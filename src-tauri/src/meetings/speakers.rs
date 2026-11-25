@@ -451,4 +451,16 @@ mod tests {
         span(&mut t, 62_250, 64_000, &[]);
         assert_eq!(t.muted_during(63_000, 64_000), Some(false));
     }
+
+    /// Known bug (draft PR "Meetings: muted speech can leak when Teams readings pause"): the last known mute state
+    /// is only applied inside each reading's own interval (capped at `MAX_OBSERVATION_MS`), so a gap between
+    /// readings longer than ~1 s counts as "unknown" and the clip is saved as unmuted.
+    #[test]
+    fn mute_state_carries_across_a_gap_between_readings() {
+        let mut t = SpeakerTimeline::default();
+        t.record(&muted_obs(10_000, true));
+        t.record(&muted_obs(12_500, true)); // one Teams read took 2.5 s
+        assert_eq!(t.muted_during(11_100, 12_400), Some(true), "a private aside in the gap stays muted");
+        assert_eq!(t.muted_during(10_800, 12_800), Some(true), "only 200 ms falls inside a reading today");
+    }
 }
