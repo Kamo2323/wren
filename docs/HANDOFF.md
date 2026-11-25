@@ -33,10 +33,20 @@
 - Page check "day groups" was time-of-day flaky after midnight: it now accepts Today or Yesterday.
 - Mac round-3 fixes merged (8af40b6), Windows re-verified. Council round 4 (at 8af40b6): Opus 8/10, Sol 5/10,
   Gemini 8/10. All three flag one shared privacy hole: a Me clip can be saved unmuted when the first Teams reads
-  can't see the mute state (empty reads satisfy the wait; saved rows are never corrected). Other findings are in the
-  ledger ("Council R4 …"). WAITING for Maximilian's direction before any fixes (his request, 2026-11-25).
-- Then: fixes he approves → merge to main →
-  release → update both apps.
+  can't see the mute state. See the local ledger for the complete findings and rulings.
+- **R4 shared, Windows and UI fixes complete (fb3e868, af85ec5, cc80e1f).** Me clips wait for a known mute read,
+  saved Me rows in the 30 s before the first known read are reconciled and re-emitted, and unknown reads carry the
+  last known mute state for 60 s. Stop drains the current Teams read before generating notes, and manual generation
+  waits until the meeting ends. Confirmed quit stays latched through exit so an overdue start finishes as Ended
+  without publishing live events. Terminal note events clear the generation snapshot first. Failed My notes drafts
+  survive navigation and quit retries, tray Stop flushes immediately, and WASAPI drops its clients before leaving COM.
+- **Windows verification:** Rust lib 402 passed, 15 ignored, 0 build warnings. npm build, JS unit and 114 page checks
+  passed. Live 3/3 clips heard, dictation p50 220 ms idle → 228 ms recording. The live run used AllSound playback.
+  The mute regressions used a fake Teams reader with SQLite, and the tray test simulated a throttled debounce.
+  A real two-participant Teams call and native hidden-webview timing still need live confirmation.
+- **Next on the Mac checkout:** `git pull --ff-only origin feat/meetings`. Preserve held boundary audio through a
+  health-check reconnect, address a stale rate on the waiting Teams-only candidate, and reset AX wake backoff between
+  calls. Run the full Mac verification. Then run one final regular council, stop, and report to Maximilian.
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
