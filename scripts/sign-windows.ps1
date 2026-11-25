@@ -18,7 +18,9 @@
   $c = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Wren Test Signing' -CertStoreLocation Cert:\CurrentUser\My
   powershell -File scripts\sign-windows.ps1 -Config -Thumbprint $c.Thumbprint -Out $env:TEMP\wren-sign.json
   npx tauri build --bundles nsis --config $env:TEMP\wren-sign.json
-  powershell -File scripts\sign-windows.ps1 -Verify -Thumbprint $c.Thumbprint -Files <installer>,<wren.exe>
+  7z x -o"$env:TEMP\wren-payload" <installer> wren.exe uninstall.exe   # check what ships, not target\release\wren.exe
+  powershell -File scripts\sign-windows.ps1 -Verify -Thumbprint $c.Thumbprint -Files <installer>,$env:TEMP\wren-payload\wren.exe,$env:TEMP\wren-payload\uninstall.exe
+  Remove-Item Cert:\CurrentUser\My\$($c.Thumbprint)                       # throw the test certificate away
 #>
 param(
     [switch]$Import,
