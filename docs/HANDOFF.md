@@ -42,8 +42,20 @@ permissions bug first because it stops his dad using Wren at all.
    After updating, each Mac needs **one** last reset (signature changes from ad-hoc/Apple Development to the
    cert): press Fix permissions and allow. On Maximilian's Mac the v0.1.9 helper may re-sign the first
    self-signed update with Apple Development, so his one reset may come one update later.
-2. Notes features (needs Maximilian's approval of the spec): formatted Copy (HTML+RTF+plain), Save as PDF,
-   Save as Word, Mac Share menu. Then writing-plans → build → live tests on the MacBook → Mac-only release.
+2. **Notes export (update 2) — built under "full send", PR from `feat/notes-export`.** Copy (HTML + plain on
+   Windows via CF_HTML; HTML + RTF + plain on macOS), Save as Word (`docx` 9.6.1, built in `src/lib/notesExport.ts`,
+   saved via tauri-plugin-dialog in `src-tauri/src/notes_export/mod.rs`), Save as PDF + Share (macOS only,
+   `notes_export/macos.rs`: off-screen WKWebView → NSPrintOperation; NSSharingServicePicker). Windows shows
+   Copy · Word · Regenerate; macOS adds Share · PDF. Decisions: direct buttons instead of an Export ▾ menu
+   (one click each); notes Copy is NOT excluded from clipboard history (a deliberate document copy); save
+   dialogs run in Rust so the page never picks a writable path; .docx bytes must start with `PK`.
+   Proof: unit tests (unzip the .docx), page checks click every button, live Windows end-to-end on the real
+   debug app (CDP + temp WREN_HOME: Copy → clipboard HTML Format + clean text; Word → native Save As → file),
+   live Mac example `src-tauri/examples/notes_export_proof.rs` (pasteboard types, 4-page A4 PDF, Share picker,
+   two PDFs at once → one refused). Review: Gemini 4 Neon xhigh (GPT usage unavailable), 2 rounds, approved;
+   S8 (doubled margins) declined with the Mac measurement. Not proven: Mail compose subject (Mail not set up on
+   the MacBook), clicking the buttons inside the installed Mac app (needs Automation permission for T3 Code).
+   Pre-existing flaky test: `meetings::session::tests::backlog_is_capped_and_marked_not_transcribed` (300 ms sleep).
 3. Before the next Windows release: set `WREN_RELEASE_PLATFORMS=both`; Windows pieces of the notes work.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
