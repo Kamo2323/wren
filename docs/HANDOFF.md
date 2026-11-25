@@ -51,7 +51,16 @@
   unmuted (Sol critical, Gemini important; verified in `speakers.rs::muted_during`). Other open items are in the
   ledger ("Council R5 …"): ordinary Quit dropping a failed notes draft, Mac held-audio flush at a guessed rate,
   unbounded WASAPI activation wait, a 3 s wait for every Me line after a call ends, a double 15 s wait on quit.
-- **STOPPED (2026-11-25):** waiting for Maximilian's decision. Nothing merged to main.
+- **Released (2026-11-25):** Maximilian chose to ship with the mute-gap bug open. `feat/meetings` was merged to `main`
+  (09c8cfd) and pushed, and CI "Build and release Wren" run 45523315058 started.
+- **Open: draft PR #2 https://github.com/Kamo2323/wren/pull/2** (branch `fix/meetings-mute-gap`): "Meetings: muted
+  speech can leak when Teams readings pause". It holds a failing test
+  (`speakers.rs::mute_state_carries_across_a_gap_between_readings`). Next step: fix `muted_during` to carry the last
+  known mute state across gaps between readings (no 1 s cap, up to `MUTE_CARRY_MS`), make the test pass, re-run the
+  session tests, then a live check on the Mac.
+- Other open council items (ledger "Council R5 …"): ordinary Quit drops a failed notes draft; Mac held-audio flush
+  at a guessed rate; unbounded WASAPI activation wait; a 3 s wait for each Me line after a call ends; a double 15 s
+  wait on quit during a stuck start. Still needs Maximilian: a two-person Teams call (remote names, own tile).
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 
