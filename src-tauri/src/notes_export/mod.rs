@@ -8,7 +8,7 @@
 #[cfg(target_os = "macos")]
 mod macos;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 /// Longest HTML / plain text accepted from the page (a long meeting's notes are ~50 KB).
@@ -55,21 +55,28 @@ pub fn safe_file_name(suggested: &str, ext: &str) -> String {
 
 /// Asks where to save. `Ok(None)` = the person cancelled.
 fn ask_save_path(app: &AppHandle, suggested: &str, ext: &str, filter: &str) -> Result<Option<std::path::PathBuf>, String> {
-    let picked = app
-        .dialog()
-        .file()
-        .set_file_name(safe_file_name(suggested, ext))
-        .add_filter(filter, &[ext])
-        .blocking_save_file();
-    let Some(picked) = picked else { return Ok(None) };
-    let mut path = picked.into_path().map_err(|e| {
+    let mut dialog = app.dialog().file().set_file_name(safe_file_name(suggested, ext)).add_filter(filter, &[ext]);
+    // Owned by Wren's window: modal on Windows (not lost behind Wren), and never the hidden popup on macOS.
+    if let Some(win) = app.get_webview_window(crate::tray::MAIN_LABEL) {
+        dialog = dialog.set_parent(&win);
+    }
+    let Some(picked) = dialog.blocking_save_file() else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| {
         tracing::warn!(error = %e, "save dialog returned a non-file path");
         "Couldn't use that location.".to_string()
     })?;
+    Ok(Some(with_extension(path, ext)))
+}
+
+/// Adds `.ext` when the chosen name lacks it. Appends rather than replaces, so "Notes v0.1.11" becomes
+/// "Notes v0.1.11.docx", not "Notes v0.1.docx".
+fn with_extension(mut path: std::path::PathBuf, ext: &str) -> std::path::PathBuf {
     if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case(ext)) != Some(true) {
-        path.set_extension(ext);
+        let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        name.push(format!(".{ext}"));
+        path.set_file_name(name);
     }
-    Ok(Some(path))
+    path
 }
 
 fn display_name(path: &std::path::Path) -> String {
@@ -214,6 +221,14 @@ mod tests {
         let html = std::fs::read_to_string(std::env::var("WREN_NOTES_HTML").unwrap()).unwrap();
         let plain = std::fs::read_to_string(std::env::var("WREN_NOTES_PLAIN").unwrap()).unwrap();
         copy_rich(&html, &plain).unwrap();
+    }
+
+    #[test]
+    fn missing_extension_is_appended_not_swapped() {
+        use std::path::PathBuf;
+        assert_eq!(with_extension(PathBuf::from("dir/Notes v0.1.11"), "docx"), PathBuf::from("dir/Notes v0.1.11.docx"));
+        assert_eq!(with_extension(PathBuf::from("dir/notes.DOCX"), "docx"), PathBuf::from("dir/notes.DOCX"));
+        assert_eq!(with_extension(PathBuf::from("dir/notes"), "pdf"), PathBuf::from("dir/notes.pdf"));
     }
 
     #[test]
