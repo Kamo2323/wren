@@ -27,6 +27,13 @@ use crate::{ai_cleanup, popup, tray};
 
 /// Payload: `EngineStatus`, on every change.
 pub const EVENT_ENGINE_STATUS: &str = "app://engine-status";
+/// Test seam: `WREN_TEST_NO_HOTKEY=1` runs without the global chord, so a test copy of Wren can run
+/// next to the user's own Wren without both reacting to their dictation. Never for normal use.
+pub const TEST_NO_HOTKEY_ENV: &str = "WREN_TEST_NO_HOTKEY";
+
+fn hotkey_disabled_for_test() -> bool {
+    std::env::var(TEST_NO_HOTKEY_ENV).as_deref() == Ok("1")
+}
 /// No payload: History rows were added, changed or deleted.
 pub const EVENT_HISTORY_CHANGED: &str = "app://history-changed";
 
@@ -166,6 +173,9 @@ impl Env for AppEnv {
         let mut guard = self.hotkey.lock();
         match cmd {
             HotkeyCmd::Reinstall => {
+                if hotkey_disabled_for_test() {
+                    return;
+                }
                 if let Some(h) = guard.as_ref() {
                     h.reinstall();
                 } else {
@@ -316,7 +326,11 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
 
     // Hotkey (its events go straight to the session).
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded();
-    let hotkey = match HotkeyService::start(hotkey_tx.clone()) {
+    let no_hotkey = hotkey_disabled_for_test();
+    if no_hotkey {
+        tracing::warn!("WREN_TEST_NO_HOTKEY=1: running without the global hotkey (test seam, never for normal use)");
+    }
+    let hotkey = match if no_hotkey { Err(anyhow::anyhow!("disabled by {TEST_NO_HOTKEY_ENV}")) } else { HotkeyService::start(hotkey_tx.clone()) } {
         Ok(h) => Some(h),
         Err(err) => {
             #[cfg(target_os = "macos")]
@@ -326,7 +340,7 @@ pub fn start_services(app: &AppHandle) -> anyhow::Result<Services> {
             None
         }
     };
-    let hotkey_failed = hotkey.is_none();
+    let hotkey_failed = hotkey.is_none() && !no_hotkey;
 
     #[cfg(windows)]
     let own_windows: Vec<isize> = app
