@@ -8,7 +8,7 @@ import { useToast } from "./Toast";
 import { Button } from "./Button";
 
 /** Plain-language hint that goes next to a "permission needed" message. */
-export const FIX_PERMISSIONS_HINT = "Already switched on in System Settings? Press Fix permissions, then allow Wren again.";
+export const FIX_PERMISSIONS_HINT = "Already switched on? Press Fix permissions.";
 
 /** Runs the reset and reports it. `onDone` re-checks the permission the caller shows. */
 export function useFixPermissions(onDone?: () => void) {
