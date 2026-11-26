@@ -309,7 +309,8 @@ check("Windows popup hands-free hint preserves Ctrl + Win", await page.evaluate(
 
 // ---------------- Meetings (plan Task 11) ----------------
 const selectedTab = () => page.locator('[role="tab"][aria-selected="true"]').first().textContent().then((t) => t?.trim());
-await page.goto(`${base}/index.html#meetings`);
+// Pin Windows: without ?platform the mock follows the browser, so on a Mac this would show the macOS toolbar.
+await page.goto(`${base}/index.html?platform=windows#meetings`);
 await page.waitForSelector(".meeting-card");
 check("Meetings list shows day groups of cards", (await page.locator(".meeting-card").count()) === 3 &&
   (await page.locator(".day__label").allTextContents()).some((t) => /Today|Yesterday/.test(t)));
@@ -395,7 +396,7 @@ check("…and go to the browser instead", (await page.evaluate(() => window.__wr
   const box = await actions.getByRole("button", { name: "Share" }).boundingBox();
   check("Share anchors the menu at the Share button and sets the subject",
     share.subject === "Weekly sync with Sarah" && Math.abs(share.rect[0] - box.x) < 1 && Math.abs(share.rect[1] - box.y) < 1, JSON.stringify(share.rect));
-  await openSync("");
+  await openSync("?platform=windows");
 }
 check("enhanced footer shows model, tokens and cost", /Claude Opus 5\.5 · [\d.]+k tokens · ~\$\d+\.\d\d/.test((await page.locator(".enh-footer").textContent()) ?? ""));
 await page.getByRole("button", { name: "Short", exact: true }).click();
@@ -650,11 +651,11 @@ await page.waitForSelector(".page--home");
 check("finishing setup goes Home", true);
 
 for (const [mode, text] of [["paused", "Continue setup"], ["failed", "Try again"], ["nospace", "Try again"]]) {
-  await page.goto(`${base}/index.html?setup=${mode}#home`);
+  await page.goto(`${base}/index.html?setup=${mode}&platform=windows#home`);
   await page.waitForSelector(".setup-alert");
   check(`setup ${mode} explains itself and offers "${text}"`, (await page.getByRole("button", { name: text }).count()) === 1);
 }
-await page.goto(`${base}/index.html?setup=nospace&again=1#home`);
+await page.goto(`${base}/index.html?setup=nospace&again=1&platform=windows#home`); // Windows sizes: the macOS mock needs less than the 3.4 GB free
 await page.waitForSelector(".setup-space");
 check("not enough space is flagged", await page.locator(".setup-space.is-bad").count() === 1);
 await page.goto(`${base}/index.html?setup=paused&again=1#home`);
