@@ -122,7 +122,7 @@ fn is_apostrophe(c: char) -> bool {
 /// Lower-cased words (letters, digits and inner apostrophes).
 fn ai_words(s: &str) -> Vec<String> {
     s.split(|c: char| !(c.is_alphanumeric() || is_apostrophe(c)))
-        .map(|w| w.trim_matches(is_apostrophe).to_lowercase())
+        .map(|w| w.trim_matches(is_apostrophe).replace('\u{2019}', "'").to_lowercase())
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -240,19 +240,33 @@ fn dictation_kept(tidied: &str, candidate: &str) -> f32 {
 const ACK_OPENERS: [&str; 13] =
     ["sure", "okay", "ok", "certainly", "absolutely", "here", "here's", "i'll", "got", "alright", "understood", "noted", "of"];
 
-/// The reply opens like an answer to the dictation ("Sure, I'll add…", "Here's…") with a word the
-/// dictation doesn't start with.
+/// The reply opens like an answer to the dictation ("Sure, I'll add…", "Here's…") with a word
+/// that was never said ("the logs are attached here" → "Here are the logs…" is fine).
 fn acknowledges(tidied: &str, candidate: &str) -> bool {
     let Some(first) = ai_words(candidate).into_iter().next() else { return false };
-    ACK_OPENERS.contains(&first.as_str()) && !ai_words(tidied).iter().take(3).any(|w| *w == first)
+    ACK_OPENERS.contains(&first.as_str()) && !ai_words(tidied).contains(&first)
 }
+
+/// Requests that wrap a question ("can you tell me what…", "do you know why…").
+const EMBEDDED_QUESTION_LEADS: [&[&str]; 3] = [&["tell", "me"], &["do", "you", "know"], &["explain"]];
 
 const QUESTION_WORDS: [&str; 12] = ["what", "what's", "why", "how", "how's", "when", "where", "where's", "who", "who's", "which", "whose"];
 
-/// The dictation asks a what/why/how… question and the reply has no question mark: likely an answer.
+/// The dictation asks a what/why/how… question and the reply has no question mark: likely an
+/// answer. Also a wrapped question ("tell me what the capital of France is") whose request words
+/// the reply dropped ("The capital of France is Paris.").
 fn answers_question(tidied: &str, candidate: &str) -> bool {
     if candidate.contains('?') {
         return false;
+    }
+    let (said, reply) = (ai_words(tidied), ai_words(candidate));
+    for lead in EMBEDDED_QUESTION_LEADS {
+        let asked = said
+            .windows(lead.len() + 1)
+            .any(|w| w[..lead.len()].iter().zip(lead.iter()).all(|(a, b)| a == b) && QUESTION_WORDS.contains(&w[lead.len()].as_str()));
+        if asked && !reply.windows(lead.len()).any(|w| w.iter().zip(lead.iter()).all(|(a, b)| a == b)) {
+            return true;
+        }
     }
     let mut sentence = String::new();
     for c in tidied.chars() {
@@ -486,6 +500,8 @@ mod tests {
         // Acknowledging the request (review S1): the words match, but it's a reply, not the dictation.
         assert_eq!(check("Sure, I'll add a dark mode toggle to the settings page and make it remember the choice."), plain);
         assert_eq!(check("Okay. Add a dark mode toggle to the settings page and make it remember the choice."), plain);
+        // A curly apostrophe doesn't hide the opener (review round 2, N3).
+        assert_eq!(check("Here\u{2019}s the prompt: can you add a dark mode toggle to the settings page and make it remember the choice"), plain);
         // Answering the dictation (review S1): most of what was said is gone.
         let said = "can you tell me what the capital of France is";
         let ai = |_: &str| Some("The capital of France is Paris.".to_string());
@@ -494,6 +510,20 @@ mod tests {
         // A slash command the AI dropped.
         let ai = |_: &str| Some("Compact the conversation.".to_string());
         assert_eq!(run(&in_app("slash compact", AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, "/compact");
+    }
+
+    #[test]
+    fn coding_rewrite_keeps_good_rewrites_of_rambling_speech() {
+        // Review round 2: N1 (filler-heavy dictation), N2 (an opener word that was said).
+        for (said, reply) in [
+            ("so basically what I kind of want is like for the app to you know remember the window size", "I want the app to remember the window size."),
+            ("the logs are attached here can you check them", "Here are the logs, can you check them?"),
+            ("the tests keep failing got any ideas", "Got any ideas why the tests keep failing?"),
+            ("can you tell me what the paste module does", "Tell me what the paste module does."),
+        ] {
+            let ai = move |_: &str| Some(reply.to_string());
+            assert_eq!(run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, reply, "{said}");
+        }
     }
 
     #[test]

@@ -111,9 +111,11 @@ pub const AI_REWRITE_MIN_LENGTH_RATIO: f32 = 0.40;
 pub const AI_REWRITE_MAX_LENGTH_RATIO: f32 = 1.40;
 /// …and at least this share of the reply's words must come from the tidied text.
 pub const AI_REWRITE_MIN_REPLY_OVERLAP: f32 = 0.75;
-/// …and more than half of the dictation's words (stutters counted once) must still be in the reply,
-/// so an answer to the dictation ("The capital of France is Paris.") isn't pasted in its place.
-pub const AI_REWRITE_MIN_KEPT: f32 = 0.55;
+/// …and at least this share of the dictation's words (stutters counted once) must still be in the
+/// reply, so a reply that drops most of what was said isn't pasted in its place. Kept at the length
+/// floor: a good rewrite of rambling speech ("so basically what I kind of want is like…") keeps
+/// little more than this.
+pub const AI_REWRITE_MIN_KEPT: f32 = 0.40;
 /// Spoken slash commands in coding apps: a command name is at most this many words.
 pub const SLASH_MAX_NAME_WORDS: usize = 4;
 
