@@ -1,5 +1,22 @@
 # Wren — handoff and decision log
 
+## Released: v0.1.14 (2026-11-26, afternoon)
+
+Maximilian approved PR #9 ("merge it and release the update"). PR #9 (`plan/mac-claude-key-file`) merged into
+`main` with a merge commit (`44a0e4281eccccdcf4afe9bc6bfde17291a2fe61`), with `WREN_RELEASE_PLATFORMS=both` and
+`WREN_SIGN_MACOS=self-signed`. Release run `45819513129` succeeded (all 4 jobs): **Wren v0.1.14** is live with
+the Mac `.dmg` + `.app.tar.gz` + `.sig`, the Windows `x64-setup.exe` + `.sig`, and `latest.json`, so installed
+copies on both platforms will offer the update.
+
+- **What shipped:** macOS stores the Claude API key in a private `0600` file in Wren's roaming folder, moves any
+  existing Keychain entry once (and drops `claude-api-key.moved-from-keychain` so the Keychain is never read
+  again), both platforms cache the key per launch under a lock (`KeyCache`), Windows stays on Credential Manager,
+  and macOS Settings copy explains the private file.
+- **What still needs Maximilian:** after updating the Mac to **v0.1.14**, click **Allow** one last time (the
+  one-time move out of Keychain), then confirm the next update doesn't prompt. Still open: **PR #8**
+  (`followup/needs-maximilian`) and the **Pill idea** below. Local worktree `C:\Wren-keyfile` and superseded
+  draft branch `fix/mac-claude-key-file` can be cleaned up whenever convenient.
+
 ## Released: v0.1.13 (2026-11-26, morning)
 
 Maximilian reviewed and said "merge and push it live". `WREN_RELEASE_PLATFORMS` set to `both`, PR #7 merged
@@ -10,18 +27,6 @@ Maximilian, in `docs/superpowers/plans/2026-11-27-needs-maximilian.md` on that b
 clean-up switch starts **off** for anyone who had Ollama clean-up on; switch it on in Settings first.
 
 ### Open after the release (2026-11-26)
-- **PR #9** (built under **full stop**, ready for Maximilian to review and merge, branch `plan/mac-claude-key-file`,
-  worktree `C:\Wren-keyfile`): Mac Keychain pop-up after every update (option A — private `0600` key file in Wren's
-  roaming folder, one-time move out of Keychain + marker, per-launch locked `KeyCache` on both platforms, Windows
-  unchanged on Credential Manager, macOS Settings copy updated). Verified on Windows (`npm run build`, 38 unit tests,
-  172 page checks, `cargo test --lib` 504 passed / 0 failed, `key_move_probe` ok, 0 new clippy warnings) and on
-  Lord's MacBook Pro at `306ae1e` (`cargo test --lib` 558 passed / 0 failed including mode `0600`, `key_move_probe`
-  against real Keychain with `file mode: 600`, `cargo clippy` 0 new warnings, `cargo check --release --lib --bins`
-  ok). Reviewed with Gemini 4 Neon (Extra High): 2 rounds → APPROVE (fixed S1: `WREN_HOME` isolation matches
-  `Paths::resolve()`). **Not done:** PR left open & unmerged; did not touch `/Applications/Wren.app` or Wren's real
-  Keychain item (`service "Wren"`). **Next step:** Maximilian reviews/merges PR #9 (remember `WREN_RELEASE_PLATFORMS`
-  if releasing); on the Mac update that ships it, click **Allow** one last time and confirm the following update
-  doesn't prompt. (Local draft branch `fix/mac-claude-key-file` is now superseded and can be deleted whenever.)
 - **Pill idea** (not filed yet): with Tidy Text on, show the target app's icon in the recording pill. Open question
   to Maximilian: for websites in a browser, show (A) the browser icon, (B) built-in icons for known sites, or
   (C) downloaded favicons. My pick is B. He said "a couple of features" for PR #8; the second one hasn't been named yet.
