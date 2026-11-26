@@ -96,10 +96,30 @@
    Slack, and on Windows. Update README / SPEC §10 mentions of Ollama and the
    `examples/ai_cleanup_probe.rs` example.
 
-## Open questions
+## Answers to the open questions (Maximilian, 2026-11-26)
 
-- Coding "Rewrite" default: should the toggle default to Rewrite or Tidy?
-- Should clean-up spend show in Settings ("This month"), and should it share the notes counter?
-- Terminals: treat Terminal / iTerm / Windows Terminal as Coding (likely Claude Code / Codex CLI)?
-- Any apps to always skip (password managers, banking) beyond the existing "not editable" check?
-- Per-app overrides in Settings later (e.g. "treat Notion as Email")?
+- **Coding apps, Rewrite vs Tidy:** a toggle in Settings, as above. Default to Rewrite (the
+  recommended option); he can flip it.
+- **Clean-up spend in Settings:** yes. Show it in the "This month" line (own counter, e.g.
+  "~$0.03 across 140 clean-ups"), using the same list-price estimate as notes.
+- **Terminals count as coding apps:** yes (Terminal, iTerm, Warp, Windows Terminal, PowerShell, etc.).
+- **Apps to always skip:** none. Keep only the existing "not editable" check.
+
+## Slash commands in coding apps (basic rule, Maximilian 2026-11-26)
+
+In a coding app, saying **"slash" followed by a command or skill name** types it as a slash command:
+
+| Said | Pasted |
+|---|---|
+| "slash compact" | `/compact` |
+| "slash code review" | `/code-review` |
+| "slash full send, then file the PR" | `/full-send, then file the PR` → better: `/full-send` then the rest |
+
+Keep it simple and deterministic, so it works even when Claude is off or slow:
+- Do it in the pipeline as a plain text step (no AI needed), only when the target is a Coding app.
+- Trigger only when "slash" starts the dictation or a sentence; elsewhere ("and slash or") leave
+  it alone.
+- The name is the words after "slash" up to the next punctuation or pause, lower-cased and joined
+  with hyphens. Cap it at ~4 words.
+- Also tell the Claude prompt for Coding apps to keep `/name` tokens exactly as they are.
+- Table-test it, including "slash" mid-sentence and an empty name ("slash" alone stays "slash").
