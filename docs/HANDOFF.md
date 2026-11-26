@@ -9,6 +9,16 @@ so installed copies on both platforms will offer the update. Still open: PR #8 (
 Maximilian, in `docs/superpowers/plans/2026-11-27-needs-maximilian.md` on that branch). After updating, the Claude
 clean-up switch starts **off** for anyone who had Ollama clean-up on; switch it on in Settings first.
 
+### Open after the release (2026-11-26)
+- **PR #9** (brief only, branch `plan/mac-claude-key-file`): Mac Keychain pop-up after every update. Cause: since
+  0.1.12 releases are self-signed (no Team ID), so the Keychain remembers "Always Allow" per build (`cdhash:`).
+  Maximilian chose option A (key in a private 0600 file, moved out of the Keychain once). An unrequested working
+  draft sits on the local, unpushed branch `fix/mac-claude-key-file` (`C:\Wren-keyfile`); he asked for the PR only.
+- **Pill idea** (not filed yet): with Tidy Text on, show the target app's icon in the recording pill. Open question
+  to Maximilian: for websites in a browser, show (A) the browser icon, (B) built-in icons for known sites, or
+  (C) downloaded favicons. My pick is B. He said "a couple of features" for PR #8; the second one hasn't been named yet.
+- AI clean-up confirmed working live on Windows 0.1.13 (log: coding category, 802 ms, Claude's text pasted).
+
 ## Status (2026-11-27, overnight "full stop") — one update combining PRs #1, #4, #5, #6 (branch `update/wren-four-prs`)
 
 Built overnight 26→27 Nov under **full stop**: everything built, tested on Windows and the MacBook, reviewed,
