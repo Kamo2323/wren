@@ -174,8 +174,11 @@ if you want them gone too.
 - Learning from corrections needs the app to expose its text to Windows UI Automation. It works in
   normal text boxes, browsers and the Claude desktop app's composer; some apps do not expose their
   text, and then nothing is learned.
-- The AI clean-up switch (off by default) needs Ollama running locally with a small model; it only
-  tidies punctuation and wording, and it adds a little time to each dictation.
+- The AI clean-up switch (off by default) uses Claude with the API key saved under Settings →
+  Meeting notes. Only the text is sent to Anthropic (never the audio), billed to that key (Haiku 5.5:
+  a fraction of a cent a dictation). It shapes the text for the app you're in (email, chat, a clear
+  prompt for coding agents) and adds about half a second; if Claude is slow or offline, the plain
+  text is pasted. In coding apps, saying "slash compact" types `/compact` whether or not it is on.
 - Unless a release is built with Authenticode signing turned on (`docs/RELEASING.md`), the installer
   is not code-signed, so Windows SmartScreen may warn the first time you run it.
 
