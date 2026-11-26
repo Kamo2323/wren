@@ -106,6 +106,8 @@ pub struct Settings {
     pub meeting_name: String,
     /// Claude model for enhanced meeting notes (meetings spec §5.4).
     pub claude_model: String,
+    /// Save each meeting's Teams readings and lines to `call-diagnostics.jsonl` (off; deleted with the audio).
+    pub save_call_diagnostics: bool,
 }
 
 impl Default for Settings {
@@ -124,6 +126,7 @@ impl Default for Settings {
             theme: None,
             meeting_name: String::new(),
             claude_model: "claude-opus-5-5".into(),
+            save_call_diagnostics: false,
         }
     }
 }
@@ -202,6 +205,16 @@ mod tests {
         s.theme = Some("dark".into());
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+    }
+
+    #[test]
+    fn call_diagnostics_off_by_default_and_saved() {
+        assert!(!Settings::default().save_call_diagnostics);
+        let dir = temp_dir("diag");
+        let _cleanup = Cleanup(dir.clone());
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"saveCallDiagnostics":true}"#).unwrap();
+        assert!(Settings::load(&path).save_call_diagnostics);
     }
 
     #[test]

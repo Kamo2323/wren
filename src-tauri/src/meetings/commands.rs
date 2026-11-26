@@ -114,6 +114,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
     let a1 = app.clone();
     let a2 = app.clone();
     let a3 = app.clone();
+    let a4 = app.clone();
     #[cfg(windows)]
     let make_teams_reader: Option<Arc<dyn Fn() -> crate::meetings::teams::ReaderFactory + Send + Sync>> =
         Some(Arc::new(|| {
@@ -143,6 +144,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
             a2.state::<AppState>().store.bias_terms(crate::constants::BIAS_TERMS_MAX).unwrap_or_default()
         }),
         me_name: Arc::new(move || meeting_name(&a3)),
+        save_diagnostics: Arc::new(move || a4.state::<AppState>().settings.read().save_call_diagnostics),
         drain_timeout: DRAIN_TIMEOUT,
         // 20 minutes of audio waiting at most (~77 MB of samples).
         max_backlog_ms: 20 * 60_000,

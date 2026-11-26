@@ -14,6 +14,7 @@
 use crate::meetings::capture::wav::ContinuousWav;
 use crate::meetings::capture::{AudioBlock, AudioSource};
 use crate::meetings::dedupe::{is_bleed, is_echo, starts_after, DictationGate, ECHO_MAX_LAG_MS};
+use crate::meetings::diagnostics;
 use crate::meetings::segmenter::{RawSegment, Segmenter, SegmenterConfig};
 use crate::meetings::speakers::{SpeakerTimeline, TeamsObservation, TEAMS_LAG_MS, UNKNOWN_BEFORE_FIRST_MUTE_READ_MS};
 use crate::meetings::teams::{spawn_watcher, ReaderFactory};
@@ -67,6 +68,8 @@ pub struct Deps {
     pub make_teams_reader: Option<Arc<dyn Fn() -> ReaderFactory + Send + Sync>>,
     pub bias_terms: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     pub me_name: Arc<dyn Fn() -> String + Send + Sync>,
+    /// "Save call diagnostics" (read when a meeting starts): write `call-diagnostics.jsonl`.
+    pub save_diagnostics: Arc<dyn Fn() -> bool + Send + Sync>,
     /// How long Stop waits for queued clips before marking the rest "[not transcribed]".
     pub drain_timeout: Duration,
     /// Most audio kept waiting for transcription; older clips beyond it are saved as gaps (memory bound).
@@ -157,9 +160,22 @@ struct Shared {
     /// The Teams watcher thread (`None`: no reader) and its stop flag.
     watcher: Mutex<Option<JoinHandle<()>>>,
     watcher_stop: Arc<AtomicBool>,
+    /// Call diagnostics file (`None`: the setting is off, or writing failed).
+    diagnostics: Mutex<Option<diagnostics::Writer>>,
 }
 
 impl Shared {
+    /// Run `f` on the diagnostics writer, if any; a write error turns diagnostics off for this meeting.
+    fn diagnose(&self, f: impl FnOnce(&mut diagnostics::Writer) -> std::io::Result<()>) {
+        let mut d = self.diagnostics.lock();
+        if let Some(w) = d.as_mut()
+            && let Err(e) = f(w)
+        {
+            tracing::warn!(error_kind = ?e.kind(), "could not write call diagnostics; stopped for this meeting");
+            *d = None;
+        }
+    }
+
     /// True while the Teams watcher is still reading (a Me clip may wait for it).
     fn teams_watching(&self) -> bool {
         !self.watcher_stop.load(Ordering::Relaxed) && self.watcher.lock().as_ref().is_some_and(|h| !h.is_finished())
@@ -404,7 +420,14 @@ impl MeetingService {
             max_backlog_ms: self.max_backlog_ms.load(Ordering::Relaxed),
             watcher: Mutex::new(None),
             watcher_stop: watcher_stop.clone(),
+            diagnostics: Mutex::new(None),
         });
+        if (self.deps.save_diagnostics)() {
+            match diagnostics::Writer::create(&dir, &row.id, &row.started_at_utc, TEAMS_LAG_MS) {
+                Ok(w) => *shared.diagnostics.lock() = Some(w),
+                Err(e) => tracing::warn!(error_kind = ?e.kind(), "could not create the call diagnostics file"),
+            }
+        }
         let (ctl_tx, ctl_rx) = crossbeam_channel::unbounded();
         let (obs_tx, obs_rx) = crossbeam_channel::unbounded();
         let wavs = ContinuousWav::create(&dir.join("me.wav")).and_then(|a| Ok((a, ContinuousWav::create(&dir.join("them.wav"))?)));
@@ -821,6 +844,7 @@ impl Pipeline {
             t.record(&o);
             (before, (t.participants(), t.latest_title(), t.self_name()))
         };
+        self.shared.diagnose(|w| w.reading(&o));
         self.reconcile_mute();
         let s = &self.shared;
         s.has_observations.store(true, Ordering::Relaxed);
@@ -1040,6 +1064,20 @@ fn worker(
             }
             match store.segment_insert(&seg) {
                 Ok(row) => {
+                    s.diagnose(|w| {
+                        w.line(&diagnostics::RecordedLine {
+                            source: match row.source {
+                                Source::Me => "me".into(),
+                                Source::Them => "them".into(),
+                            },
+                            start_ms: row.start_ms,
+                            end_ms: row.end_ms,
+                            speaker: row.speaker.clone(),
+                            confidence: row.confidence,
+                            muted: row.muted,
+                            text: row.text.clone(),
+                        })
+                    });
                     let mut r = match row.source {
                         Source::Them => s.recent_them.lock(),
                         Source::Me => s.recent_me.lock(),

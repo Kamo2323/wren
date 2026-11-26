@@ -1,0 +1,163 @@
+{"kind":"header","format":1,"meetingId":"synthetic-one-person","startedAtUtc":"2026-11-26T10:00:00Z","teamsLagMs":900,"platform":"synthetic"}
+{"kind":"teams","atMs":0,"speaking":[],"selfMuted":true,"roster":["Sarah Jones","Maximilian Haskell (You)"],"selfName":"Maximilian Haskell","title":"Speaker test call"}
+{"kind":"teams","atMs":250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":2000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":2250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":2500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":2750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":3000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":3250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":3500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":3750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":4000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":4250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":4500,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":4750,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":5000,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":5250,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":5500,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":5750,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":6000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":6250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":6500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":6750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":7000,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":7250,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":7500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":7750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":8000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":8250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":8500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":8750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":9000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":9250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":9500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":9750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12500,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":12750,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":13000,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":13250,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":13500,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":13750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":14000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":14250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":14500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":14750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":15000,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":15250,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":15500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":15750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":16000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":16250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":16500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":16750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":17000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":17250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":17500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":17750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":18000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":18250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":18500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":18750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":19000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":19250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":19500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":19750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":20000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":20250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":20500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":20750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":21000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":21250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":21500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":21750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":22000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":22250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":22500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":22750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":23000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":23250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":23500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":23750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":24000,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":24250,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":24500,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":24750,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":25000,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":25250,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":25500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":25750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":26000,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":26250,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":26500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":26750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":27000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":27250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":27500,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":27750,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":28000,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":28250,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":28500,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":28750,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":29000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":29250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":29500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":29750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":30000,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":30250,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":30500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":30750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":31000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":31250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":31500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":31750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":32000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":32250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":32500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":32750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":33000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":33250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":33500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":33750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":34000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":34250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":34500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":34750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":35000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":35250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":35500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":35750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":36000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":36250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":36500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":36750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":37000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":37250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":37500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":37750,"speaking":[],"selfMuted":true}
+{"kind":"line","source":"me","startMs":5000,"endMs":6500,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"me","startMs":12800,"endMs":14500,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"me","startMs":24500,"endMs":25500,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"me","startMs":28000,"endMs":29500,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"them","startMs":1000,"endMs":4500,"speaker":null,"confidence":0,"muted":false,"text":"Morning, can you hear me okay?"}
+{"kind":"line","source":"them","startMs":7000,"endMs":12000,"speaker":null,"confidence":0,"muted":false,"text":"Great. So the plan for today is the launch checklist and the budget."}
+{"kind":"line","source":"them","startMs":15000,"endMs":16200,"speaker":null,"confidence":0,"muted":false,"text":"Sure, go ahead."}
+{"kind":"line","source":"them","startMs":18000,"endMs":24000,"speaker":null,"confidence":0,"muted":false,"text":"The checklist has twelve items and we have finished nine of them so far this week."}
+{"kind":"line","source":"them","startMs":26000,"endMs":27500,"speaker":null,"confidence":0,"muted":false,"text":"Yes, Thursday works."}
+{"kind":"line","source":"them","startMs":30000,"endMs":36000,"speaker":null,"confidence":0,"muted":false,"text":"Perfect, I will send the notes round after the call. Thanks everyone."}
