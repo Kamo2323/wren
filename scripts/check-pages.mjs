@@ -496,7 +496,13 @@ check("saved key: status shown, key not rendered anywhere", !(await page.content
   (await page.locator(".key-saved").textContent())?.includes("Key saved"));
 check("model picker offers Opus 5.5 and Sonnet 5.5", (await page.locator("#claude-model option").allTextContents()).join("|").includes("Opus 5.5") &&
   (await page.locator("#claude-model option").allTextContents()).join("|").includes("Sonnet 5.5"));
-check("this month's spend is shown", /~\$\d+\.\d\d across \d+ notes/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+const diagSwitch = page.getByRole("switch", { name: "Save call diagnostics" });
+check("call diagnostics switch is off by default", (await diagSwitch.getAttribute("aria-checked")) === "false");
+await diagSwitch.click();
+check("call diagnostics switch turns on", (await diagSwitch.getAttribute("aria-checked")) === "true");
+check("call diagnostics help says names are kept and deleted with the audio",
+  /by name[\s\S]*deleted with the audio after 24 hours/.test((await page.locator(".setrow", { hasText: "Save call diagnostics" }).textContent()) ?? ""));
+check("this month's spend is shown",/~\$\d+\.\d\d across \d+ notes/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
 
 // Quit while recording asks first.
 await page.goto(`${base}/index.html?meeting=recording#meetings`);

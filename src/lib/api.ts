@@ -72,6 +72,7 @@ const mock = {
     })(),
     meetingName: mockParams.get("name") ?? "",
     claudeModel: "claude-opus-5-5",
+    saveCallDiagnostics: false,
   } as Settings,
 };
 

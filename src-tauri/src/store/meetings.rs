@@ -505,13 +505,15 @@ fn write_note(tx: &rusqlite::Transaction<'_>, n: &NoteRow, stale: bool) -> Store
     Ok(())
 }
 
-/// Delete every WAV under `dir`; true when none is left (or the folder is gone).
+/// Delete every WAV under `dir`, and the call diagnostics file (it holds names and words, and lives
+/// exactly as long as the audio); true when none is left (or the folder is gone).
 fn delete_wavs(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else { return !dir.exists() };
     let mut all = true;
     for e in entries.flatten() {
         let p = e.path();
-        let is_wav = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"));
+        let is_wav = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"))
+            || p.file_name().is_some_and(|n| n == crate::meetings::diagnostics::FILE_NAME);
         if p.is_dir() {
             if is_wav {
                 all = false; // a folder named *.wav: can't be audio we wrote; leave it, report not done

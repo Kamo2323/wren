@@ -120,6 +120,10 @@ impl Drop for TempDir {
 }
 
 fn rig_with(delay_ms: u64, drain: Duration) -> Rig {
+    rig_full(delay_ms, drain, false)
+}
+
+fn rig_full(delay_ms: u64, drain: Duration, diagnostics: bool) -> Rig {
     let dir = std::env::temp_dir().join(format!("wren-meet-svc-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let store = Arc::new(Store::open(&dir.join("wren.db")).unwrap());
@@ -139,6 +143,7 @@ fn rig_with(delay_ms: u64, drain: Duration) -> Rig {
         make_teams_reader: None,
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".to_string()),
+        save_diagnostics: Arc::new(move || diagnostics),
         drain_timeout: drain,
         max_backlog_ms: 600_000,
     };
@@ -403,6 +408,54 @@ impl Rig {
     }
 }
 
+#[test]
+fn call_diagnostics_off_writes_no_file() {
+    let r = rig();
+    let m = r.svc.start(None).unwrap();
+    observe_span(&r.svc, 0, 2_000, &["Sarah Jones"], Some(false));
+    r.them.utter(0, 1_000, 0.20);
+    wait_for("a line", 5_000, || r.store.segments(&m.id).unwrap().len() == 1);
+    r.svc.stop();
+    assert!(r.svc_dir(&m.id).join("them.wav").exists());
+    assert!(!r.svc_dir(&m.id).join(crate::meetings::diagnostics::FILE_NAME).exists());
+}
+
+#[test]
+fn call_diagnostics_on_records_readings_and_lines_on_the_audio_clock() {
+    let r = rig_full(20, Duration::from_secs(10), true);
+    let m = r.svc.start(None).unwrap();
+    observe_span(&r.svc, 0, 2_900, &[], Some(false));
+    observe_span(&r.svc, 2_900, 4_400, &["Sarah Jones"], Some(false));
+    observe_span(&r.svc, 4_400, 6_000, &[], Some(false));
+    r.them.silence(0, 2_000);
+    r.them.utter(2_000, 1_000, 0.20);
+    wait_for("a line", 5_000, || r.store.segments(&m.id).unwrap().len() == 1);
+    r.svc.stop();
+    let text = std::fs::read_to_string(r.svc_dir(&m.id).join(crate::meetings::diagnostics::FILE_NAME)).unwrap();
+    let rec = crate::meetings::diagnostics::parse(&text).unwrap();
+    assert_eq!(rec.header.meeting_id, m.id);
+    assert_eq!(rec.header.teams_lag_ms, Some(TEAMS_LAG_MS));
+    assert_eq!(rec.readings.len(), 25, "every reading the watcher made");
+    assert_eq!(rec.readings[12].speaking, vec!["Sarah Jones".to_string()]);
+    assert_eq!(rec.readings[12].at_ms, 2_900);
+    assert_eq!(rec.readings[24].roster, vec!["Sarah Jones".to_string(), "Max Teams (You)".to_string()]);
+    assert_eq!(rec.readings[24].self_muted, Some(false));
+    let seg = &r.store.segments(&m.id).unwrap()[0];
+    assert_eq!(rec.lines.len(), 1);
+    let l = &rec.lines[0];
+    assert_eq!((l.source.as_str(), l.start_ms, l.end_ms), ("them", seg.start_ms, seg.end_ms));
+    assert_eq!(l.speaker.as_deref(), Some("Sarah Jones"));
+    assert_eq!(l.text, seg.text);
+    // Replaying the recorded readings names the line exactly as the live meeting did.
+    let mut t = crate::meetings::speakers::SpeakerTimeline::default();
+    rec.readings.iter().for_each(|o| t.record(o));
+    let a = t.attribute(l.start_ms, l.end_ms, TEAMS_LAG_MS);
+    assert_eq!((a.name.as_deref(), a.confidence), (l.speaker.as_deref(), l.confidence));
+    // Deleting the meeting deletes the diagnostics with its folder.
+    r.store.meeting_delete(&m.id, r.svc_dir(&m.id).parent().unwrap()).unwrap();
+    assert!(!r.svc_dir(&m.id).exists());
+}
+
 // ---------------- council round 1 ----------------
 
 struct SlowStart(Manual, Duration);
@@ -471,6 +524,7 @@ fn slow_capture_start_does_not_block_dictation_notices() {
         make_teams_reader: None,
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".to_string()),
+        save_diagnostics: Arc::new(|| false),
         drain_timeout: Duration::from_secs(5),
         max_backlog_ms: 600_000,
     };
@@ -598,6 +652,7 @@ fn dictation_while_the_meeting_is_starting_stays_out() {
         make_teams_reader: None,
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".to_string()),
+        save_diagnostics: Arc::new(|| false),
         drain_timeout: Duration::from_secs(5),
         max_backlog_ms: 600_000,
     };
@@ -730,6 +785,7 @@ fn quitting_while_a_meeting_is_starting_saves_it() {
         make_teams_reader: None,
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".to_string()),
+        save_diagnostics: Arc::new(|| false),
         drain_timeout: Duration::from_secs(5),
         max_backlog_ms: 600_000,
     };

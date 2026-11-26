@@ -534,6 +534,17 @@ function MeetingNotesSection({
         title="This month"
         desc={spend ? `~$${spend.usd.toFixed(2)} across ${spend.notes} notes (estimated from list prices).` : "Checking…"}
       />
+      <SetRow
+        title="Save call diagnostics"
+        desc="For testing who said what. Saves what Teams shows during each call (who is speaking, the people in the call by name, your mute state) and the transcript lines, in a file next to the meeting’s audio. It stays on this computer and is deleted with the audio after 24 hours, or when you delete the meeting. Starts with the next meeting."
+        control={
+          <Toggle
+            checked={settings.saveCallDiagnostics ?? false}
+            onChange={(v) => void update({ saveCallDiagnostics: v })}
+            label="Save call diagnostics"
+          />
+        }
+      />
       {isMac && (
         <SetRow
           title="System audio recording"

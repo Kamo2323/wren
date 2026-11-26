@@ -67,6 +67,8 @@ export interface Settings {
   meetingName: string;
   /** "claude-opus-5-5" | "claude-sonnet-5-5" */
   claudeModel: string;
+  /** Save each meeting's Teams readings and lines next to its audio (off by default). */
+  saveCallDiagnostics: boolean;
 }
 
 /** Task 4 `Mode`. Serialised in camelCase; "handsfree" is accepted too (it is how the DB stores it). */

@@ -186,6 +186,26 @@ fn sweep_deletes_audio_after_24h_not_before() {
 }
 
 #[test]
+fn sweep_deletes_call_diagnostics_with_the_audio() {
+    let (d, s) = open();
+    let dir = d.meetings();
+    let now = Utc::now();
+    let young = s.meeting_create("young", CaptureMode::TeamsOnly).unwrap();
+    let old = s.meeting_create("old", CaptureMode::TeamsOnly).unwrap();
+    end(&s, &young.id, now - Duration::hours(23));
+    end(&s, &old.id, now - Duration::hours(24) - Duration::minutes(1));
+    let diag = crate::meetings::diagnostics::FILE_NAME;
+    for id in [&young.id, &old.id] {
+        audio_files(&dir.join(id));
+        std::fs::write(dir.join(id).join(diag), b"{}").unwrap();
+    }
+    assert_eq!(s.meeting_sweep(now, &dir).unwrap(), 1);
+    assert!(dir.join(&young.id).join(diag).exists(), "kept as long as the audio");
+    assert!(!dir.join(&old.id).join(diag).exists());
+    assert!(!s.meeting_get(&old.id).unwrap().unwrap().audio_available);
+}
+
+#[test]
 fn sweep_removes_orphan_folders() {
     let (d, s) = open();
     let dir = d.meetings();
