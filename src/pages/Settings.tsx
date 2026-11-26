@@ -538,7 +538,7 @@ function MeetingNotesSection({
       />
       <SetRow
         title="Save call diagnostics"
-        desc="For testing who said what. Saves what Teams shows during each call (who is speaking, the people in the call by name, your mute state) and the transcript lines, in a file next to the meeting’s audio. It stays on this computer and is deleted with the audio after 24 hours, or when you delete the meeting. Starts with the next meeting."
+        desc="For testing who said what. During each call, Wren saves what Teams shows (who is speaking, everyone in the call by name, whether you’re muted) and the transcript lines to a file next to the meeting’s audio. It stays on this computer and is deleted with the audio after 24 hours, or when you delete the meeting. Starts with the next meeting."
         control={
           <Toggle
             checked={settings.saveCallDiagnostics ?? false}

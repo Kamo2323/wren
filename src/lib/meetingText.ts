@@ -14,7 +14,9 @@ export function spendLine(spend: ClaudeSpend): string {
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   // A clean-up costs a fraction of a cent: say "<$0.01" rather than "~$0.00" for a real spend.
   const usd = (v: number) => (v > 0 && v < 0.005 ? "<$0.01" : `~$${v.toFixed(2)}`);
-  const parts = [`${usd(spend.usd)} across ${plural(spend.notes, "note", "notes")}`];
+  const parts: string[] = [];
+  // Someone who only uses clean-up shouldn't read "~$0.00 across 0 notes" first.
+  if (spend.notes > 0 || spend.cleanups === 0) parts.push(`${usd(spend.usd)} across ${plural(spend.notes, "note", "notes")}`);
   if (spend.cleanups > 0) parts.push(`${usd(spend.cleanupUsd)} across ${plural(spend.cleanups, "clean-up", "clean-ups")}`);
   return `${parts.join(" · ")} (estimated from list prices).`;
 }
