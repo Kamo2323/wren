@@ -62,6 +62,9 @@ permissions bug first because it stops his dad using Wren at all.
    on v0.1.11 keep their permissions through this update.
 3. **Windows update: draft PR #4** (`feat/windows-notes-export`), brief at
    `docs/superpowers/plans/2026-11-26-windows-notes-export.md`. Set `WREN_RELEASE_PLATFORMS=both` before merging it.
+4. **Speaker accuracy on big calls: draft PR #5** (`feat/transcript-speaker-accuracy`), brief at
+   `docs/superpowers/plans/2026-11-26-transcript-speaker-accuracy.md`. Maximilian: the plan is NOT fixed —
+   brainstorm it with him via `/egm:egm-brainstorm` before building anything.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
 
