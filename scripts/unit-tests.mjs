@@ -322,7 +322,7 @@ test("this month's spend: notes, plus clean-ups once there are any", () => {
     spendLine({ usd: 0, notes: 1, cleanupUsd: 0.0312, cleanups: 140 }),
     "~$0.00 across 1 note · ~$0.03 across 140 clean-ups (estimated from list prices).",
   );
-  assert.equal(spendLine({ usd: 0, notes: 0, cleanupUsd: 0.0001, cleanups: 1 }), "~$0.00 across 0 notes · ~$0.00 across 1 clean-up (estimated from list prices).");
+  assert.equal(spendLine({ usd: 0, notes: 0, cleanupUsd: 0.0001, cleanups: 1 }), "~$0.00 across 0 notes · <$0.01 across 1 clean-up (estimated from list prices).");
 });
 test("notes export: plain text has no Markdown symbols and keeps structure", () => {
   const t = plainText(NOTE_MD, NOTE_META);
