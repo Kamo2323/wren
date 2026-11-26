@@ -65,6 +65,10 @@ permissions bug first because it stops his dad using Wren at all.
 4. **Speaker accuracy on big calls: draft PR #5** (`feat/transcript-speaker-accuracy`), brief at
    `docs/superpowers/plans/2026-11-26-transcript-speaker-accuracy.md`. Maximilian: the plan is NOT fixed —
    brainstorm it with him via `/egm:egm-brainstorm` before building anything.
+5. **AI clean-up through Claude, app-aware (Wispr Flow style): PR #6** (`feat/claude-ai-cleanup`), brief at
+   `docs/superpowers/plans/2026-11-26-claude-ai-cleanup.md`. Brief only, nothing built. Maximilian's
+   decisions are in the brief (Haiku 5.5 default + Sonnet toggle, Ollama removed, browser tab titles,
+   coding apps toggle Rewrite/Tidy); settle its open questions with him before building.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
 
