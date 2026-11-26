@@ -146,7 +146,7 @@ fn client() -> Result<reqwest::blocking::Client, ClaudeError> {
 }
 
 fn post(client: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<reqwest::blocking::Response, ClaudeError> {
-    crate::claude_api::post(client, API_URL, key, Some(BETA), body)
+    crate::claude_api::post(client, API_URL, key, Some(BETA), None, body)
 }
 
 /// One streamed attempt. `on_delta` gets each piece of text as it arrives.

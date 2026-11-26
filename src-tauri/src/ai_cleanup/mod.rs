@@ -24,8 +24,8 @@ use serde_json::{json, Value};
 
 use crate::claude_api::{self, ClaudeError, KeyStore, Usage, API_URL};
 use crate::constants::{
-    AI_CLEANUP_CACHE_MIN_TOKENS, AI_CLEANUP_MAX_TOKENS_CAP, AI_CLEANUP_MIN_TOKENS, AI_CLEANUP_TIMEOUT_MS,
-    AI_CLEANUP_TOKENS_PER_WORD,
+    AI_CLEANUP_CACHE_MIN_TOKENS, AI_CLEANUP_MAX_TOKENS_CAP, AI_CLEANUP_MIN_TOKENS, AI_CLEANUP_TIMEOUT_MAX_MS,
+    AI_CLEANUP_TIMEOUT_MS, AI_CLEANUP_TIMEOUT_PER_WORD_MS, AI_CLEANUP_TOKENS_PER_WORD,
 };
 use crate::settings::CodingStyle;
 
@@ -60,10 +60,17 @@ pub fn max_tokens(text: &str) -> usize {
     (AI_CLEANUP_MIN_TOKENS + text.split_whitespace().count() * AI_CLEANUP_TOKENS_PER_WORD).min(AI_CLEANUP_MAX_TOKENS_CAP)
 }
 
-/// Rough token count of fixed prompt text (about 3.5 characters a token for English prose on
-/// the 5.5 models' tokenizer; it errs high, which only matters for the cache decision).
+/// How long the clean-up of `text` may take: a network round trip plus time to write a long reply.
+pub fn timeout(text: &str) -> Duration {
+    let words = text.split_whitespace().count() as u64;
+    Duration::from_millis((AI_CLEANUP_TIMEOUT_MS + words * AI_CLEANUP_TIMEOUT_PER_WORD_MS).min(AI_CLEANUP_TIMEOUT_MAX_MS))
+}
+
+/// Rough token count of fixed prompt text: about 3 characters a token on the 5.5 models'
+/// tokenizer, measured against the API's `usage` (the General prefix counted ~540 tokens). Only
+/// the cache decision uses it; a marker on a prefix that turns out too short is simply ignored.
 fn estimate_tokens(s: &str) -> usize {
-    s.chars().count() * 2 / 7
+    s.chars().count() / 3
 }
 
 /// The Messages API body for cleaning `text` going into `target`.
@@ -166,7 +173,7 @@ pub fn clean_with(
 ) -> Result<Cleaned, ClaudeError> {
     let t = Instant::now();
     let body = request_body(model, target, coding_style, text);
-    let resp = claude_api::post(client, url, key, None, &body)?;
+    let resp = claude_api::post(client, url, key, None, Some(timeout(text)), &body)?;
     let json: Value = resp
         .json()
         .map_err(|e| ClaudeError::Network(if e.is_timeout() { "timed out".into() } else { "bad response".into() }))?;
@@ -179,10 +186,9 @@ pub fn clean_with(
 }
 
 /// One client for every clean-up, so its pooled connection to the API is reused (and can be opened
-/// ahead of time by [`preconnect`]). The whole request is bounded by `AI_CLEANUP_TIMEOUT_MS`.
+/// ahead of time by [`preconnect`]). Each request is bounded by [`timeout`].
 static CLIENT: LazyLock<Option<reqwest::blocking::Client>> = LazyLock::new(|| {
-    let limit = Duration::from_millis(AI_CLEANUP_TIMEOUT_MS);
-    claude_api::client(limit, limit).ok()
+    claude_api::client(Duration::from_millis(AI_CLEANUP_TIMEOUT_MS), Duration::from_millis(AI_CLEANUP_TIMEOUT_MAX_MS)).ok()
 });
 
 /// The clean-up step: Claude's version of `text` going into `target`, with the key saved under

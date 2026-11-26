@@ -64,6 +64,13 @@ fn the_cache_marker_follows_the_prefix_estimate() {
 }
 
 #[test]
+fn the_time_limit_grows_with_the_dictation() {
+    assert_eq!(timeout("one two"), Duration::from_millis(AI_CLEANUP_TIMEOUT_MS + 2 * AI_CLEANUP_TIMEOUT_PER_WORD_MS));
+    assert_eq!(timeout(&"w ".repeat(200)), Duration::from_millis(AI_CLEANUP_TIMEOUT_MS + 200 * AI_CLEANUP_TIMEOUT_PER_WORD_MS));
+    assert_eq!(timeout(&"w ".repeat(100_000)), Duration::from_millis(crate::constants::AI_CLEANUP_TIMEOUT_MAX_MS));
+}
+
+#[test]
 fn replies_lose_tags_fences_and_added_quotes() {
     assert_eq!(extract_reply("<transcript>\nHello, Claude.\n</transcript>", "hello claude").as_deref(), Some("Hello, Claude."));
     assert_eq!(extract_reply("<TRANSCRIPT>\nHi there.\n</Transcript>", "hi there").as_deref(), Some("Hi there."));
@@ -181,11 +188,13 @@ fn http_errors_are_mapped() {
 
 #[test]
 fn a_slow_reply_times_out_quickly() {
-    let (url, _) = fake_claude(200, r#"{"content":[{"type":"text","text":"late"}],"stop_reason":"end_turn","usage":{}}"#, 1_500);
+    // The per-request limit for "hello" is AI_CLEANUP_TIMEOUT_MS (+6 ms); the fake answers later.
+    let limit = timeout("hello");
+    let (url, _) = fake_claude(200, r#"{"content":[{"type":"text","text":"late"}],"stop_reason":"end_turn","usage":{}}"#, limit.as_millis() as u64 + 2_000);
     let t = Instant::now();
-    let r = clean_with(&test_client(300), &url, KEY, "claude-haiku-5-5", AppCategory::General, CodingStyle::Rewrite, "hello");
+    let r = clean_with(&test_client(60_000), &url, KEY, "claude-haiku-5-5", AppCategory::General, CodingStyle::Rewrite, "hello");
     assert_eq!(r, Err(ClaudeError::Network("timed out".into())));
-    assert!(t.elapsed() < Duration::from_millis(1_000), "{:?}", t.elapsed());
+    assert!(t.elapsed() >= limit && t.elapsed() < limit + Duration::from_millis(1_000), "{:?}", t.elapsed());
     // Nothing listening.
     let r = clean_with(&test_client(300), "http://127.0.0.1:1/v1/messages", KEY, "m", AppCategory::General, CodingStyle::Rewrite, "x");
     assert!(matches!(r, Err(ClaudeError::Network(_))), "{r:?}");

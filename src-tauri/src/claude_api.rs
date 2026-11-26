@@ -239,13 +239,15 @@ pub fn client(connect_timeout: Duration, timeout: Duration) -> Result<reqwest::b
         .map_err(|e| ClaudeError::Network(e.to_string()))
 }
 
-/// POST `body` to `url` (the Messages API, or a fake in tests). A non-2xx status is mapped to a
-/// [`ClaudeError`]; a timeout is `Network("timed out")`.
+/// POST `body` to `url` (the Messages API, or a fake in tests), within `timeout` when given (else
+/// the client's). A non-2xx status is mapped to a [`ClaudeError`]; a timeout is
+/// `Network("timed out")`.
 pub fn post(
     client: &reqwest::blocking::Client,
     url: &str,
     key: &str,
     beta: Option<&str>,
+    timeout: Option<Duration>,
     body: &Value,
 ) -> Result<reqwest::blocking::Response, ClaudeError> {
     let mut req = client
@@ -255,6 +257,9 @@ pub fn post(
         .header("content-type", "application/json");
     if let Some(b) = beta {
         req = req.header("anthropic-beta", b);
+    }
+    if let Some(t) = timeout {
+        req = req.timeout(t);
     }
     let resp = req
         .body(body.to_string())

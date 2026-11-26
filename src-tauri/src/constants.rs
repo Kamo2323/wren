@@ -96,9 +96,13 @@ pub const NO_SOUND_WARN_MS: u64 = 1_500;
 pub const ENGINE_SAMPLE_RATE: u32 = 16_000;
 /// Level events per second sent to the popup.
 pub const LEVEL_EVENTS_HZ: u32 = 30;
-/// AI clean-up (Claude): the whole request must answer within this long, or the plain text is pasted.
-/// Sized for a network round trip (measured on this PC, see the brief's build result).
+/// AI clean-up (Claude): the whole request must answer within this long, plus
+/// `AI_CLEANUP_TIMEOUT_PER_WORD_MS` per word, at most `AI_CLEANUP_TIMEOUT_MAX_MS`; otherwise the
+/// plain text is pasted. Measured on this PC with Haiku 5.5 (2026-11-26): short dictations
+/// 0.4–0.6 s, a 190-word coding rewrite 1.4 s (~280 output tokens a second).
 pub const AI_CLEANUP_TIMEOUT_MS: u64 = 4_000;
+pub const AI_CLEANUP_TIMEOUT_PER_WORD_MS: u64 = 6;
+pub const AI_CLEANUP_TIMEOUT_MAX_MS: u64 = 10_000;
 /// Strict check: replies changing length by more than this ratio are discarded.
 pub const AI_CLEANUP_MAX_LENGTH_CHANGE: f32 = 0.30;
 /// Coding "Rewrite as a clear prompt": the reply may be this short or this long (relative to the
