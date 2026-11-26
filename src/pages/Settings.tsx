@@ -479,8 +479,10 @@ function MeetingNotesSection({
         title="Claude API key"
         desc={
           <>
-            Enhanced notes (and AI clean-up, if you turn it on) are written by Claude and billed to the Anthropic organisation the key belongs to (your API credits).
-            The key is kept in {isMac ? "the macOS Keychain" : "Windows Credential Manager"}, never in Wren's files.
+            Enhanced notes (and AI clean-up, if you turn it on) are written by Claude and billed to the Anthropic organisation the key belongs to (your API credits).{" "}
+            {isMac
+              ? "The key is kept in a private file in Wren's folder that only your Mac account can open, never in Wren's settings or logs."
+              : "The key is kept in Windows Credential Manager, never in Wren's files."}
           </>
         }
       >
