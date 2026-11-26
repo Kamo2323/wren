@@ -237,14 +237,21 @@ fn dictation_kept(tidied: &str, candidate: &str) -> f32 {
 }
 
 /// Words that open an assistant's reply, not a dictation.
-const ACK_OPENERS: [&str; 13] =
-    ["sure", "okay", "ok", "certainly", "absolutely", "here", "here's", "i'll", "got", "alright", "understood", "noted", "of"];
+const ACK_OPENERS: [&str; 11] = ["sure", "okay", "ok", "certainly", "absolutely", "here", "here's", "i'll", "alright", "understood", "noted"];
+/// Two-word openers, matched as a pair: "of" and "got" alone are everyday words.
+const ACK_OPENER_PAIRS: [[&str; 2]; 2] = [["of", "course"], ["got", "it"]];
 
 /// The reply opens like an answer to the dictation ("Sure, I'll add…", "Here's…") with a word
 /// that was never said ("the logs are attached here" → "Here are the logs…" is fine).
 fn acknowledges(tidied: &str, candidate: &str) -> bool {
-    let Some(first) = ai_words(candidate).into_iter().next() else { return false };
-    ACK_OPENERS.contains(&first.as_str()) && !ai_words(tidied).contains(&first)
+    let (reply, said) = (ai_words(candidate), ai_words(tidied));
+    let Some(first) = reply.first() else { return false };
+    if ACK_OPENERS.contains(&first.as_str()) {
+        return !said.contains(first);
+    }
+    ACK_OPENER_PAIRS.iter().any(|pair| {
+        reply.len() >= 2 && reply[0] == pair[0] && reply[1] == pair[1] && !said.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1])
+    })
 }
 
 /// Requests that wrap a question ("can you tell me what…", "do you know why…").
@@ -500,6 +507,12 @@ mod tests {
         // Acknowledging the request (review S1): the words match, but it's a reply, not the dictation.
         assert_eq!(check("Sure, I'll add a dark mode toggle to the settings page and make it remember the choice."), plain);
         assert_eq!(check("Okay. Add a dark mode toggle to the settings page and make it remember the choice."), plain);
+        // "Of course" / "Got it" as a pair, though "of" and "got" were said (review round 3, M1).
+        let said = "add a list of the open files to the sidebar now that we got the tree working";
+        let ai = |_: &str| Some("Of course. Add a list of the open files to the sidebar now that we got the tree working.".to_string());
+        assert_eq!(run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), None).final_text);
+        let ai = |_: &str| Some("Got it. Add a list of the open files to the sidebar now that we got the tree working.".to_string());
+        assert_eq!(run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), None).final_text);
         // A curly apostrophe doesn't hide the opener (review round 2, N3).
         assert_eq!(check("Here\u{2019}s the prompt: can you add a dark mode toggle to the settings page and make it remember the choice"), plain);
         // Answering the dictation (review S1): most of what was said is gone.
