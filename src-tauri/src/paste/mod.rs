@@ -48,6 +48,9 @@ pub struct ForegroundInfo {
     pub pid: u32,
     /// Process / application name (e.g. `"claude.exe"` on Windows, `"Claude"` on macOS); empty if unknown.
     pub process_name: String,
+    /// The window's title (a browser's tab title, e.g. "Inbox – Gmail"); empty if unknown. Only used
+    /// to pick the AI clean-up style; never logged or sent anywhere.
+    pub window_title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,14 +125,25 @@ mod platform {
         OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT, VK_V};
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
     use windows::core::PWSTR;
 
     pub fn foreground() -> ForegroundInfo {
         let hwnd = unsafe { GetForegroundWindow() };
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        ForegroundInfo { hwnd: hwnd.0 as isize, pid, process_name: process_name(pid) }
+        ForegroundInfo { hwnd: hwnd.0 as isize, pid, process_name: process_name(pid), window_title: window_title(hwnd) }
+    }
+
+    /// The window's caption. For another process's window this reads the stored caption without
+    /// sending it a message, so a hung app can't block it.
+    fn window_title(hwnd: windows::Win32::Foundation::HWND) -> String {
+        if hwnd.0.is_null() {
+            return String::new();
+        }
+        let mut buf = [0u16; 512];
+        let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
     }
 
     pub fn process_name(pid: u32) -> String {
@@ -380,7 +394,7 @@ mod platform {
         objc2::rc::autoreleasepool(|_| {
             let ws = NSWorkspace::sharedWorkspace();
             let Some(app) = ws.frontmostApplication() else {
-                return ForegroundInfo { hwnd: 0, pid: 0, process_name: String::new() };
+                return ForegroundInfo { hwnd: 0, pid: 0, process_name: String::new(), window_title: String::new() };
             };
             let pid = app.processIdentifier().max(0) as u32;
             let name = app
@@ -388,9 +402,11 @@ mod platform {
                 .map(|n| n.to_string())
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| process_name(pid));
-            let win_hash = crate::watcher::ax_macos::focused_window_token(pid).unwrap_or(0);
-            let hwnd = ((pid as isize) << 32) | (win_hash as isize & 0xFFFF_FFFF);
-            ForegroundInfo { hwnd, pid, process_name: name }
+            let (win_hash, title) = crate::watcher::ax_macos::focused_window_token_and_title(pid);
+            let hwnd = ((pid as isize) << 32) | (win_hash.unwrap_or(0) as isize & 0xFFFF_FFFF);
+            // Without Accessibility (or a title) the app name stands in: it still picks the category.
+            let window_title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| name.clone());
+            ForegroundInfo { hwnd, pid, process_name: name, window_title }
         })
     }
 
@@ -529,7 +545,7 @@ mod tests {
 
     #[test]
     fn empty_text_is_never_pasted() {
-        let target = ForegroundInfo { hwnd: 1, pid: 1, process_name: "x.exe".into() };
+        let target = ForegroundInfo { hwnd: 1, pid: 1, process_name: "x.exe".into(), window_title: String::new() };
         for text in ["", "  ", "\n"] {
             assert_eq!(paste_text(text, &target, &|_| false), PasteResult::Failed("nothing to paste".into()));
         }
@@ -537,9 +553,9 @@ mod tests {
 
     #[test]
     fn own_window_is_refused_before_anything_else() {
-        let target = ForegroundInfo { hwnd: 42, pid: 1, process_name: "wren.exe".into() };
+        let target = ForegroundInfo { hwnd: 42, pid: 1, process_name: "wren.exe".into(), window_title: String::new() };
         assert_eq!(paste_text("hello", &target, &|h| h == 42), PasteResult::OwnWindow);
-        let own_pid = ForegroundInfo { hwnd: 43, pid: std::process::id(), process_name: String::new() };
+        let own_pid = ForegroundInfo { hwnd: 43, pid: std::process::id(), process_name: String::new(), window_title: String::new() };
         assert_eq!(paste_text("hello", &own_pid, &|_| false), PasteResult::OwnWindow);
     }
 
@@ -548,7 +564,7 @@ mod tests {
         if !chord_keys_physically_up() {
             return;
         }
-        let target = ForegroundInfo { hwnd: 7, pid: 1, process_name: "x.exe".into() };
+        let target = ForegroundInfo { hwnd: 7, pid: 1, process_name: "x.exe".into(), window_title: String::new() };
         assert_eq!(paste_text("hello", &target, &|_| false), PasteResult::FocusChanged);
     }
 
