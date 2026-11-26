@@ -174,17 +174,22 @@ fn attr_settable(elem: AXUIElementRef, attr: &str) -> bool {
     err == K_AX_ERROR_SUCCESS && settable != 0
 }
 
-/// Stable-ish 32-bit hash token for the currently focused window of `pid` (used by `paste::foreground`
-/// to notice when the user switched windows inside the same app).
-pub fn focused_window_token(pid: u32) -> Option<u32> {
+/// A stable-ish 32-bit hash token for the currently focused window of `pid` (used by
+/// `paste::foreground` to notice when the user switched windows inside the same app) and that
+/// window's `AXTitle` (used to pick the AI clean-up style), from one `AXFocusedWindow` read. Both
+/// None without Accessibility.
+pub fn focused_window_token_and_title(pid: u32) -> (Option<u32>, Option<String>) {
     if pid == 0 || !crate::hotkey::accessibility_trusted(false) {
-        return None;
+        return (None, None);
     }
-    let app = CfGuard::new(unsafe { AXUIElementCreateApplication(pid as i32) })?;
+    let Some(app) = CfGuard::new(unsafe { AXUIElementCreateApplication(pid as i32) }) else { return (None, None) };
     unsafe { AXUIElementSetMessagingTimeout(app.as_ptr(), 0.05) };
-    let win = copy_attr(app.as_ptr(), "AXFocusedWindow")?;
+    let Some(win) = copy_attr(app.as_ptr(), "AXFocusedWindow") else { return (None, None) };
     let hash = unsafe { CFHash(win.as_ptr()) };
-    Some((hash as u32) ^ ((hash >> 32) as u32))
+    let token = (hash as u32) ^ ((hash >> 32) as u32);
+    // Each AX element has its own timeout (default ~6 s): a slow app mustn't stall the paste.
+    unsafe { AXUIElementSetMessagingTimeout(win.as_ptr(), 0.05) };
+    (Some(token), attr_string(win.as_ptr(), "AXTitle"))
 }
 
 /// Center point `(x, y)` of the frontmost app's focused window in CoreGraphics top-left screen

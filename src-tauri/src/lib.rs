@@ -3,6 +3,7 @@
 pub mod ai_cleanup;
 pub mod app_icons;
 pub mod audio;
+pub mod claude_api;
 pub mod commands;
 pub mod constants;
 pub mod dictionary;
@@ -390,6 +391,7 @@ pub fn run() {
             notes_export::notes_save_docx,
             notes_export::notes_save_pdf,
             notes_export::notes_share,
+            notes_export::notes_email_draft,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,
@@ -440,8 +442,6 @@ pub fn run() {
             commands::set_audio_device,
             commands::other_apps_running,
             commands::watcher_status,
-            commands::ai_cleanup_status,
-            commands::ai_cleanup_pull_model,
             commands::update_status,
             commands::update_check,
             commands::update_install,

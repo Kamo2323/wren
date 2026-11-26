@@ -1,11 +1,9 @@
 // Settings: quick section index, Appearance (Dark / Light / System), Microphone + live VU test,
 // Dictation, Learning watcher, AI clean-up, Speech engine, History, Other dictation apps, Updates.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AiCleanupStatus, EngineStatus, Settings as SettingsData, UpdateStatus, WatcherStatus } from "../lib/types";
+import type { EngineStatus, Settings as SettingsData, UpdateStatus, WatcherStatus } from "../lib/types";
 import { toSettingsTheme, type ThemeChoice } from "../lib/theme";
 import {
-  aiCleanupPullModel,
-  aiCleanupStatus,
   appVersion,
   audioDevices,
   engineRestart,
@@ -16,6 +14,7 @@ import {
   watcherStatus,
 } from "../lib/api";
 import {
+  CLAUDE_KEY_EVENT,
   claudeKeyRemove,
   claudeKeySave,
   claudeKeyStatus,
@@ -25,6 +24,7 @@ import {
   systemAudioPermission,
 } from "../lib/meetings";
 import { formatBytes, formatNumber, joinNames, retentionLabel, whenLabel } from "../lib/format";
+import { spendLine, type ClaudeSpend } from "../lib/meetingText";
 import { useConstants } from "../lib/useConstants";
 import { useMicLevel } from "../lib/useMicLevel";
 import { LoadError } from "../components/Empty";
@@ -411,7 +411,7 @@ function MeetingNotesSection({
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
-  const [spend, setSpend] = useState<{ usd: number; notes: number } | null>(null);
+  const [spend, setSpend] = useState<ClaudeSpend | null>(null);
   const [perm, setPerm] = useState<string | null>(null);
 
   useEffect(() => {
@@ -433,6 +433,7 @@ function MeetingNotesSection({
       await claudeKeySave(key.trim());
       setKey("");
       setKeySaved(true);
+      window.dispatchEvent(new CustomEvent(CLAUDE_KEY_EVENT));
       toast.show("Claude API key saved");
     } catch (e) {
       setKeyError(errorText(e));
@@ -445,6 +446,7 @@ function MeetingNotesSection({
     try {
       await claudeKeyRemove();
       setKeySaved(false);
+      window.dispatchEvent(new CustomEvent(CLAUDE_KEY_EVENT));
     } catch (e) {
       toast.show(errorText(e));
     }
@@ -477,7 +479,7 @@ function MeetingNotesSection({
         title="Claude API key"
         desc={
           <>
-            Enhanced notes are written by Claude and billed to the Anthropic organisation the key belongs to (your API credits).
+            Enhanced notes (and AI clean-up, if you turn it on) are written by Claude and billed to the Anthropic organisation the key belongs to (your API credits).
             The key is kept in {isMac ? "the macOS Keychain" : "Windows Credential Manager"}, never in Wren's files.
           </>
         }
@@ -532,7 +534,18 @@ function MeetingNotesSection({
       />
       <SetRow
         title="This month"
-        desc={spend ? `~$${spend.usd.toFixed(2)} across ${spend.notes} notes (estimated from list prices).` : "Checking…"}
+        desc={spend ? spendLine(spend) : "Checking…"}
+      />
+      <SetRow
+        title="Save call diagnostics"
+        desc="For testing who said what. During each call, Wren saves what Teams shows (who is speaking, everyone in the call by name, whether you’re muted) and the transcript lines to a file next to the meeting’s audio. It stays on this computer and is deleted with the audio after 24 hours, or when you delete the meeting. Starts with the next meeting."
+        control={
+          <Toggle
+            checked={settings.saveCallDiagnostics ?? false}
+            onChange={(v) => void update({ saveCallDiagnostics: v })}
+            label="Save call diagnostics"
+          />
+        }
       />
       {isMac && (
         <SetRow
@@ -560,6 +573,11 @@ function MeetingNotesSection({
   );
 }
 
+const AI_MODELS: Array<{ id: string; label: string }> = [
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
+];
+
 function AiSection({
   settings,
   update,
@@ -569,74 +587,104 @@ function AiSection({
   update: (patch: Partial<SettingsData>) => Promise<void>;
   isMac: boolean;
 }) {
-  const [status, setStatus] = useState<AiCleanupStatus | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const toast = useToast();
-
-  const check = useCallback(async () => {
-    setChecking(true);
-    const s = await aiCleanupStatus().catch(() => null);
-    setStatus(s);
-    setChecking(false);
-  }, []);
+  const [keySaved, setKeySaved] = useState<boolean | null>(null);
 
   useEffect(() => {
-    void check();
-  }, [check]);
+    const check = () =>
+      void claudeKeyStatus()
+        .then((k) => setKeySaved(k.saved))
+        .catch(() => setKeySaved(false));
+    check();
+    window.addEventListener(CLAUDE_KEY_EVENT, check);
+    window.addEventListener("focus", check);
+    return () => {
+      window.removeEventListener(CLAUDE_KEY_EVENT, check);
+      window.removeEventListener("focus", check);
+    };
+  }, []);
 
-  async function pull() {
-    setPulling(true);
-    try {
-      await aiCleanupPullModel();
-      toast.show("Model downloaded", { tone: "success", icon: <Check size={15} strokeWidth={2.5} /> });
-    } catch {
-      toast.show("The download didn't finish. Try again.", { tone: "danger" });
-    } finally {
-      setPulling(false);
-      void check();
-    }
+  const ai = settings.aiCleanup;
+  const set = (patch: Partial<SettingsData["aiCleanup"]>) => void update({ aiCleanup: { ...ai, ...patch } });
+  const model = AI_MODELS.some((m) => m.id === ai.model) ? ai.model : AI_MODELS[0].id;
+  const style = ai.codingStyle === "tidy" ? "tidy" : "rewrite";
+  const noKey = keySaved === false;
+
+  function goToKey() {
+    const title = document.getElementById("set-meetings");
+    title?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(() => (document.getElementById("claude-key") ?? title)?.focus({ preventScroll: true }), 350);
   }
-
-  const model = status?.model || settings.aiCleanup.model;
-  const ready = status?.ollamaReachable && status.modelPresent;
 
   return (
     <Group id="ai" title="AI clean-up" icon={<WandSparkles size={15} strokeWidth={2} />} tone="violet">
       <SetRow
-        title="Tidy text with a local AI model"
-        desc={`Fixes punctuation, capitals and obvious mis-hearings using Ollama on ${isMac ? "this Mac" : "this PC"}. Nothing leaves your computer. If it's slow, Wren pastes the plain text instead.`}
-        control={<Toggle checked={settings.aiCleanup.enabled} onChange={(v) => void update({ aiCleanup: { ...settings.aiCleanup, enabled: v } })} label="Tidy text with a local AI model" />}
+        title="Tidy text with Claude"
+        desc={
+          <>
+            Claude fixes punctuation, capitals and mis-heard words, and shapes the text for the app you're typing in: email-ready paragraphs,
+            casual chat messages, or a clear prompt for coding agents. Only the text is sent to Anthropic, billed to your Claude API key; your
+            voice never leaves {isMac ? "this Mac" : "this PC"}. If Claude is slow, Wren pastes the plain text.
+          </>
+        }
+        control={<Toggle checked={ai.enabled && !noKey} disabled={noKey} onChange={(v) => set({ enabled: v })} label="Tidy text with Claude" />}
       >
-        <div className="setrow__foot">
-          {status === null ? (
-            <Status tone="info">{checking ? "Checking Ollama…" : "Couldn't check Ollama."}</Status>
-          ) : !status.ollamaReachable ? (
-            <Status tone={settings.aiCleanup.enabled ? "bad" : "warn"}>Ollama isn't running. Start Ollama, then check again.</Status>
-          ) : !status.modelPresent ? (
-            <Status tone="warn">
-              Ollama is running, but the model <code>{model}</code> isn't downloaded yet.
-            </Status>
-          ) : (
-            <Status tone="ok">
-              Ready: Ollama is running and <code>{model}</code> is downloaded.
-            </Status>
-          )}
-          <div className="setrow__foot-actions">
-            {status?.ollamaReachable && !status.modelPresent && (
-              <Button size="sm" variant="primary" icon={pulling ? <span className="spinner" aria-hidden="true" /> : <Download size={14} strokeWidth={2.2} />} disabled={pulling} onClick={() => void pull()}>
-                {pulling ? "Downloading…" : `Download ${model}`}
+        {noKey && (
+          <div className="setrow__foot">
+            <Status tone={ai.enabled ? "bad" : "warn"}>Add your Claude key under Meeting notes to turn this on.</Status>
+            <div className="setrow__foot-actions">
+              <Button size="sm" variant="ghost" onClick={goToKey}>
+                Go to Meeting notes
               </Button>
-            )}
-            {!ready && !pulling && (
-              <Button size="sm" variant="ghost" icon={<RotateCw size={14} strokeWidth={2.2} />} disabled={checking} onClick={() => void check()}>
-                Check again
-              </Button>
-            )}
+            </div>
           </div>
-        </div>
-        {pulling && <p className="setrow__note">This can take a few minutes. You can keep using Wren meanwhile.</p>}
+        )}
       </SetRow>
+      <SetRow
+        title="Model"
+        desc="Haiku is quick and costs a fraction of a cent a dictation. Sonnet can phrase things a little better and costs about 20 times as much."
+        htmlFor="ai-model"
+        control={
+          <select id="ai-model" className="select" value={model} onChange={(e) => set({ model: e.target.value })}>
+            {AI_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        }
+      />
+      <SetRow
+        title="In coding apps"
+        desc={
+          <>
+            For Claude, Codex, T3 Code, VS Code, Cursor and terminals. <b>Rewrite</b> turns rambling speech into a clear prompt (ums, repeats
+            and false starts go, steps become a list). <b>Tidy</b> keeps your words and only adds punctuation, <code>backticks</code> and lists.
+            Saying “slash compact” types <code>/compact</code>.
+          </>
+        }
+        control={
+          <div className="segments" role="group" aria-label="Clean-up style in coding apps">
+            <button
+              type="button"
+              className="segments__btn"
+              data-style-opt="rewrite"
+              aria-pressed={style === "rewrite"}
+              onClick={() => set({ codingStyle: "rewrite" })}
+            >
+              Rewrite
+            </button>
+            <button
+              type="button"
+              className="segments__btn"
+              data-style-opt="tidy"
+              aria-pressed={style === "tidy"}
+              onClick={() => set({ codingStyle: "tidy" })}
+            >
+              Tidy
+            </button>
+          </div>
+        }
+      />
     </Group>
   );
 }

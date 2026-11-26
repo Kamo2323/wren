@@ -152,6 +152,7 @@ fn meeting_round_trip_on_the_real_engine() {
         make_teams_reader: None,
         bias_terms: Arc::new(Vec::new),
         me_name: Arc::new(|| "Maximilian".into()),
+        save_diagnostics: Arc::new(|| false),
         drain_timeout: Duration::from_secs(30),
         max_backlog_ms: 20 * 60_000,
     };

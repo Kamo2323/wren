@@ -47,7 +47,10 @@ export interface EngineSettings {
 
 export interface AiCleanupSettings {
   enabled: boolean;
+  /** "claude-haiku-5-5" (default) | "claude-sonnet-5-5" */
   model: string;
+  /** How much Claude may change text going into coding apps. */
+  codingStyle: "rewrite" | "tidy";
 }
 
 export interface Settings {
@@ -67,6 +70,8 @@ export interface Settings {
   meetingName: string;
   /** "claude-opus-5-5" | "claude-sonnet-5-5" */
   claudeModel: string;
+  /** Save each meeting's Teams readings and lines next to its audio (off by default). */
+  saveCallDiagnostics: boolean;
 }
 
 /** Task 4 `Mode`. Serialised in camelCase; "handsfree" is accepted too (it is how the DB stores it). */
@@ -181,13 +186,6 @@ export interface WatcherStatus {
   enabled: boolean;
   verdict: string | null;
   reason: string | null;
-}
-
-/** Task 9 `ai_cleanup_status`. */
-export interface AiCleanupStatus {
-  ollamaReachable: boolean;
-  modelPresent: boolean;
-  model: string;
 }
 
 /** App updater state from Rust (`updater::UpdateStatus`, emitted on `app://update-status`). */

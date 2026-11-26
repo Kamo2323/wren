@@ -267,7 +267,7 @@ fn run(args: &Args, failures: &mut Vec<String>, since_utc: &str) -> Option<isize
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    let target = ForegroundInfo { hwnd: hwnd.0 as isize, pid, process_name: paste::process_name(pid) };
+    let target = ForegroundInfo { hwnd: hwnd.0 as isize, pid, process_name: paste::process_name(pid), window_title: String::new() };
     println!("test page window {:#x} pid {pid} ({})", target.hwnd, target.process_name);
     // Let the page finish loading and focus its box.
     std::thread::sleep(Duration::from_millis(800));

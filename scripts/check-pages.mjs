@@ -309,7 +309,8 @@ check("Windows popup hands-free hint preserves Ctrl + Win", await page.evaluate(
 
 // ---------------- Meetings (plan Task 11) ----------------
 const selectedTab = () => page.locator('[role="tab"][aria-selected="true"]').first().textContent().then((t) => t?.trim());
-await page.goto(`${base}/index.html#meetings`);
+// Pin Windows: without ?platform the mock follows the browser, so on a Mac this would show the macOS toolbar.
+await page.goto(`${base}/index.html?platform=windows#meetings`);
 await page.waitForSelector(".meeting-card");
 check("Meetings list shows day groups of cards", (await page.locator(".meeting-card").count()) === 3 &&
   (await page.locator(".day__label").allTextContents()).some((t) => /Today|Yesterday/.test(t)));
@@ -345,12 +346,13 @@ await page.locator(".md a").first().click();
 await wait(200);
 check("links in notes don't navigate Wren's window", page.url() === urlBefore);
 check("…and go to the browser instead", (await page.evaluate(() => window.__wrenOpenedLink)) === "https://example.com/pricing");
-// Export: Copy writes formatted HTML + clean text; Word builds a real .docx; Share/PDF only on macOS.
+// Export: Copy writes formatted HTML + clean text; Word builds a real .docx; PDF on both; Share on macOS,
+// Email (an .eml draft) on Windows.
 {
   const lastExport = () => page.evaluate(() => window.__wrenExport);
   const actions = page.locator(".enh-bar .enh-actions");
-  check("notes toolbar on Windows: Copy, Word, Regenerate (no Share/PDF yet)",
-    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Word|Regenerate");
+  check("notes toolbar on Windows: Copy, Email, PDF, Word, Regenerate (no Share)",
+    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Email|PDF|Word|Regenerate");
   await actions.getByRole("button", { name: "Copy" }).click();
   await page.waitForFunction(() => window.__wrenExport?.kind === "copy");
   const copied = await lastExport();
@@ -364,6 +366,18 @@ check("…and go to the browser instead", (await page.evaluate(() => window.__wr
   const word = await lastExport();
   check("Word builds a .docx (zip) named after the meeting",
     word.bytes.slice(0, 4).join(",") === "80,75,3,4" && word.bytes.length > 3000 && /^Weekly sync with Sarah – .* \(Medium notes\)$/.test(word.name), `${word.bytes.length} bytes, ${word.name}`);
+  await actions.getByRole("button", { name: "Email" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "email");
+  const email = await lastExport();
+  check("Email drafts the formatted notes with the meeting title as subject",
+    email.subject === "Weekly sync with Sarah" && /<table [^>]*style="border-collapse/.test(email.html) && email.plain.startsWith("Weekly sync with Sarah\n"));
+  check("Email confirms which mail app opens the draft",
+    await page.locator(".toast", { hasText: "Opening a new email in Outlook" }).first().waitFor({ timeout: 3000 }).then(() => true, () => false));
+  await actions.getByRole("button", { name: "PDF" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "pdf");
+  const winPdf = await lastExport();
+  check("PDF on Windows gets the same complete printable page, named after the meeting",
+    winPdf.html.startsWith("<!doctype html>") && winPdf.html.includes("@page") && winPdf.name === word.name);
   const openSync = async (query) => {
     await page.goto(`${base}/index.html${query}#meetings`);
     await page.locator(".meeting-card", { hasText: "Weekly sync with Sarah" }).click();
@@ -382,7 +396,7 @@ check("…and go to the browser instead", (await page.evaluate(() => window.__wr
   const box = await actions.getByRole("button", { name: "Share" }).boundingBox();
   check("Share anchors the menu at the Share button and sets the subject",
     share.subject === "Weekly sync with Sarah" && Math.abs(share.rect[0] - box.x) < 1 && Math.abs(share.rect[1] - box.y) < 1, JSON.stringify(share.rect));
-  await openSync("");
+  await openSync("?platform=windows");
 }
 check("enhanced footer shows model, tokens and cost", /Claude Opus 5\.5 · [\d.]+k tokens · ~\$\d+\.\d\d/.test((await page.locator(".enh-footer").textContent()) ?? ""));
 await page.getByRole("button", { name: "Short", exact: true }).click();
@@ -496,7 +510,44 @@ check("saved key: status shown, key not rendered anywhere", !(await page.content
   (await page.locator(".key-saved").textContent())?.includes("Key saved"));
 check("model picker offers Opus 5.5 and Sonnet 5.5", (await page.locator("#claude-model option").allTextContents()).join("|").includes("Opus 5.5") &&
   (await page.locator("#claude-model option").allTextContents()).join("|").includes("Sonnet 5.5"));
+const diagSwitch = page.getByRole("switch", { name: "Save call diagnostics" });
+check("call diagnostics switch is off by default", (await diagSwitch.getAttribute("aria-checked")) === "false");
+await diagSwitch.click();
+check("call diagnostics switch turns on", (await diagSwitch.getAttribute("aria-checked")) === "true");
+check("call diagnostics help says names are kept and deleted with the audio",
+  /by name[\s\S]*deleted with the audio after 24 hours/.test((await page.locator(".setrow", { hasText: "Save call diagnostics" }).textContent()) ?? ""));
 check("this month's spend is shown", /~\$\d+\.\d\d across \d+ notes/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+check("clean-up spend has its own counter", /(~\$\d+\.\d\d|<\$0\.01) across \d+ clean-ups/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+
+// Settings: AI clean-up through Claude (a fresh page load, so no key is saved).
+await page.goto(`${base}/index.html?claude=nokey&fresh=ai#settings`);
+await page.waitForSelector("#set-ai");
+const aiCard = page.locator("section:has(#set-ai)");
+await aiCard.getByText("Add your Claude key under Meeting notes").waitFor({ timeout: 3000 }).catch(() => {});
+check("AI clean-up card says Tidy text with Claude, no Ollama", (await aiCard.textContent())?.includes("Tidy text with Claude") && !(await page.content()).includes("Ollama"));
+check("no key: the switch is off and disabled", (await aiCard.getByRole("switch").getAttribute("aria-checked")) === "false" && (await aiCard.getByRole("switch").isDisabled()));
+check("no key: points to Meeting notes", (await aiCard.textContent())?.includes("Add your Claude key under Meeting notes"));
+await aiCard.getByRole("button", { name: "Go to Meeting notes" }).click();
+await wait(700);
+check("Go to Meeting notes focuses the key field", await page.evaluate(() => document.activeElement?.id === "claude-key"));
+await page.locator("#claude-key").fill("sk-ant-api03-" + "y".repeat(40));
+await page.getByRole("button", { name: "Save key" }).click();
+await page.waitForSelector(".key-saved", { timeout: 3000 });
+await wait(200);
+check("saving the key enables the switch", !(await aiCard.getByRole("switch").isDisabled()) && !(await aiCard.textContent())?.includes("Add your Claude key"));
+await aiCard.getByRole("switch").click();
+await wait(200);
+check("the switch turns on", (await aiCard.getByRole("switch").getAttribute("aria-checked")) === "true");
+const aiModels = (await page.locator("#ai-model option").allTextContents()).join("|");
+check("model picker offers Haiku 5.5 (default) and Sonnet 5.5", aiModels === "Claude Haiku 5.5|Claude Sonnet 5.5" && (await page.locator("#ai-model").inputValue()) === "claude-haiku-5-5", aiModels);
+check("coding apps default to Rewrite", (await page.locator('[data-style-opt="rewrite"]').getAttribute("aria-pressed")) === "true");
+await page.locator('[data-style-opt="tidy"]').click();
+await wait(200);
+check("coding style switches to Tidy", (await page.locator('[data-style-opt="tidy"]').getAttribute("aria-pressed")) === "true" &&
+  (await page.locator('[data-style-opt="rewrite"]').getAttribute("aria-pressed")) === "false");
+await page.locator("#ai-model").selectOption("claude-sonnet-5-5");
+await wait(200);
+check("model switches to Sonnet 5.5", (await page.locator("#ai-model").inputValue()) === "claude-sonnet-5-5");
 
 // Quit while recording asks first.
 await page.goto(`${base}/index.html?meeting=recording#meetings`);
@@ -600,11 +651,11 @@ await page.waitForSelector(".page--home");
 check("finishing setup goes Home", true);
 
 for (const [mode, text] of [["paused", "Continue setup"], ["failed", "Try again"], ["nospace", "Try again"]]) {
-  await page.goto(`${base}/index.html?setup=${mode}#home`);
+  await page.goto(`${base}/index.html?setup=${mode}&platform=windows#home`);
   await page.waitForSelector(".setup-alert");
   check(`setup ${mode} explains itself and offers "${text}"`, (await page.getByRole("button", { name: text }).count()) === 1);
 }
-await page.goto(`${base}/index.html?setup=nospace&again=1#home`);
+await page.goto(`${base}/index.html?setup=nospace&again=1&platform=windows#home`); // Windows sizes: the macOS mock needs less than the 3.4 GB free
 await page.waitForSelector(".setup-space");
 check("not enough space is flagged", await page.locator(".setup-space.is-bad").count() === 1);
 await page.goto(`${base}/index.html?setup=paused&again=1#home`);

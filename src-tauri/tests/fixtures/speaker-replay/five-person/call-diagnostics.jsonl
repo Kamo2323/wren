@@ -1,0 +1,314 @@
+{"kind":"header","format":1,"meetingId":"synthetic-five-person","startedAtUtc":"2026-11-26T10:00:00Z","teamsLagMs":900,"platform":"synthetic"}
+{"kind":"teams","atMs":0,"speaking":[],"selfMuted":true,"roster":["Tom Reid","Sarah Jones","Priya (Guest)","Alex (Guest)","Maximilian Haskell (You)"],"selfName":"Maximilian Haskell","title":"Speaker test call"}
+{"kind":"teams","atMs":250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":1750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":2000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":2250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":2500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":2750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":3000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":3250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":3500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":3750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":4000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":4250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":4500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":4750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":5000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":5250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":5500,"speaking":["Tom Reid"],"selfMuted":false}
+{"kind":"teams","atMs":5750,"speaking":["Tom Reid"],"selfMuted":false}
+{"kind":"teams","atMs":6000,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":6250,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":6500,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":6750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":7000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":7250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":7500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":7750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":8000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":8250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":8500,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":8750,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":9000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":9250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":9500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":9750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":10000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":10750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":11750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":12000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":12750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":13000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":13250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":13500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":13750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":14000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":14250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":14500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":14750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":15000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":15250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":15500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":15750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":16000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":16250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":16500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":16750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":17000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":17250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":17500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":17750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":18000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":18250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":18500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":18750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":19000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":19250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":19500,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":19750,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":20000,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":20250,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":20500,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":20750,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":21000,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":21250,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":21500,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":21750,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":22000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":22250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":22500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":22750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":23000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":23250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":23500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":23750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":24000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":24250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":24500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":24750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":25000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":25250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":25500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":25750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":26000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":26250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":26500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":26750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":27000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":27250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":27500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":27750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":28000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":28250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":28500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":28750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":29000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":29250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":29500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":29750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":30000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":30250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":30500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":30750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":31000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":31250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":31500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":31750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":32000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":32250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":32500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":32750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":33000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":33250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":33500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":33750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":34000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":34250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":34500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":34750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":35000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":35250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":35500,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":35750,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":36000,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":36250,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":36500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":36750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":37000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":37250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":37500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":37750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":38000,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":38250,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":38500,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":38750,"speaking":["Alex (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":39000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":39250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":39500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":39750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":40000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":40250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":40500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":40750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":41000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":41250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":41500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":41750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":42000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":42250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":42500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":42750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":43000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":43250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":43500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":43750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":44000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":44250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":44500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":44750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":45000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":45250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":45500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":45750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":46000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":46250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":46500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":46750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":47000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":47250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":47500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":47750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":48000,"speaking":["Priya (Guest)","Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":48250,"speaking":["Priya (Guest)","Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":48500,"speaking":["Priya (Guest)","Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":48750,"speaking":["Priya (Guest)","Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":49000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":49250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":49500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":49750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":50000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":50250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":50500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":50750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":51000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":51250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":51500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":51750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":52000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":52250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":52500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":52750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":53000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":53250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":53500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":53750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":54000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":54250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":54500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":54750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":55000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":55250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":55500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":55750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":56000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":56250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":56500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":56750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":57000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":57250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":57500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":57750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":58000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":58250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":58500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":58750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":59000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":59250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":59500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":59750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":60000,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":60250,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":60500,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":60750,"speaking":["Sarah Jones"],"selfMuted":true}
+{"kind":"teams","atMs":61000,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":61250,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":61500,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":61750,"speaking":["Sarah Jones"],"selfMuted":false}
+{"kind":"teams","atMs":62000,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":62250,"speaking":[],"selfMuted":false}
+{"kind":"teams","atMs":62500,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":62750,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":63000,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":63250,"speaking":["Maximilian Haskell"],"selfMuted":false}
+{"kind":"teams","atMs":63500,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":63750,"speaking":["Maximilian Haskell"],"selfMuted":true}
+{"kind":"teams","atMs":64000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":64250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":64500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":64750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":65000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":65250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":65500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":65750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":66000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":66250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":66500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":66750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":67000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":67250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":67500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":67750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":68000,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":68250,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":68500,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":68750,"speaking":["Tom Reid"],"selfMuted":true}
+{"kind":"teams","atMs":69000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":69250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":69500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":69750,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":70000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":70250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":70500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":70750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":71000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":71250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":71500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":71750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":72000,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":72250,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":72500,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":72750,"speaking":["Priya (Guest)"],"selfMuted":true}
+{"kind":"teams","atMs":73000,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":73250,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":73500,"speaking":[],"selfMuted":true}
+{"kind":"teams","atMs":73750,"speaking":[],"selfMuted":true}
+{"kind":"line","source":"me","startMs":5800,"endMs":8000,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"me","startMs":61500,"endMs":63000,"speaker":"Maximilian Haskell","confidence":1,"muted":false,"text":"(my line)"}
+{"kind":"line","source":"them","startMs":1000,"endMs":5000,"speaker":null,"confidence":0,"muted":false,"text":"Right, let's start. Everyone can see the agenda?"}
+{"kind":"line","source":"them","startMs":9000,"endMs":13000,"speaker":null,"confidence":0,"muted":false,"text":"Yes, and I added the supplier item at the bottom."}
+{"kind":"line","source":"them","startMs":14000,"endMs":17500,"speaker":null,"confidence":0,"muted":false,"text":"I can take the supplier item, I spoke to them on Monday."}
+{"kind":"line","source":"them","startMs":18500,"endMs":21000,"speaker":null,"confidence":0,"muted":false,"text":"Can I go first? I have to drop at half past."}
+{"kind":"line","source":"them","startMs":22000,"endMs":27500,"speaker":null,"confidence":0,"muted":false,"text":"Sure, go. Wait, which slide? The second one, the one with the dates on it."}
+{"kind":"line","source":"them","startMs":28500,"endMs":33500,"speaker":null,"confidence":0,"muted":false,"text":"That one's old. No, I updated it last night, it's the March version now."}
+{"kind":"line","source":"them","startMs":34500,"endMs":38000,"speaker":null,"confidence":0,"muted":false,"text":"Okay so. Go on Alex. So the numbers are up."}
+{"kind":"line","source":"them","startMs":39000,"endMs":40200,"speaker":null,"confidence":0,"muted":false,"text":"By how much?"}
+{"kind":"line","source":"them","startMs":41000,"endMs":42300,"speaker":null,"confidence":0,"muted":false,"text":"Twelve percent."}
+{"kind":"line","source":"them","startMs":43000,"endMs":44100,"speaker":null,"confidence":0,"muted":false,"text":"That's brilliant."}
+{"kind":"line","source":"them","startMs":45000,"endMs":49500,"speaker":null,"confidence":0,"muted":false,"text":"And the supplier confirmed the delivery date as well, yes they did, last week."}
+{"kind":"line","source":"them","startMs":51000,"endMs":56000,"speaker":null,"confidence":0,"muted":false,"text":"I'm sharing my screen now, you should see the dashboard with the weekly figures."}
+{"kind":"line","source":"them","startMs":58000,"endMs":61000,"speaker":null,"confidence":0,"muted":false,"text":"Got it, the blue line is this year?"}
+{"kind":"line","source":"them","startMs":64000,"endMs":68000,"speaker":null,"confidence":0,"muted":false,"text":"Yes, blue is this year and grey is last year."}
+{"kind":"line","source":"them","startMs":69000,"endMs":72000,"speaker":null,"confidence":0,"muted":false,"text":"Lovely. I'll send the supplier contract round today."}

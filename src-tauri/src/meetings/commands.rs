@@ -114,6 +114,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
     let a1 = app.clone();
     let a2 = app.clone();
     let a3 = app.clone();
+    let a4 = app.clone();
     #[cfg(windows)]
     let make_teams_reader: Option<Arc<dyn Fn() -> crate::meetings::teams::ReaderFactory + Send + Sync>> =
         Some(Arc::new(|| {
@@ -143,6 +144,7 @@ pub fn build_service(app: &AppHandle, env: Arc<AppEnv>) -> Arc<MeetingService> {
             a2.state::<AppState>().store.bias_terms(crate::constants::BIAS_TERMS_MAX).unwrap_or_default()
         }),
         me_name: Arc::new(move || meeting_name(&a3)),
+        save_diagnostics: Arc::new(move || a4.state::<AppState>().settings.read().save_call_diagnostics),
         drain_timeout: DRAIN_TIMEOUT,
         // 20 minutes of audio waiting at most (~77 MB of samples).
         max_backlog_ms: 20 * 60_000,
@@ -516,9 +518,12 @@ pub async fn claude_key_remove() -> Result<(), String> {
 pub struct Spend {
     pub usd: f64,
     pub notes: u32,
+    /// AI clean-up through Claude, counted apart from notes.
+    pub cleanup_usd: f64,
+    pub cleanups: u32,
 }
 
-/// Estimated spend on enhanced notes since the 1st of this month (local time).
+/// Estimated spend on enhanced notes and on AI clean-up since the 1st of this month (local time).
 #[tauri::command]
 pub fn claude_spend_month(state: State<'_, AppState>) -> Result<Spend, String> {
     use chrono::{Datelike, Local, TimeZone};
@@ -529,7 +534,8 @@ pub fn claude_spend_month(state: State<'_, AppState>) -> Result<Spend, String> {
         .map(|t| t.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
     let (usd, notes) = state.store.notes_cost_since(first).map_err(|e| e.to_string())?;
-    Ok(Spend { usd, notes })
+    let (cleanup_usd, cleanups) = state.store.cleanup_cost_since(first).map_err(|e| e.to_string())?;
+    Ok(Spend { usd, notes, cleanup_usd, cleanups })
 }
 
 /// Tray: pause/resume or stop the meeting (never on the main thread; stop can take a while).

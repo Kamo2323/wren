@@ -40,19 +40,46 @@ impl Default for EngineSettings {
     }
 }
 
+/// AI clean-up models (Settings → AI clean-up). Haiku is the default: fast and cheap.
+pub const AI_CLEANUP_MODEL_HAIKU: &str = "claude-haiku-5-5";
+pub const AI_CLEANUP_MODEL_SONNET: &str = "claude-sonnet-5-5";
+
+/// How much AI clean-up may change text going into coding apps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CodingStyle {
+    /// "Tidy + format only": words kept; punctuation, backticks, lists.
+    Tidy,
+    /// "Rewrite as a clear prompt": ums, repeats and false starts go; reordered; lists and
+    /// backticks. Meaning kept, words not. An unknown value in the file reads as this.
+    #[default]
+    #[serde(other)]
+    Rewrite,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AiCleanupSettings {
     pub enabled: bool,
-    /// Ollama model tag.
+    /// Claude model: [`AI_CLEANUP_MODEL_HAIKU`] or [`AI_CLEANUP_MODEL_SONNET`].
     pub model: String,
+    pub coding_style: CodingStyle,
 }
 
 impl Default for AiCleanupSettings {
     fn default() -> Self {
-        Self {
-            enabled: false,
-            model: "qwen2.5:3b".into(),
+        Self { enabled: false, model: AI_CLEANUP_MODEL_HAIKU.into(), coding_style: CodingStyle::Rewrite }
+    }
+}
+
+impl AiCleanupSettings {
+    /// A model Wren offers; anything else (e.g. the old Ollama tag "qwen2.5:3b") becomes Haiku and
+    /// the switch goes off: clean-up used to run on this computer, and now sends text to Anthropic,
+    /// so the user turns it back on from the card that says so.
+    pub fn normalise(&mut self) {
+        if self.model != AI_CLEANUP_MODEL_HAIKU && self.model != AI_CLEANUP_MODEL_SONNET {
+            self.model = AI_CLEANUP_MODEL_HAIKU.into();
+            self.enabled = false;
         }
     }
 }
@@ -82,6 +109,8 @@ pub struct Settings {
     pub meeting_name: String,
     /// Claude model for enhanced meeting notes (meetings spec §5.4).
     pub claude_model: String,
+    /// Save each meeting's Teams readings and lines to `call-diagnostics.jsonl` (off; deleted with the audio).
+    pub save_call_diagnostics: bool,
 }
 
 impl Default for Settings {
@@ -100,6 +129,7 @@ impl Default for Settings {
             theme: None,
             meeting_name: String::new(),
             claude_model: "claude-opus-5-5".into(),
+            save_call_diagnostics: false,
         }
     }
 }
@@ -111,6 +141,7 @@ impl Settings {
             Ok(text) => match serde_json::from_str::<Settings>(&text) {
                 Ok(mut s) => {
                     s.version = SETTINGS_VERSION;
+                    s.ai_cleanup.normalise();
                     s
                 }
                 Err(err) => {
@@ -180,6 +211,16 @@ mod tests {
     }
 
     #[test]
+    fn call_diagnostics_off_by_default_and_saved() {
+        assert!(!Settings::default().save_call_diagnostics);
+        let dir = temp_dir("diag");
+        let _cleanup = Cleanup(dir.clone());
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"saveCallDiagnostics":true}"#).unwrap();
+        assert!(Settings::load(&path).save_call_diagnostics);
+    }
+
+    #[test]
     fn missing_file_gives_defaults() {
         let dir = temp_dir("missing");
         let _cleanup = Cleanup(dir.clone());
@@ -207,6 +248,27 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"version":1,"meetingName":"Sam"}"#).unwrap();
         assert_eq!(Settings::load(&path).meeting_name, "Sam");
+    }
+
+    #[test]
+    fn an_ollama_model_becomes_haiku_and_the_switch_goes_off() {
+        let dir = temp_dir("ai");
+        let _cleanup = Cleanup(dir.clone());
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"version":1,"aiCleanup":{"enabled":true,"model":"qwen2.5:3b"}}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.ai_cleanup, AiCleanupSettings { enabled: false, model: AI_CLEANUP_MODEL_HAIKU.into(), coding_style: CodingStyle::Rewrite });
+        // A Claude model already chosen keeps the switch as it was.
+        std::fs::write(&path, r#"{"aiCleanup":{"enabled":true,"model":"claude-haiku-5-5"}}"#).unwrap();
+        assert!(Settings::load(&path).ai_cleanup.enabled);
+        std::fs::write(&path, r#"{"aiCleanup":{"enabled":false,"model":"claude-sonnet-5-5","codingStyle":"tidy"}}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!((s.ai_cleanup.model.as_str(), s.ai_cleanup.coding_style), (AI_CLEANUP_MODEL_SONNET, CodingStyle::Tidy));
+        // An unknown style doesn't throw the file away.
+        std::fs::write(&path, r#"{"typingWpm":61,"aiCleanup":{"codingStyle":"poetry"}}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!((s.typing_wpm, s.ai_cleanup.coding_style), (61, CodingStyle::Rewrite));
+        assert_eq!(serde_json::to_value(CodingStyle::Tidy).unwrap(), "tidy");
     }
 
     #[test]

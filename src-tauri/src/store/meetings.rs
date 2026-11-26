@@ -400,6 +400,26 @@ impl Store {
         )?)
     }
 
+    /// Record the estimated cost of one AI clean-up request (no text is stored).
+    pub fn log_cleanup_spend(&self, at: DateTime<Utc>, model: &str, cost_usd: f64) -> StoreResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO cleanup_spend (created_at_utc, model, cost_usd) VALUES (?1, ?2, ?3)",
+            params![ts(at), model, cost_usd],
+        )?;
+        Ok(())
+    }
+
+    /// Estimated spend and number of AI clean-up requests at or after `since`.
+    pub fn cleanup_cost_since(&self, since: DateTime<Utc>) -> StoreResult<(f64, u32)> {
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM cleanup_spend WHERE created_at_utc >= ?1",
+            [ts(since)],
+            |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)? as u32)),
+        )?)
+    }
+
     /// At startup: meetings left `recording`/`paused` by a crash or forced quit become `interrupted`.
     /// Their end time is the end of their last segment (or the start time when there is none).
     pub fn mark_interrupted(&self) -> StoreResult<usize> {
@@ -505,13 +525,15 @@ fn write_note(tx: &rusqlite::Transaction<'_>, n: &NoteRow, stale: bool) -> Store
     Ok(())
 }
 
-/// Delete every WAV under `dir`; true when none is left (or the folder is gone).
+/// Delete every WAV under `dir`, and the call diagnostics file (it holds names and words, and lives
+/// exactly as long as the audio); true when none is left (or the folder is gone).
 fn delete_wavs(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else { return !dir.exists() };
     let mut all = true;
     for e in entries.flatten() {
         let p = e.path();
-        let is_wav = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"));
+        let is_wav = p.extension().is_some_and(|x| x.eq_ignore_ascii_case("wav"))
+            || p.file_name().is_some_and(|n| n == crate::meetings::diagnostics::FILE_NAME);
         if p.is_dir() {
             if is_wav {
                 all = false; // a folder named *.wav: can't be audio we wrote; leave it, report not done

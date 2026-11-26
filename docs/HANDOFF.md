@@ -1,5 +1,66 @@
 # Wren — handoff and decision log
 
+## Status (2026-11-27, overnight "full stop") — one update combining PRs #1, #4, #5, #6 (branch `update/wren-four-prs`)
+
+Built overnight 26→27 Nov under **full stop**: everything built, tested on Windows and the MacBook, reviewed,
+and left as **one open PR for Maximilian to merge**. Nothing was merged or released. What needs him is in a
+separate docs PR (branch `followup/needs-maximilian`, brief `docs/superpowers/plans/2026-11-27-needs-maximilian.md`).
+
+### What's in the update
+1. **#1 Mute gap** (`meetings/speakers.rs` `muted_during`): a slow Teams read no longer turns a muted gap
+   into "unknown"; the clip walks reading by reading with the last known state (≤ 60 s). Test fails before
+   (`left: None, right: Some(true)`), passes after.
+2. **#4 Windows notes export**: Save as PDF (hidden WebView2 `PrintToPdf`, A4/Letter by region, one at a
+   time, window never shown) and an **Email** button (decision: brief's option B — `.eml` draft, `X-Unsent: 1`,
+   opens in the default mail app). Windows toolbar: Copy · Email · PDF · Word · Regenerate. Mac unchanged.
+3. **#6 Claude clean-up**: Ollama removed; Haiku 5.5 default (Sonnet 5.5 option) using the Meeting-notes key;
+   per-app styling (Coding / Email / Messaging / General from app name + window/tab title); coding style
+   Rewrite (default) or Tidy; spoken slash commands in coding apps; own spend counter in "This month".
+4. **#5 Speaker accuracy groundwork**: "Save call diagnostics" switch (off by default; JSONL next to the
+   meeting audio, deleted with it after 24 h); replay benchmark `cargo run --example speaker_replay`;
+   synthetic fixtures (five-person 14/15 = 93.3%, one-person 6/6); test-call guide
+   `docs/meetings-speaker-test-call.md`. **Line splitting not built** (Mac transcriber timestamps drift).
+
+### Decisions made overnight (for Maximilian to know)
+- #5 built without the brainstorm (he said "get as much done without me"): only measurement tools that change
+  no behaviour; the brainstorm + improvements are in the follow-up brief.
+- #4 Share on Windows = Email (.eml) button, per the brief's recommendation.
+- Old Ollama clean-up settings migrate to Haiku **with the switch off** (review S2): clean-up used to stay on
+  the computer and now sends text to Anthropic, so the user opts in again from the card that says so.
+- Clean-up safety checks gained three guards (review): a Rewrite reply must keep ≥ 40% of the dictation's
+  words; replies opening "Sure / Okay / I'll / Here's / Of course / Got it" (not said) fall back to the plain
+  text; a spoken what/why/how question (or "tell me what…") answered without a "?" falls back too.
+- Combined branch merges the four PR branches, so **merging it with "Create a merge commit"** marks #1, #4,
+  #5, #6 as merged too (a squash wouldn't).
+- `WREN_RELEASE_PLATFORMS` left at `mac` — **set it to `both` just before merging**
+  (`gh variable set WREN_RELEASE_PLATFORMS --body both`), or the release skips Windows.
+
+### Proof (raw numbers, final head)
+- Windows: `cargo test --lib` 493 passed / 0 failed; clippy 20/24 warnings = same as main; `npm run build` ok;
+  unit tests 38 passed; page checks 170 passed.
+- MacBook: `cargo test --lib` 546 passed / 0 failed at 0a4c732 (610dedc after it only changes platform-independent
+  clean-up checks, tested on Windows); release build
+  `npx tauri build --no-bundle` compiles (0 warnings); page checks 170 passed; live app detection via
+  `examples/foreground_probe.rs` (Claude/T3/Terminal → coding, Mail/Gmail → email, Messages → messaging).
+- Real Claude API (Haiku 5.5, key from Credential Manager, never printed): 8 cases, every reply used, median
+  ~510 ms, ~$0.0004 per 8 clean-ups.
+- Live real debug app on Windows: clean-up in Notepad / "Claude" / Gmail / WhatsApp windows (380–510 ms
+  Claude), `/compact`, no-key state; PDF (A4, `%PDF-`, Unicode OK; second PDF refused while one runs);
+  `.eml` written and opened in new Outlook (sign-in wall); diagnostics switch persists; JSONL written.
+- Review: Opus 5.5 at high effort (Maximilian swapped it in for GPT in the loop), 3 rounds → APPROVE.
+  Fixed S1–S5, N1–N3, M1; declined M2 (a misfire only pastes the plain tidied text).
+- UX polish pass: long toasts wrap and stay 7 s for export errors; "Windows Settings → Apps → Default apps"
+  wording; spend line without "~$0.00 across 0 notes"; plainer diagnostics help.
+
+### Not done / not proven (also in the follow-up brief)
+- Speaker test call with real people/devices; Email draft in a signed-in Outlook; clean-up in the installed
+  Mac app (Keychain); Copy in Outlook/Gmail; PDF on a Letter-region PC.
+- `C:\Wren-live.lock` (empty folder at C:\ root) couldn't be deleted by agents — delete by hand.
+
+### Next step
+Maximilian reviews the update PR → sets `WREN_RELEASE_PLATFORMS=both` → merges with a merge commit → watches
+the release run (rerun `--failed` if the macOS runner isn't acquired) → does the checks in the follow-up brief.
+
 ## Status (2026-11-25) — Mac update: permissions survive updates; notes select/copy/export (branch `feat/notes-export`)
 
 Spec: `docs/superpowers/specs/2026-11-25-notes-export-design.md` (builder-checked; notes part not yet approved
@@ -65,6 +126,10 @@ permissions bug first because it stops his dad using Wren at all.
 4. **Speaker accuracy on big calls: draft PR #5** (`feat/transcript-speaker-accuracy`), brief at
    `docs/superpowers/plans/2026-11-26-transcript-speaker-accuracy.md`. Maximilian: the plan is NOT fixed —
    brainstorm it with him via `/egm:egm-brainstorm` before building anything.
+5. **AI clean-up through Claude, app-aware (Wispr Flow style): PR #6** (`feat/claude-ai-cleanup`), brief at
+   `docs/superpowers/plans/2026-11-26-claude-ai-cleanup.md`. Brief only, nothing built. Maximilian's
+   decisions are in the brief (Haiku 5.5 default + Sonnet toggle, Ollama removed, browser tab titles,
+   coding apps toggle Rewrite/Tidy); settle its open questions with him before building.
 
 ## Status (2026-11-25) — Public readiness: in-app speech setup, portability, updater, signing
 
@@ -242,7 +307,16 @@ Parent: independent review, then PR from `t3/speech-onboarding-portability` to `
   unmuted (Sol critical, Gemini important; verified in `speakers.rs::muted_during`). Other open items are in the
   ledger ("Council R5 …"): ordinary Quit dropping a failed notes draft, Mac held-audio flush at a guessed rate,
   unbounded WASAPI activation wait, a 3 s wait for every Me line after a call ends, a double 15 s wait on quit.
-- **STOPPED (2026-11-25):** waiting for Maximilian's decision. Nothing merged to main.
+- **Released (2026-11-25):** Maximilian chose to ship with the mute-gap bug open. `feat/meetings` was merged to `main`
+  (09c8cfd) and pushed, and CI "Build and release Wren" run 45523315058 started.
+- **Open: draft PR #2 https://github.com/Kamo2323/wren/pull/2** (branch `fix/meetings-mute-gap`): "Meetings: muted
+  speech can leak when Teams readings pause". It holds a failing test
+  (`speakers.rs::mute_state_carries_across_a_gap_between_readings`). Next step: fix `muted_during` to carry the last
+  known mute state across gaps between readings (no 1 s cap, up to `MUTE_CARRY_MS`), make the test pass, re-run the
+  session tests, then a live check on the Mac.
+- Other open council items (ledger "Council R5 …"): ordinary Quit drops a failed notes draft; Mac held-audio flush
+  at a guessed rate; unbounded WASAPI activation wait; a 3 s wait for each Me line after a call ends; a double 15 s
+  wait on quit during a stuck start. Still needs Maximilian: a two-person Teams call (remote names, own tile).
 
 ## Status (2026-11-24) — Meetings feature: spec APPROVED (history)
 

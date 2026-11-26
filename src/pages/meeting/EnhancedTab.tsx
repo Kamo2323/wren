@@ -5,13 +5,13 @@ import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Length, NoteErrorKind, NoteRow } from "../../lib/meetings";
 import { footerLabel } from "../../lib/meetingText";
-import { inTauri, notesCopyRich, notesSaveDocx, notesSavePdf, notesShare } from "../../lib/api";
+import { inTauri, notesCopyRich, notesEmailDraft, notesSaveDocx, notesSavePdf, notesShare } from "../../lib/api";
 import { errorText } from "../../lib/meetings";
 import { buildDocx, emailHtml, exportFileName, pdfDocument, plainText, type NoteMeta } from "../../lib/notesExport";
 import { useConstants } from "../../lib/useConstants";
 import { Button } from "../../components/Button";
 import { useToast } from "../../components/Toast";
-import { Copy, FileDown, FileText, KeyRound, RotateCw, Share, Sparkles } from "../../components/Icon";
+import { Copy, FileDown, FileText, KeyRound, Mail, RotateCw, Share, Sparkles } from "../../components/Icon";
 
 export interface NoteError {
   kind: NoteErrorKind;
@@ -57,9 +57,9 @@ function Markdown({ md }: { md: string }) {
   return <div className="md" onClick={onLinkClick} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-type ExportKind = "copy" | "share" | "pdf" | "docx";
+type ExportKind = "copy" | "share" | "email" | "pdf" | "docx";
 
-/** Copy / Share / Save as PDF / Save as Word for one finished note (spec: notes export). */
+/** Copy / Share (macOS) or Email (Windows) / Save as PDF / Save as Word for one finished note (spec: notes export). */
 function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; onRegenerate: () => void }) {
   const toast = useToast();
   const isMac = useConstants().platform === "macos";
@@ -75,6 +75,9 @@ function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; o
         toast.show("Notes copied");
       } else if (kind === "share") {
         await notesShare(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes", [r.left, r.top, r.width, r.height]);
+      } else if (kind === "email") {
+        const app = await notesEmailDraft(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes");
+        toast.show(app ? `Opening a new email in ${app}` : "Opening a new email");
       } else if (kind === "pdf") {
         const saved = await notesSavePdf(pdfDocument(md, meta), exportFileName(meta));
         if (saved) toast.show(`Saved ${saved}`);
@@ -83,8 +86,13 @@ function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; o
         if (saved) toast.show(`Saved ${saved}`);
       }
     } catch (err) {
-      const fallback = kind === "copy" ? "Couldn't copy the notes" : kind === "share" ? "Couldn't open the Share menu" : "Couldn't save the notes";
-      toast.show(errorText(err) || fallback, { tone: "danger" });
+      const fallback =
+        kind === "copy" ? "Couldn't copy the notes"
+        : kind === "share" ? "Couldn't open the Share menu"
+        : kind === "email" ? "Couldn't open an email draft"
+        : "Couldn't save the notes";
+      // Errors can carry advice ("Choose one in Windows Settings…"): leave time to read it.
+      toast.show(errorText(err) || fallback, { tone: "danger", ms: 7000 });
     } finally {
       setBusy(null);
     }
@@ -99,7 +107,8 @@ function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; o
     <div className="enh-actions">
       {btn("copy", "Copy", <Copy size={13} strokeWidth={2.2} />, "Copy with formatting, ready to paste into an email")}
       {isMac && btn("share", "Share", <Share size={13} strokeWidth={2.2} />, "Share to Mail, Notes, AirDrop and more")}
-      {isMac && btn("pdf", "PDF", <FileDown size={13} strokeWidth={2.2} />, "Save as PDF")}
+      {!isMac && btn("email", "Email", <Mail size={13} strokeWidth={2.2} />, "Open as a new email in your mail app")}
+      {btn("pdf", "PDF", <FileDown size={13} strokeWidth={2.2} />, "Save as PDF")}
       {btn("docx", "Word", <FileText size={13} strokeWidth={2.2} />, "Save as Word document")}
       <Button size="sm" variant="ghost" icon={<RotateCw size={13} strokeWidth={2.2} />} disabled={busy !== null} onClick={onRegenerate}>
         Regenerate

@@ -165,7 +165,15 @@ fn check_engine(paths: &Paths, settings: &Settings, log: &mut Output) -> Check {
     engine.shutdown();
     let clip_ms = hound::WavReader::open(&warmup).map(|r| r.duration() as u64 * 1000 / r.spec().sample_rate as u64).unwrap_or(10_000);
     let out = pipeline::run(
-        &PipelineInput { raw: &result.text, speech_ms: result.speech_ms, clip_ms, prompt: "", replacements: &[] },
+        &PipelineInput {
+            raw: &result.text,
+            speech_ms: result.speech_ms,
+            clip_ms,
+            prompt: "",
+            replacements: &[],
+            target: crate::ai_cleanup::AppCategory::General,
+            coding_style: crate::settings::CodingStyle::Rewrite,
+        },
         None,
     );
     let heard: Vec<String> = out

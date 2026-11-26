@@ -7,7 +7,7 @@ import { copyTextWith } from "../src/lib/copy.ts";
 import { appName, computeTimeSavedMs, formatBytes } from "../src/lib/format.ts";
 import { normalizeThemePreference, resolveTheme, toSettingsTheme } from "../src/lib/theme.ts";
 import { dismissMsFor } from "../src/popup/dismiss.ts";
-import { assignColours, speakerColour, groupRuns, formatElapsed, displayName, captureNote, footerLabel } from "../src/lib/meetingText.ts";
+import { assignColours, speakerColour, groupRuns, formatElapsed, displayName, captureNote, footerLabel, spendLine } from "../src/lib/meetingText.ts";
 import { buildManifest, computeVersion, stampCargoVersion } from "./ci-release-meta.mjs";
 import { emailHtml, pdfDocument, plainText, buildDocx, exportFileName } from "../src/lib/notesExport.ts";
 import JSZip from "jszip";
@@ -316,6 +316,16 @@ const NOTE_MD = [
   "Emoji 🎉 and em dash —",
 ].join("\n");
 
+test("this month's spend: notes, plus clean-ups once there are any", () => {
+  assert.equal(spendLine({ usd: 2.4, notes: 14, cleanupUsd: 0, cleanups: 0 }), "~$2.40 across 14 notes (estimated from list prices).");
+  assert.equal(
+    spendLine({ usd: 0, notes: 1, cleanupUsd: 0.0312, cleanups: 140 }),
+    "~$0.00 across 1 note · ~$0.03 across 140 clean-ups (estimated from list prices).",
+  );
+  // Clean-ups only: no "~$0.00 across 0 notes" in front.
+  assert.equal(spendLine({ usd: 0, notes: 0, cleanupUsd: 0.0001, cleanups: 1 }), "<$0.01 across 1 clean-up (estimated from list prices).");
+  assert.equal(spendLine({ usd: 0, notes: 0, cleanupUsd: 0, cleanups: 0 }), "~$0.00 across 0 notes (estimated from list prices).");
+});
 test("notes export: plain text has no Markdown symbols and keeps structure", () => {
   const t = plainText(NOTE_MD, NOTE_META);
   assert.ok(t.startsWith("Rollout <sync> & review\n"), t.slice(0, 40));

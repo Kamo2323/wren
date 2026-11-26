@@ -144,7 +144,7 @@ struct FakeRecorder {
 }
 
 fn edge() -> ForegroundInfo {
-    ForegroundInfo { hwnd: 42, pid: 4242, process_name: "msedge.exe".into() }
+    ForegroundInfo { hwnd: 42, pid: 4242, process_name: "msedge.exe".into(), window_title: "New tab - Microsoft Edge".into() }
 }
 
 impl FakeRecorder {
@@ -177,7 +177,7 @@ impl Recorder for FakeRecorder {
     fn stop(&self) -> anyhow::Result<Recording> {
         let p = self.active.lock().take().ok_or_else(|| anyhow::anyhow!("not recording"))?;
         if self.switch_fg_on_stop.load(Ordering::SeqCst) {
-            *self.fg.lock() = ForegroundInfo { hwnd: 7, pid: 77, process_name: "other.exe".into() };
+            *self.fg.lock() = ForegroundInfo { hwnd: 7, pid: 77, process_name: "other.exe".into(), window_title: String::new() };
         }
         Ok(Recording {
             wav_path: p,
@@ -228,6 +228,8 @@ struct FakeEnv {
     paste_at: Mutex<Vec<Instant>>,
     events: Mutex<Vec<Ev>>,
     ai_calls: AtomicUsize,
+    /// The app category each AI call was for.
+    ai_targets: Mutex<Vec<AppCategory>>,
     /// The pre-paste check's answer (Task 9).
     not_editable: std::sync::atomic::AtomicBool,
 }
@@ -250,6 +252,7 @@ impl FakeEnv {
             paste_results: Mutex::new(VecDeque::new()),
             events: Mutex::new(Vec::new()),
             ai_calls: AtomicUsize::new(0),
+            ai_targets: Mutex::new(Vec::new()),
             not_editable: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -345,8 +348,9 @@ impl Env for FakeEnv {
     fn target_not_editable(&self, _target: &ForegroundInfo) -> bool {
         self.not_editable.load(Ordering::SeqCst)
     }
-    fn ai_cleanup(&self, tidied: &str) -> Option<String> {
+    fn ai_cleanup(&self, tidied: &str, target: AppCategory) -> Option<String> {
         self.ai_calls.fetch_add(1, Ordering::SeqCst);
+        self.ai_targets.lock().push(target);
         Some(tidied.replace("Hello", "Hello,"))
     }
 }
@@ -985,6 +989,27 @@ fn ai_step_runs_only_when_switched_on() {
     wait_until("second paste", 2_000, || r.env.pastes().len() == 2);
     assert_eq!(r.env.ai_calls.load(Ordering::SeqCst), 1);
     assert_eq!(r.env.pastes()[1], "Hello, there.");
+}
+
+#[test]
+fn the_target_app_shapes_slash_commands_and_the_ai_step() {
+    let r = rig();
+    r.env.settings.lock().ai_cleanup.enabled = true;
+    // A coding agent: "slash compact" becomes a command, and the AI step is told it's a coding app.
+    *r.env.fg.lock() = ForegroundInfo { hwnd: 42, pid: 4242, process_name: "Codex.exe".into(), window_title: "Codex".into() };
+    r.env.reply("Slash compact.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("paste", 2_000, || r.env.pastes().len() == 1);
+    assert_eq!(r.env.pastes()[0], "/compact");
+    // Gmail in a browser: email; no slash command there.
+    *r.env.fg.lock() = ForegroundInfo { hwnd: 42, pid: 4242, process_name: "msedge.exe".into(), window_title: "Inbox (2) - Gmail - Microsoft Edge".into() };
+    r.env.reply("Slash compact.", 0);
+    r.hk.send(HotkeyEvent::HoldStart).unwrap();
+    r.hk.send(HotkeyEvent::HoldEnd { held_ms: 2_000 }).unwrap();
+    wait_until("second paste", 2_000, || r.env.pastes().len() == 2);
+    assert_eq!(r.env.pastes()[1], "Slash compact.");
+    assert_eq!(*r.env.ai_targets.lock(), vec![AppCategory::Coding, AppCategory::Email]);
 }
 
 #[test]
