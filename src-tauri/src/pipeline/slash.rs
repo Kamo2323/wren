@@ -13,6 +13,9 @@ use crate::constants::SLASH_MAX_NAME_WORDS;
 /// Words that start a new clause rather than continue a command name.
 const CLAUSE_WORDS: [&str; 5] = ["then", "and", "please", "now", "so"];
 
+/// "Slash the bundle size in half": "slash" as a verb, not a command.
+const NOT_A_COMMAND: [&str; 7] = ["the", "a", "an", "this", "that", "my", "our"];
+
 /// A name word: letters, digits, inner hyphens/underscores. Returns it and any punctuation glued
 /// to its end ("send," → ("send", ",")); None if the token is not a plain word.
 fn split_word(token: &str) -> Option<(&str, &str)> {
@@ -42,7 +45,10 @@ fn line(text: &str) -> String {
             let mut j = i + 1;
             while j < tokens.len() && name.len() < SLASH_MAX_NAME_WORDS {
                 let Some((word, punct)) = split_word(tokens[j]) else { break };
-                if !name.is_empty() && CLAUSE_WORDS.contains(&word.to_lowercase().as_str()) {
+                let lower = word.to_lowercase();
+                if (!name.is_empty() && CLAUSE_WORDS.contains(&lower.as_str()))
+                    || (name.is_empty() && NOT_A_COMMAND.contains(&lower.as_str()))
+                {
                     break;
                 }
                 name.push(word.to_lowercase());
@@ -113,6 +119,7 @@ mod tests {
             ("I said slash compact earlier.", "I said slash compact earlier."),
             // No name: unchanged.
             ("slash", "slash"),
+            ("Slash the bundle size in half.", "Slash the bundle size in half."),
             ("Slash.", "Slash."),
             ("Slash, I mean the character.", "Slash, I mean the character."),
             ("slash /compact", "slash /compact"),

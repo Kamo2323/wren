@@ -187,6 +187,8 @@ pub fn focused_window_token_and_title(pid: u32) -> (Option<u32>, Option<String>)
     let Some(win) = copy_attr(app.as_ptr(), "AXFocusedWindow") else { return (None, None) };
     let hash = unsafe { CFHash(win.as_ptr()) };
     let token = (hash as u32) ^ ((hash >> 32) as u32);
+    // Each AX element has its own timeout (default ~6 s): a slow app mustn't stall the paste.
+    unsafe { AXUIElementSetMessagingTimeout(win.as_ptr(), 0.05) };
     (Some(token), attr_string(win.as_ptr(), "AXTitle"))
 }
 

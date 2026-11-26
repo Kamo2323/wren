@@ -73,10 +73,13 @@ impl Default for AiCleanupSettings {
 }
 
 impl AiCleanupSettings {
-    /// A model Wren offers; anything else (e.g. the old Ollama tag "qwen2.5:3b") becomes Haiku.
+    /// A model Wren offers; anything else (e.g. the old Ollama tag "qwen2.5:3b") becomes Haiku and
+    /// the switch goes off: clean-up used to run on this computer, and now sends text to Anthropic,
+    /// so the user turns it back on from the card that says so.
     pub fn normalise(&mut self) {
         if self.model != AI_CLEANUP_MODEL_HAIKU && self.model != AI_CLEANUP_MODEL_SONNET {
             self.model = AI_CLEANUP_MODEL_HAIKU.into();
+            self.enabled = false;
         }
     }
 }
@@ -248,13 +251,16 @@ mod tests {
     }
 
     #[test]
-    fn an_ollama_model_becomes_haiku_and_the_switch_is_kept() {
+    fn an_ollama_model_becomes_haiku_and_the_switch_goes_off() {
         let dir = temp_dir("ai");
         let _cleanup = Cleanup(dir.clone());
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"version":1,"aiCleanup":{"enabled":true,"model":"qwen2.5:3b"}}"#).unwrap();
         let s = Settings::load(&path);
-        assert_eq!(s.ai_cleanup, AiCleanupSettings { enabled: true, model: AI_CLEANUP_MODEL_HAIKU.into(), coding_style: CodingStyle::Rewrite });
+        assert_eq!(s.ai_cleanup, AiCleanupSettings { enabled: false, model: AI_CLEANUP_MODEL_HAIKU.into(), coding_style: CodingStyle::Rewrite });
+        // A Claude model already chosen keeps the switch as it was.
+        std::fs::write(&path, r#"{"aiCleanup":{"enabled":true,"model":"claude-haiku-5-5"}}"#).unwrap();
+        assert!(Settings::load(&path).ai_cleanup.enabled);
         std::fs::write(&path, r#"{"aiCleanup":{"enabled":false,"model":"claude-sonnet-5-5","codingStyle":"tidy"}}"#).unwrap();
         let s = Settings::load(&path);
         assert_eq!((s.ai_cleanup.model.as_str(), s.ai_cleanup.coding_style), (AI_CLEANUP_MODEL_SONNET, CodingStyle::Tidy));

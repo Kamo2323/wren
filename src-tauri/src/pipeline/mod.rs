@@ -13,7 +13,7 @@ pub mod tidy;
 use crate::ai_cleanup::AppCategory;
 use crate::constants::{
     AI_CLEANUP_LEAD_IN_MAX_CHARS, AI_CLEANUP_MAX_LENGTH_CHANGE, AI_CLEANUP_MIN_WORD_OVERLAP, AI_REWRITE_MAX_LENGTH_RATIO,
-    AI_REWRITE_MIN_LENGTH_RATIO, AI_REWRITE_MIN_REPLY_OVERLAP,
+    AI_REWRITE_MIN_LENGTH_RATIO, AI_REWRITE_MIN_KEPT, AI_REWRITE_MIN_REPLY_OVERLAP,
 };
 use crate::dictionary::Replacement;
 use crate::settings::CodingStyle;
@@ -208,7 +208,66 @@ pub fn ai_rewrite_acceptable(tidied: &str, candidate: &str) -> bool {
     let ratio = after / before;
     (AI_REWRITE_MIN_LENGTH_RATIO..=AI_REWRITE_MAX_LENGTH_RATIO).contains(&ratio)
         && reply_overlap(tidied, candidate) >= AI_REWRITE_MIN_REPLY_OVERLAP
+        && dictation_kept(tidied, candidate) >= AI_REWRITE_MIN_KEPT
         && !rewrite_lead_in(tidied, candidate)
+}
+
+/// Share of the dictation's words still in the reply; a word said twice in a row ("the the") counts once.
+fn dictation_kept(tidied: &str, candidate: &str) -> f32 {
+    let mut a = ai_words(tidied);
+    a.dedup();
+    if a.is_empty() {
+        return 0.0;
+    }
+    let mut pool: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for w in ai_words(candidate) {
+        *pool.entry(w).or_default() += 1;
+    }
+    let kept = a
+        .iter()
+        .filter(|w| match pool.get_mut(w.as_str()) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        })
+        .count();
+    kept as f32 / a.len() as f32
+}
+
+/// Words that open an assistant's reply, not a dictation.
+const ACK_OPENERS: [&str; 13] =
+    ["sure", "okay", "ok", "certainly", "absolutely", "here", "here's", "i'll", "got", "alright", "understood", "noted", "of"];
+
+/// The reply opens like an answer to the dictation ("Sure, I'll add…", "Here's…") with a word the
+/// dictation doesn't start with.
+fn acknowledges(tidied: &str, candidate: &str) -> bool {
+    let Some(first) = ai_words(candidate).into_iter().next() else { return false };
+    ACK_OPENERS.contains(&first.as_str()) && !ai_words(tidied).iter().take(3).any(|w| *w == first)
+}
+
+const QUESTION_WORDS: [&str; 12] = ["what", "what's", "why", "how", "how's", "when", "where", "where's", "who", "who's", "which", "whose"];
+
+/// The dictation asks a what/why/how… question and the reply has no question mark: likely an answer.
+fn answers_question(tidied: &str, candidate: &str) -> bool {
+    if candidate.contains('?') {
+        return false;
+    }
+    let mut sentence = String::new();
+    for c in tidied.chars() {
+        if c == '?' {
+            if ai_words(&sentence).first().is_some_and(|w| QUESTION_WORDS.contains(&w.as_str())) {
+                return true;
+            }
+            sentence.clear();
+        } else if matches!(c, '.' | '!' | '\n') {
+            sentence.clear();
+        } else {
+            sentence.push(c);
+        }
+    }
+    false
 }
 
 /// A rewrite may reorder, so its opening words need not match the dictation's; a lead-in is words
@@ -224,6 +283,8 @@ fn rewrite_lead_in(tidied: &str, candidate: &str) -> bool {
 pub fn ai_reply_acceptable(check: AiCheck, tidied: &str, candidate: &str) -> bool {
     let commands_kept = slash::commands(tidied).iter().all(|c| candidate.contains(c));
     commands_kept
+        && !acknowledges(tidied, candidate)
+        && !answers_question(tidied, candidate)
         && match check {
             AiCheck::Strict => ai_result_acceptable(tidied, candidate),
             AiCheck::Rewrite => ai_rewrite_acceptable(tidied, candidate),
@@ -422,9 +483,33 @@ mod tests {
         assert_eq!(check("Sure! Here's a React component with a toggle that stores the theme in localStorage and applies a dark class."), plain);
         // Far too short.
         assert_eq!(check("Add dark mode."), plain);
+        // Acknowledging the request (review S1): the words match, but it's a reply, not the dictation.
+        assert_eq!(check("Sure, I'll add a dark mode toggle to the settings page and make it remember the choice."), plain);
+        assert_eq!(check("Okay. Add a dark mode toggle to the settings page and make it remember the choice."), plain);
+        // Answering the dictation (review S1): most of what was said is gone.
+        let said = "can you tell me what the capital of France is";
+        let ai = |_: &str| Some("The capital of France is Paris.".to_string());
+        let out = run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), Some(&ai));
+        assert_eq!(out.final_text, run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), None).final_text);
         // A slash command the AI dropped.
         let ai = |_: &str| Some("Compact the conversation.".to_string());
         assert_eq!(run(&in_app("slash compact", AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, "/compact");
+    }
+
+    #[test]
+    fn an_answer_to_a_spoken_question_is_not_pasted() {
+        // Review S5: the strict word rule alone lets "Two plus two is four." through.
+        for (target, style) in [(AppCategory::General, CodingStyle::Rewrite), (AppCategory::Coding, CodingStyle::Rewrite), (AppCategory::Coding, CodingStyle::Tidy)] {
+            let said = "what is two plus two?";
+            let ai = |_: &str| Some("Two plus two is four.".to_string());
+            let out = run(&in_app(said, target, style), Some(&ai));
+            assert_eq!(out.final_text, run(&in_app(said, target, style), None).final_text, "{target:?}/{style:?}");
+        }
+        // A question kept as a question is fine.
+        let said = "what's causing the paste bug? can you check the paste module";
+        let reply = "What's causing the paste bug? Can you check the paste module?";
+        let ai = |_: &str| Some(reply.to_string());
+        assert_eq!(run(&in_app(said, AppCategory::Coding, CodingStyle::Rewrite), Some(&ai)).final_text, reply);
     }
 
     #[test]
