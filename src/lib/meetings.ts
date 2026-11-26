@@ -3,6 +3,7 @@
 // `?meeting=recording` (a live meeting), `?big=1` (2,500-line transcript), `?claude=nokey|error`,
 // `?mock=empty` (no meetings).
 import { inTauri } from "./api";
+import type { ClaudeSpend } from "./meetingText";
 import type {
   ActiveMeeting,
   Length,
@@ -413,8 +414,11 @@ export const claudeKeyRemove = (): Promise<void> => {
   return later(undefined);
 };
 
-export const claudeSpendMonth = (): Promise<{ usd: number; notes: number }> =>
-  inTauri ? call("claude_spend_month") : later({ usd: 2.4, notes: 14 });
+export const claudeSpendMonth = (): Promise<ClaudeSpend> =>
+  inTauri ? call("claude_spend_month") : later({ usd: 2.4, notes: 14, cleanupUsd: 0.03, cleanups: 140 });
+
+/** Fired on `window` when the Claude key is saved or forgotten, so every card that depends on it updates. */
+export const CLAUDE_KEY_EVENT = "wren:claude-key-changed";
 
 export const systemAudioPermission = (): Promise<"granted" | "denied" | "unknown"> =>
   inTauri ? call("system_audio_permission") : later(params.get("sysaudio") === "denied" ? "denied" : "granted");

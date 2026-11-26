@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use serde::Serialize;
 
+use crate::ai_cleanup::AppCategory;
 use crate::audio::Recording;
 use crate::constants::{
     BIAS_TERMS_MAX, CANCEL_SAVE_AFTER_MS, HANDSFREE_SILENCE_STOP_MS, KEYSTATE_POLL_MS, KEYUP_POLL_MS,
@@ -300,9 +301,10 @@ pub trait Env: Send + Sync + 'static {
     fn target_not_editable(&self, _target: &ForegroundInfo) -> bool {
         false
     }
-    /// The optional AI clean-up step (spec §10; Task 9). Only called when `aiCleanup.enabled` is on.
-    /// Returns the cleaned text, or None (unreachable, slow, failed). `pipeline::run` checks the result.
-    fn ai_cleanup(&self, _tidied: &str) -> Option<String> {
+    /// The optional AI clean-up step (spec §10; Task 9) through Claude, shaped for the kind of app
+    /// the text goes into. Only called when `aiCleanup.enabled` is on. Returns the cleaned text, or
+    /// None (no key, unreachable, slow, failed). `pipeline::run` checks the result.
+    fn ai_cleanup(&self, _tidied: &str, _target: AppCategory) -> Option<String> {
         None
     }
 }
@@ -1078,7 +1080,9 @@ fn finish_job(env: &dyn Env, shared: &Shared, post: &Sender<Msg>, job: Job) {
         Vec::new()
     });
     let t = Instant::now();
-    let ai_step = |tidied: &str| env.ai_cleanup(tidied);
+    // The kind of app the text goes into (from its name and, for browsers, the tab title).
+    let category = crate::ai_cleanup::category(&job.target.process_name, &job.target.window_title);
+    let ai_step = |tidied: &str| env.ai_cleanup(tidied, category);
     let ai: Option<AiStep> = if settings.ai_cleanup.enabled { Some(&ai_step) } else { None };
     let out = pipeline::run(
         &PipelineInput {
@@ -1087,6 +1091,8 @@ fn finish_job(env: &dyn Env, shared: &Shared, post: &Sender<Msg>, job: Job) {
             clip_ms: job.recording.duration_ms,
             prompt: &prompt,
             replacements: &replacements,
+            target: category,
+            coding_style: settings.ai_cleanup.coding_style,
         },
         ai,
     );
@@ -1108,6 +1114,7 @@ fn finish_job(env: &dyn Env, shared: &Shared, post: &Sender<Msg>, job: Job) {
         "inferMs": result.infer_ms,
         "pipelineMs": pipeline_ms,
         "warm": warm,
+        "category": category.as_str(),
     });
     let row = NewTranscription {
         id: job.id.clone(),

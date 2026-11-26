@@ -3,6 +3,7 @@
 pub mod ai_cleanup;
 pub mod app_icons;
 pub mod audio;
+pub mod claude_api;
 pub mod commands;
 pub mod constants;
 pub mod dictionary;
@@ -441,8 +442,6 @@ pub fn run() {
             commands::set_audio_device,
             commands::other_apps_running,
             commands::watcher_status,
-            commands::ai_cleanup_status,
-            commands::ai_cleanup_pull_model,
             commands::update_status,
             commands::update_check,
             commands::update_install,

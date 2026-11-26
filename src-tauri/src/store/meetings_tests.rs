@@ -315,6 +315,19 @@ fn regenerated_notes_still_count_in_spend() {
 }
 
 #[test]
+fn clean_up_spend_has_its_own_counter() {
+    let (_d, s) = open();
+    let t = Utc::now();
+    s.log_cleanup_spend(t - Duration::days(40), "claude-haiku-5-5", 0.50).unwrap();
+    s.log_cleanup_spend(t, "claude-haiku-5-5", 0.0002).unwrap();
+    s.log_cleanup_spend(t, "claude-sonnet-5-5", 0.004).unwrap();
+    let (usd, n) = s.cleanup_cost_since(t - Duration::hours(1)).unwrap();
+    assert!((usd - 0.0042).abs() < 1e-9, "{usd}");
+    assert_eq!(n, 2);
+    assert_eq!(s.notes_cost_since(t - Duration::hours(1)).unwrap(), (0.0, 0), "notes are counted apart");
+}
+
+#[test]
 fn rename_all_by_name_never_touches_my_lines() {
     let (_d, s) = open();
     let m = s.meeting_create("M", CaptureMode::TeamsOnly).unwrap();

@@ -154,9 +154,37 @@ pub fn final_spacing(text: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// [`final_spacing`] for text that keeps its line breaks (an AI reply formatted as paragraphs or a
+/// list): each line is tidied on its own, runs of blank lines become one, and blank lines at the
+/// ends go. Windows line endings become `\n`.
+pub fn final_spacing_lines(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for l in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
+        let l = final_spacing(l);
+        if l.is_empty() && out.last().is_none_or(|p| p.is_empty()) {
+            continue;
+        }
+        out.push(l);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_spacing_lines_keeps_paragraphs_and_lists() {
+        assert_eq!(
+            final_spacing_lines("Hi Sam,\n\n\n\nThanks for  the notes .\n\nBest,\nMax\n"),
+            "Hi Sam,\n\nThanks for the notes.\n\nBest,\nMax"
+        );
+        assert_eq!(final_spacing_lines("\n\nFix:\r\n- one\r\n-  two  \n"), "Fix:\n- one\n- two");
+        assert_eq!(final_spacing_lines("   "), "");
+    }
 
     #[test]
     fn whitespace_table() {

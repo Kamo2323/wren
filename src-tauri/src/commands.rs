@@ -62,8 +62,9 @@ pub fn save_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     services: State<'_, Services>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<(), String> {
+    settings.ai_cleanup.normalise();
     let _one_writer = SETTINGS_WRITE.lock();
     let old = state.settings.read().clone();
     let autostart_changed = old.start_with_windows != settings.start_with_windows;
@@ -558,20 +559,6 @@ fn running_process_names() -> Vec<String> {
 pub fn watcher_status(state: State<'_, AppState>, services: State<'_, Services>) -> crate::watcher::WatcherStatus {
     let setting = state.settings.read().watcher_enabled;
     crate::watcher::status(setting, &services.env.watcher().slow_apps())
-}
-
-/// Is Ollama running, and is the clean-up model downloaded?
-#[tauri::command(async)]
-pub fn ai_cleanup_status(state: State<'_, AppState>) -> crate::ai_cleanup::AiCleanupStatus {
-    let model = state.settings.read().ai_cleanup.model.clone();
-    crate::ai_cleanup::status(&model)
-}
-
-/// Downloads the clean-up model with `ollama pull`; returns when it has finished.
-#[tauri::command(async)]
-pub fn ai_cleanup_pull_model(state: State<'_, AppState>) -> Result<(), String> {
-    let model = state.settings.read().ai_cleanup.model.clone();
-    crate::ai_cleanup::pull(&model)
 }
 
 // ---- app updater ----

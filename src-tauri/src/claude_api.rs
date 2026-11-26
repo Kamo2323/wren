@@ -1,0 +1,294 @@
+//! What enhanced meeting notes (`meetings::claude`) and AI clean-up (`ai_cleanup`) share about
+//! talking to Claude: the API key in the OS credential store, error mapping, token usage and its
+//! list-price cost, and the HTTPS POST itself.
+//!
+//! Raw HTTPS (there is no official Rust SDK). The key is never logged, serialised or sent to the UI.
+
+use serde_json::Value;
+use std::time::Duration;
+
+pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
+pub const API_VERSION: &str = "2026-10-21";
+const KEY_SERVICE: &str = "Wren";
+const KEY_ACCOUNT: &str = "anthropic-api-key";
+
+// ---- the key ----
+
+/// An API key. `Debug` never shows it; it has no `Serialize`.
+#[derive(Clone)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Secret(<{} chars>)", self.0.len())
+    }
+}
+
+/// Plausible Anthropic key shape (checked before a test call is spent on it).
+pub fn looks_like_key(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("sk-ant-") && t.len() >= 40 && !t.chars().any(char::is_whitespace)
+}
+
+enum Backing {
+    Memory(parking_lot::Mutex<Option<String>>),
+    System,
+}
+
+/// Where the key lives: Windows Credential Manager / macOS Keychain (service "Wren").
+/// `WREN_KEYSTORE_MEMORY=1` makes [`KeyStore::system`] in-memory (tests, CI).
+pub struct KeyStore(Backing);
+
+static MEMORY_SYSTEM: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+impl KeyStore {
+    pub fn system() -> Self {
+        KeyStore(Backing::System)
+    }
+
+    pub fn memory() -> Self {
+        KeyStore(Backing::Memory(parking_lot::Mutex::new(None)))
+    }
+
+    fn memory_seam() -> bool {
+        std::env::var("WREN_KEYSTORE_MEMORY").is_ok_and(|v| v == "1")
+    }
+
+    pub fn get(&self) -> Option<Secret> {
+        match &self.0 {
+            Backing::Memory(m) => m.lock().clone().map(Secret),
+            Backing::System if Self::memory_seam() => MEMORY_SYSTEM.lock().clone().map(Secret),
+            Backing::System => keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
+                .ok()?
+                .get_password()
+                .ok()
+                .filter(|k| !k.is_empty())
+                .map(Secret),
+        }
+    }
+
+    pub fn set(&self, key: &str) -> Result<(), String> {
+        let key = key.trim().to_string();
+        match &self.0 {
+            Backing::Memory(m) => *m.lock() = Some(key),
+            Backing::System if Self::memory_seam() => *MEMORY_SYSTEM.lock() = Some(key),
+            Backing::System => keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
+                .and_then(|e| e.set_password(&key))
+                .map_err(|_| "Couldn't save the key in the system's secure storage.".to_string())?,
+        }
+        Ok(())
+    }
+
+    pub fn remove(&self) -> Result<(), String> {
+        match &self.0 {
+            Backing::Memory(m) => *m.lock() = None,
+            Backing::System if Self::memory_seam() => *MEMORY_SYSTEM.lock() = None,
+            Backing::System => match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.delete_credential()) {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(_) => return Err("Couldn't remove the key from the system's secure storage.".into()),
+            },
+        }
+        Ok(())
+    }
+}
+
+// ---- usage and cost ----
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+impl Usage {
+    /// Fold a later usage report in (message_delta carries cumulative output).
+    pub fn merge(&mut self, u: &Usage) {
+        for (mine, theirs) in [
+            (&mut self.input, u.input),
+            (&mut self.output, u.output),
+            (&mut self.cache_read, u.cache_read),
+            (&mut self.cache_write, u.cache_write),
+        ] {
+            if theirs > 0 {
+                *mine = theirs;
+            }
+        }
+    }
+
+    /// A `usage` object from the Messages API.
+    pub fn from_json(v: &Value) -> Usage {
+        let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        Usage {
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+        }
+    }
+}
+
+/// List prices, $/MTok: (input, output, cache read). Cache writes (5 min) cost 1.25 × input.
+/// Haiku 5.5's rate is for prompts up to 100K tokens (clean-up prompts are far below that).
+fn prices(model: &str) -> (f64, f64, f64) {
+    if model.starts_with("claude-haiku") {
+        (0.10, 0.50, 0.01)
+    } else if model.starts_with("claude-sonnet") {
+        (2.0, 10.0, 0.10)
+    } else {
+        (4.0, 20.0, 0.20)
+    }
+}
+
+/// Estimated cost of one request at list prices.
+pub fn cost_usd(model: &str, u: &Usage) -> f64 {
+    let (i, o, r) = prices(model);
+    (u.input as f64 * i + u.output as f64 * o + u.cache_read as f64 * r + u.cache_write as f64 * i * 1.25) / 1_000_000.0
+}
+
+// ---- errors ----
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaudeError {
+    NoKey,
+    Unauthorized,
+    RateLimited,
+    Overloaded,
+    Network(String),
+    Refusal,
+    Api(String),
+}
+
+impl ClaudeError {
+    pub fn retryable(&self) -> bool {
+        matches!(self, ClaudeError::RateLimited | ClaudeError::Overloaded | ClaudeError::Network(_))
+    }
+
+    /// Short machine kind for the UI (`note-error` events) and logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ClaudeError::NoKey => "no_key",
+            ClaudeError::Unauthorized => "unauthorized",
+            ClaudeError::RateLimited => "rate_limited",
+            ClaudeError::Overloaded => "overloaded",
+            ClaudeError::Network(_) => "network",
+            ClaudeError::Refusal => "refusal",
+            ClaudeError::Api(_) => "api",
+        }
+    }
+}
+
+impl std::fmt::Display for ClaudeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClaudeError::NoKey => write!(f, "Add your Claude API key in Settings."),
+            ClaudeError::Unauthorized => write!(f, "Claude rejected the API key."),
+            ClaudeError::RateLimited => write!(f, "Claude is rate-limiting requests right now."),
+            ClaudeError::Overloaded => write!(f, "Claude is overloaded right now."),
+            ClaudeError::Network(m) => write!(f, "Couldn't reach Claude ({m})."),
+            ClaudeError::Refusal => write!(f, "Claude declined to summarise this meeting."),
+            ClaudeError::Api(m) => write!(f, "Claude returned an error: {m}"),
+        }
+    }
+}
+
+pub fn error_from_kind(kind: &str, message: &str) -> ClaudeError {
+    match kind {
+        "authentication_error" | "permission_error" => ClaudeError::Unauthorized,
+        "rate_limit_error" => ClaudeError::RateLimited,
+        "overloaded_error" => ClaudeError::Overloaded,
+        "api_error" => ClaudeError::Network(message.to_string()),
+        _ => ClaudeError::Api(message.to_string()),
+    }
+}
+
+pub fn error_from_status(status: u16, body: &str) -> ClaudeError {
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("HTTP {status}"));
+    match status {
+        401 | 403 => ClaudeError::Unauthorized,
+        429 => ClaudeError::RateLimited,
+        529 => ClaudeError::Overloaded,
+        500..=599 => ClaudeError::Network(format!("server error {status}")),
+        _ => ClaudeError::Api(message),
+    }
+}
+
+// ---- HTTP ----
+
+/// A blocking client that never follows redirects (the key travels in a custom header that a
+/// redirect would carry along).
+pub fn client(connect_timeout: Duration, timeout: Duration) -> Result<reqwest::blocking::Client, ClaudeError> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| ClaudeError::Network(e.to_string()))
+}
+
+/// POST `body` to `url` (the Messages API, or a fake in tests), within `timeout` when given (else
+/// the client's). A non-2xx status is mapped to a [`ClaudeError`]; a timeout is
+/// `Network("timed out")`.
+pub fn post(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    key: &str,
+    beta: Option<&str>,
+    timeout: Option<Duration>,
+    body: &Value,
+) -> Result<reqwest::blocking::Response, ClaudeError> {
+    let mut req = client
+        .post(url)
+        .header("x-api-key", key)
+        .header("anthropic-version", API_VERSION)
+        .header("content-type", "application/json");
+    if let Some(b) = beta {
+        req = req.header("anthropic-beta", b);
+    }
+    if let Some(t) = timeout {
+        req = req.timeout(t);
+    }
+    let resp = req
+        .body(body.to_string())
+        .send()
+        .map_err(|e| ClaudeError::Network(if e.is_timeout() { "timed out".into() } else { "no connection".into() }))?;
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(resp);
+    }
+    let text = resp.text().unwrap_or_default();
+    Err(error_from_status(status, &text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn haiku_is_priced_on_its_own_card() {
+        let u = Usage { input: 1_000_000, output: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000 };
+        let haiku = cost_usd("claude-haiku-5-5", &u);
+        assert!((haiku - (0.10 + 0.50 + 0.01 + 0.125)).abs() < 1e-9, "{haiku}");
+        let sonnet = cost_usd("claude-sonnet-5-5", &Usage { input: 1_000_000, ..Default::default() });
+        assert!((sonnet - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usage_reads_the_api_field_names() {
+        let v = serde_json::json!({"input_tokens": 5, "output_tokens": 7, "cache_read_input_tokens": 600, "cache_creation_input_tokens": 0});
+        assert_eq!(Usage::from_json(&v), Usage { input: 5, output: 7, cache_read: 600, cache_write: 0 });
+    }
+}
