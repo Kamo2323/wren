@@ -1,6 +1,23 @@
 // Pure helpers for the Meetings UI (unit-tested in scripts/unit-tests.mjs). No Tauri imports here.
 import type { CaptureMode, NoteRow, SegmentRow } from "./meetingTypes";
 
+/** Estimated spend this month: enhanced notes and AI clean-up, counted apart (`claude_spend_month`). */
+export interface ClaudeSpend {
+  usd: number;
+  notes: number;
+  cleanupUsd: number;
+  cleanups: number;
+}
+
+/** "~$2.40 across 14 notes · ~$0.03 across 140 clean-ups (estimated from list prices)." */
+export function spendLine(spend: ClaudeSpend): string {
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts = [`~$${spend.usd.toFixed(2)} across ${plural(spend.notes, "note", "notes")}`];
+  if (spend.cleanups > 0) parts.push(`~$${spend.cleanupUsd.toFixed(2)} across ${plural(spend.cleanups, "clean-up", "clean-ups")}`);
+  return `${parts.join(" · ")} (estimated from list prices).`;
+}
+
+
 /** Index 0..5 into the speaker accent palette, stable per name. */
 export function speakerColour(name: string): number {
   let h = 2166136261;

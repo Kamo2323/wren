@@ -276,17 +276,14 @@ if (!only || only === "pages") {
   await page.locator(".confirm").scrollIntoViewIfNeeded();
   await wait(200);
   await shoot(page, "settings-delete-confirm");
-  await open("settings", "?ai=nomodel&watcher=off", ".setcard");
+  await open("settings", "?ai=on&watcher=off", ".setcard");
   await page.locator("#set-ai").scrollIntoViewIfNeeded();
   await wait(300);
-  await shoot(page, "settings-ai-download-watcher-off");
-  await page.getByRole("button", { name: /Download/ }).click();
-  await wait(300);
-  await shoot(page, "settings-ai-downloading");
-  await open("settings", "?ai=offline&mock=empty", ".setcard");
+  await shoot(page, "settings-ai-claude-watcher-off");
+  await open("settings", "?claude=nokey&mock=empty", ".setcard");
   await page.locator("#set-ai").scrollIntoViewIfNeeded();
   await wait(300);
-  await shoot(page, "settings-ai-offline");
+  await shoot(page, "settings-ai-no-key");
 
   // Willow / Glaido banner
   await open("home", "?others=Glaido", ".banner");

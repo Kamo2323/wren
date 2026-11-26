@@ -497,6 +497,36 @@ check("saved key: status shown, key not rendered anywhere", !(await page.content
 check("model picker offers Opus 5.5 and Sonnet 5.5", (await page.locator("#claude-model option").allTextContents()).join("|").includes("Opus 5.5") &&
   (await page.locator("#claude-model option").allTextContents()).join("|").includes("Sonnet 5.5"));
 check("this month's spend is shown", /~\$\d+\.\d\d across \d+ notes/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+check("clean-up spend has its own counter", /~\$\d+\.\d\d across \d+ clean-ups/.test((await page.locator("section:has(#set-meetings)").textContent()) ?? ""));
+
+// Settings: AI clean-up through Claude (a fresh page load, so no key is saved).
+await page.goto(`${base}/index.html?claude=nokey&fresh=ai#settings`);
+await page.waitForSelector("#set-ai");
+const aiCard = page.locator("section:has(#set-ai)");
+check("AI clean-up card says Tidy text with Claude, no Ollama", (await aiCard.textContent())?.includes("Tidy text with Claude") && !(await page.content()).includes("Ollama"));
+check("no key: the switch is off and disabled", (await aiCard.getByRole("switch").getAttribute("aria-checked")) === "false" && (await aiCard.getByRole("switch").isDisabled()));
+check("no key: points to Meeting notes", (await aiCard.textContent())?.includes("Add your Claude key under Meeting notes"));
+await aiCard.getByRole("button", { name: "Go to Meeting notes" }).click();
+await wait(700);
+check("Go to Meeting notes focuses the key field", await page.evaluate(() => document.activeElement?.id === "claude-key"));
+await page.locator("#claude-key").fill("sk-ant-api03-" + "y".repeat(40));
+await page.getByRole("button", { name: "Save key" }).click();
+await page.waitForSelector(".key-saved", { timeout: 3000 });
+await wait(200);
+check("saving the key enables the switch", !(await aiCard.getByRole("switch").isDisabled()) && !(await aiCard.textContent())?.includes("Add your Claude key"));
+await aiCard.getByRole("switch").click();
+await wait(200);
+check("the switch turns on", (await aiCard.getByRole("switch").getAttribute("aria-checked")) === "true");
+const aiModels = (await page.locator("#ai-model option").allTextContents()).join("|");
+check("model picker offers Haiku 5.5 (default) and Sonnet 5.5", aiModels === "Claude Haiku 5.5|Claude Sonnet 5.5" && (await page.locator("#ai-model").inputValue()) === "claude-haiku-5-5", aiModels);
+check("coding apps default to Rewrite", (await page.locator('[data-style-opt="rewrite"]').getAttribute("aria-pressed")) === "true");
+await page.locator('[data-style-opt="tidy"]').click();
+await wait(200);
+check("coding style switches to Tidy", (await page.locator('[data-style-opt="tidy"]').getAttribute("aria-pressed")) === "true" &&
+  (await page.locator('[data-style-opt="rewrite"]').getAttribute("aria-pressed")) === "false");
+await page.locator("#ai-model").selectOption("claude-sonnet-5-5");
+await wait(200);
+check("model switches to Sonnet 5.5", (await page.locator("#ai-model").inputValue()) === "claude-sonnet-5-5");
 
 // Quit while recording asks first.
 await page.goto(`${base}/index.html?meeting=recording#meetings`);

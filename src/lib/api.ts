@@ -2,12 +2,11 @@
 // When the page is not running inside Tauri (Playwright screenshots, `vite` in a browser) every call
 // falls back to mock data from mock.ts, so the UI can be built and checked without the Rust side.
 // Add `?mock=empty` to the URL for the first-run (no data) look. Other mock switches (screenshots only):
-// `?others=Willow,Glaido` (apps running), `?ai=offline|nomodel` (AI clean-up status), `?watcher=off`,
+// `?others=Willow,Glaido` (apps running), `?claude=nokey` (no Claude key saved), `?watcher=off`,
 // `?big=1` (six-figure totals), `?fail=1` (every read fails, for the error states), `?engine=failed|cpu|setup`,
 // `?setup=needed|running|paused|failed|nospace|starting|done|unsupported` (first-run speech setup).
 
 import type {
-  AiCleanupStatus,
   DictionaryEntry,
   EngineStatus,
   EntryStatus,
@@ -46,7 +45,6 @@ const mock = {
   history: mockEmpty ? [] : mockTranscriptions(),
   dictionary: mockEmpty ? [] : mockDictionary(),
   nextId: 100,
-  aiModelPresent: mockParams.get("ai") !== "nomodel",
   settings: {
     version: 1,
     engine: {
@@ -63,7 +61,7 @@ const mock = {
     typingWpm: 52,
     startWithWindows: false,
     sounds: false,
-    aiCleanup: { enabled: false, model: "qwen2.5:3b" },
+    aiCleanup: { enabled: mockParams.get("ai") === "on", model: "claude-haiku-5-5", codingStyle: "rewrite" },
     watcherEnabled: null,
     willowSeedImported: false,
     theme: ((): "dark" | "light" | null => {
@@ -488,18 +486,6 @@ export const watcherStatus = (): Promise<WatcherStatus> => {
       ? { enabled: false, verdict: "slow", reason: "The Claude app's text box took 180 ms to read, so watching it could slow typing." }
       : { enabled: true, verdict: "readable", reason: "The Claude app's text box can be read in 12 ms." },
   );
-};
-export const aiCleanupStatus = (): Promise<AiCleanupStatus> => {
-  if (inTauri) return call("ai_cleanup_status");
-  const model = mock.settings.aiCleanup.model;
-  if (mockParams.get("ai") === "offline") return later({ ollamaReachable: false, modelPresent: false, model });
-  return later({ ollamaReachable: true, modelPresent: mock.aiModelPresent, model });
-};
-/** Downloads the clean-up model through Ollama; resolves when the download has finished. */
-export const aiCleanupPullModel = (): Promise<void> => {
-  if (inTauri) return call("ai_cleanup_pull_model");
-  mock.aiModelPresent = true;
-  return later(undefined, 2500);
 };
 
 // ---------- app updater ----------
