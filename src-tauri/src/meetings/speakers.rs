@@ -203,19 +203,28 @@ impl SpeakerTimeline {
             .take_while(|o| o.at_ms.saturating_add(MUTE_CARRY_MS) > start_ms)
             .find_map(|o| o.self_muted.map(|m| (o.at_ms, m)))
             .or(self.mute_before_coverage);
+        // Walk the clip reading by reading. Each stretch between two readings takes the last known state
+        // (up to `MUTE_CARRY_MS` after it was read) — not capped at `MAX_OBSERVATION_MS`, so a slow Teams
+        // read can't turn a muted gap into "unknown" and leak it into the notes.
         let (mut known, mut muted) = (0u64, 0u64);
-        for (o, a, b) in self.overlapping(start_ms, end_ms) {
-            if let Some(m) = o.self_muted {
-                last_known = Some((o.at_ms, m));
-            }
-            if let Some((at, m)) = last_known {
-                let ov = b.min(at.saturating_add(MUTE_CARRY_MS)).saturating_sub(a);
+        let mut tally = |from: u64, to: u64, state: Option<(u64, bool)>| {
+            if let Some((at, m)) = state {
+                let ov = to.min(at.saturating_add(MUTE_CARRY_MS)).saturating_sub(from);
                 known += ov;
                 if m {
                     muted += ov;
                 }
             }
+        };
+        let mut cursor = start_ms;
+        for o in self.obs[before_clip..].iter().take_while(|o| o.at_ms < end_ms) {
+            tally(cursor, o.at_ms, last_known);
+            cursor = o.at_ms;
+            if let Some(m) = o.self_muted {
+                last_known = Some((o.at_ms, m));
+            }
         }
+        tally(cursor, end_ms, last_known);
         (known > 0).then(|| muted >= MUTED_MIN_MS || muted * 2 > end_ms - start_ms)
     }
 
@@ -450,5 +459,15 @@ mod tests {
         t.record(&muted_obs(62_000, false));
         span(&mut t, 62_250, 64_000, &[]);
         assert_eq!(t.muted_during(63_000, 64_000), Some(false));
+    }
+
+    /// A slow Teams read (gap > `MAX_OBSERVATION_MS`) must not turn a muted gap into "unknown" (PR #1).
+    #[test]
+    fn mute_state_carries_across_a_gap_between_readings() {
+        let mut t = SpeakerTimeline::default();
+        t.record(&muted_obs(10_000, true));
+        t.record(&muted_obs(12_500, true)); // one Teams read took 2.5 s
+        assert_eq!(t.muted_during(11_100, 12_400), Some(true), "a private aside in the gap stays muted");
+        assert_eq!(t.muted_during(10_800, 12_800), Some(true), "the whole 2 s is muted, not just the 200 ms inside a reading");
     }
 }
