@@ -110,9 +110,9 @@ fn title_segments(title: &str) -> Vec<String> {
         .map(|s| {
             let s = s.trim();
             // "(3) WhatsApp", "Inbox (3)": drop counters.
-            let s = s.trim_start_matches(|c: char| c == '(' || c.is_ascii_digit() || c == ')' || c == '+' || c == ' ');
+            let s = s.trim_start_matches(|c: char| c == '(' || c.is_ascii_digit() || c == ')' || c == '+' || c == ',' || c == '.' || c == ' ');
             let s = match s.rfind(" (") {
-                Some(i) if s.ends_with(')') && s[i + 2..s.len() - 1].chars().all(|c| c.is_ascii_digit() || c == '+') => &s[..i],
+                Some(i) if s.ends_with(')') && s[i + 2..s.len() - 1].chars().all(|c| c.is_ascii_digit() || c == '+' || c == ',' || c == '.') => &s[..i],
                 _ => s,
             };
             // Edge writes "Microsoft\u{200b} Edge".
@@ -211,6 +211,8 @@ mod tests {
             ("msedge.exe", "Mail - Sam Jones - Outlook - Personal - Microsoft\u{200b} Edge", Email),
             ("firefox.exe", "Inbox — Proton Mail — Mozilla Firefox", Email),
             ("chrome.exe", "(2) WhatsApp - Google Chrome", Messaging),
+            ("chrome.exe", "(1,234) WhatsApp - Google Chrome", Messaging),
+            ("Safari", "(1.234) Slack - Acme", Messaging),
             ("brave.exe", "general (Wren) - Slack - Brave", Messaging),
             ("msedge.exe", "Chat | Sam | Microsoft Teams - Work - Microsoft Edge", Messaging),
             ("Google Chrome", "#help | Wren Server - Discord", Messaging),
