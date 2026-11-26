@@ -113,7 +113,7 @@ In a coding app, saying **"slash" followed by a command or skill name** types it
 |---|---|
 | "slash compact" | `/compact` |
 | "slash code review" | `/code-review` |
-| "slash full send, then file the PR" | `/full-send, then file the PR` → better: `/full-send` then the rest |
+| "slash full send, then file the PR" | `/full-send, then file the PR` |
 
 Keep it simple and deterministic, so it works even when Claude is off or slow:
 - Do it in the pipeline as a plain text step (no AI needed), only when the target is a Coding app.
