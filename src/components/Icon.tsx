@@ -46,6 +46,7 @@ export {
   Copy,
   FileDown,
   FileText,
+  Mail,
   Share,
   Cpu,
   Flame,

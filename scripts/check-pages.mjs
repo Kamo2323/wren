@@ -345,12 +345,13 @@ await page.locator(".md a").first().click();
 await wait(200);
 check("links in notes don't navigate Wren's window", page.url() === urlBefore);
 check("…and go to the browser instead", (await page.evaluate(() => window.__wrenOpenedLink)) === "https://example.com/pricing");
-// Export: Copy writes formatted HTML + clean text; Word builds a real .docx; Share/PDF only on macOS.
+// Export: Copy writes formatted HTML + clean text; Word builds a real .docx; PDF on both; Share on macOS,
+// Email (an .eml draft) on Windows.
 {
   const lastExport = () => page.evaluate(() => window.__wrenExport);
   const actions = page.locator(".enh-bar .enh-actions");
-  check("notes toolbar on Windows: Copy, Word, Regenerate (no Share/PDF yet)",
-    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Word|Regenerate");
+  check("notes toolbar on Windows: Copy, Email, PDF, Word, Regenerate (no Share)",
+    (await actions.getByRole("button").allTextContents()).map((t) => t.trim()).join("|") === "Copy|Email|PDF|Word|Regenerate");
   await actions.getByRole("button", { name: "Copy" }).click();
   await page.waitForFunction(() => window.__wrenExport?.kind === "copy");
   const copied = await lastExport();
@@ -364,6 +365,18 @@ check("…and go to the browser instead", (await page.evaluate(() => window.__wr
   const word = await lastExport();
   check("Word builds a .docx (zip) named after the meeting",
     word.bytes.slice(0, 4).join(",") === "80,75,3,4" && word.bytes.length > 3000 && /^Weekly sync with Sarah – .* \(Medium notes\)$/.test(word.name), `${word.bytes.length} bytes, ${word.name}`);
+  await actions.getByRole("button", { name: "Email" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "email");
+  const email = await lastExport();
+  check("Email drafts the formatted notes with the meeting title as subject",
+    email.subject === "Weekly sync with Sarah" && /<table [^>]*style="border-collapse/.test(email.html) && email.plain.startsWith("Weekly sync with Sarah\n"));
+  check("Email confirms which mail app opens the draft",
+    await page.locator(".toast", { hasText: "Opening a new email in Outlook" }).first().waitFor({ timeout: 3000 }).then(() => true, () => false));
+  await actions.getByRole("button", { name: "PDF" }).click();
+  await page.waitForFunction(() => window.__wrenExport?.kind === "pdf");
+  const winPdf = await lastExport();
+  check("PDF on Windows gets the same complete printable page, named after the meeting",
+    winPdf.html.startsWith("<!doctype html>") && winPdf.html.includes("@page") && winPdf.name === word.name);
   const openSync = async (query) => {
     await page.goto(`${base}/index.html${query}#meetings`);
     await page.locator(".meeting-card", { hasText: "Weekly sync with Sarah" }).click();

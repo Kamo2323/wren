@@ -390,6 +390,7 @@ pub fn run() {
             notes_export::notes_save_docx,
             notes_export::notes_save_pdf,
             notes_export::notes_share,
+            notes_export::notes_email_draft,
             commands::history_recent,
             commands::history_search,
             commands::history_delete,

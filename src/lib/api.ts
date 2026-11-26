@@ -139,7 +139,7 @@ export const openAccessibilitySettings = (): Promise<void> =>
 
 /** What the browser preview "exported" last, so page checks can see it. */
 export interface MockExport {
-  kind: "copy" | "share" | "pdf" | "docx";
+  kind: "copy" | "share" | "email" | "pdf" | "docx";
   html?: string;
   plain?: string;
   bytes?: number[];
@@ -165,7 +165,7 @@ export const notesSaveDocx = (bytes: Uint8Array, suggestedName: string): Promise
   return later(`${suggestedName}.docx`);
 };
 
-/** Save as PDF (macOS): asks where, renders the page off-screen to a paginated PDF. */
+/** Save as PDF (macOS, Windows): asks where, renders the page off-screen to a paginated PDF. */
 export const notesSavePdf = (html: string, suggestedName: string): Promise<string | null> => {
   if (inTauri) return call("notes_save_pdf", { html, suggestedName });
   recordExport({ kind: "pdf", html, name: suggestedName });
@@ -177,6 +177,14 @@ export const notesShare = (html: string, plain: string, subject: string, rect: [
   if (inTauri) return call("notes_share", { html, plain, subject, rect });
   recordExport({ kind: "share", html, plain, subject, rect });
   return later(undefined);
+};
+
+/** Email (Windows): opens the notes as an unsent email draft (HTML + plain text) in the default mail app.
+ *  Resolves to that app's name. */
+export const notesEmailDraft = (html: string, plain: string, subject: string): Promise<string> => {
+  if (inTauri) return call("notes_email_draft", { html, plain, subject });
+  recordExport({ kind: "email", html, plain, subject });
+  return later("Outlook");
 };
 
 /** macOS: clear Wren's privacy permissions left over from an older build and ask again. */

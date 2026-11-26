@@ -1,12 +1,17 @@
-//! Enhanced notes leaving Wren: formatted Copy (for email), Save as PDF, Save as Word, and the macOS Share
-//! menu (spec `docs/superpowers/specs/2026-11-25-notes-export-design.md`).
+//! Enhanced notes leaving Wren: formatted Copy (for email), Save as PDF, Save as Word, the macOS Share
+//! menu and the Windows Email draft (spec `docs/superpowers/specs/2026-11-25-notes-export-design.md`,
+//! Windows brief `docs/superpowers/plans/2026-11-26-windows-notes-export.md`).
 //!
 //! The page builds the content (sanitised, self-contained HTML with inline styles, clean plain text, and
 //! the .docx bytes); native code only puts it on the clipboard, asks where to save, writes the file, or
 //! hands it to the system. Save dialogs run here, so the page never chooses a path it can write to.
 
+#[cfg(any(windows, test))]
+mod eml;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -127,7 +132,7 @@ pub fn notes_save_docx(app: AppHandle, bytes: Vec<u8>, suggested_name: String) -
     Ok(Some(display_name(&path)))
 }
 
-/// Save as PDF (macOS): asks where, then renders `html` off-screen into a paginated PDF there.
+/// Save as PDF (macOS, Windows): asks where, then renders `html` off-screen into a paginated PDF there.
 #[tauri::command(async)]
 pub fn notes_save_pdf(app: AppHandle, html: String, suggested_name: String) -> Result<Option<String>, String> {
     check_len("save", html.len(), MAX_TEXT_BYTES)?;
@@ -141,7 +146,19 @@ pub fn notes_save_pdf(app: AppHandle, html: String, suggested_name: String) -> R
         tracing::info!(path = %path.display(), "saved notes as PDF");
         Ok(Some(display_name(&path)))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        // One at a time, from before the save dialog until the print has really finished.
+        let Some(slot) = windows::PdfSlot::take() else { return Err(windows::BUSY_MESSAGE.into()) };
+        let Some(path) = ask_save_path(&app, &suggested_name, "pdf", "PDF")? else { return Ok(None) };
+        windows::write_pdf(&app, slot, &html, &path).map_err(|e| {
+            tracing::warn!(error = %e, path = %path.display(), "saving PDF failed");
+            format!("Couldn't save {}.", display_name(&path))
+        })?;
+        tracing::info!(path = %path.display(), "saved notes as PDF");
+        Ok(Some(display_name(&path)))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (app, suggested_name);
         Err("Save as PDF isn't available on this computer yet.".into())
@@ -164,6 +181,32 @@ pub fn notes_share(app: AppHandle, html: String, plain: String, subject: String,
     {
         let _ = (app, plain, subject, rect);
         Err("Sharing isn't available on this computer yet.".into())
+    }
+}
+
+/// Email (Windows): writes the formatted notes as an unsent email draft (.eml, HTML + plain text,
+/// subject = `subject`) and opens it in the default mail app, ready to address and send. Returns that
+/// app's name.
+#[tauri::command(async)]
+pub fn notes_email_draft(app: AppHandle, html: String, plain: String, subject: String) -> Result<String, String> {
+    check_len("email", html.len(), MAX_TEXT_BYTES)?;
+    check_len("email", plain.len(), MAX_TEXT_BYTES)?;
+    #[cfg(windows)]
+    {
+        windows::email_draft(&app, &html, &plain, &subject).map_err(|e| match e {
+            windows::EmailError::NoMailApp => {
+                "No email app is set up to open drafts. Set one in Settings → Apps → Default apps (for .eml files), or use Copy and paste into an email.".to_string()
+            }
+            windows::EmailError::Other(e) => {
+                tracing::warn!(error = %e, "email draft failed");
+                "Couldn't open an email draft.".to_string()
+            }
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, plain, subject);
+        Err("Email drafts aren't available on this computer.".into())
     }
 }
 
