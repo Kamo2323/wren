@@ -44,11 +44,51 @@ enum Backing {
     System,
 }
 
-/// Where the key lives: Windows Credential Manager / macOS Keychain (service "Wren").
+/// Where the key lives: Windows Credential Manager (service "Wren"); on macOS a private file in
+/// Wren's folder ([`crate::claude_key_file`] says why), moved there from the Keychain on first read.
+/// Read once per launch, so the OS store is never asked on every dictation.
 /// `WREN_KEYSTORE_MEMORY=1` makes [`KeyStore::system`] in-memory (tests, CI).
 pub struct KeyStore(Backing);
 
 static MEMORY_SYSTEM: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
+
+/// In-memory key cache for one launch (`Some(None)` = known to be absent).
+/// Held while loading, so concurrent callers can't both trigger a Keychain prompt.
+struct KeyCache(parking_lot::Mutex<Option<Option<String>>>);
+
+impl KeyCache {
+    const fn new() -> Self {
+        Self(parking_lot::Mutex::new(None))
+    }
+
+    fn get_or_load(&self, load: impl FnOnce() -> (Option<String>, bool)) -> Option<String> {
+        let mut cache = self.0.lock();
+        if let Some(known) = cache.as_ref() {
+            return known.clone();
+        }
+        let (key, settled) = load();
+        if settled {
+            *cache = Some(key.clone());
+        }
+        key
+    }
+
+    fn set(&self, key: String, save: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+        let mut cache = self.0.lock();
+        save(&key)?;
+        *cache = Some((!key.is_empty()).then_some(key));
+        Ok(())
+    }
+
+    fn remove(&self, delete: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        let mut cache = self.0.lock();
+        delete()?;
+        *cache = Some(None);
+        Ok(())
+    }
+}
+
+static SYSTEM_CACHE: KeyCache = KeyCache::new();
 
 impl KeyStore {
     pub fn system() -> Self {
@@ -67,12 +107,7 @@ impl KeyStore {
         match &self.0 {
             Backing::Memory(m) => m.lock().clone().map(Secret),
             Backing::System if Self::memory_seam() => MEMORY_SYSTEM.lock().clone().map(Secret),
-            Backing::System => keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
-                .ok()?
-                .get_password()
-                .ok()
-                .filter(|k| !k.is_empty())
-                .map(Secret),
+            Backing::System => SYSTEM_CACHE.get_or_load(system_store::load).map(Secret),
         }
     }
 
@@ -81,9 +116,7 @@ impl KeyStore {
         match &self.0 {
             Backing::Memory(m) => *m.lock() = Some(key),
             Backing::System if Self::memory_seam() => *MEMORY_SYSTEM.lock() = Some(key),
-            Backing::System => keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
-                .and_then(|e| e.set_password(&key))
-                .map_err(|_| "Couldn't save the key in the system's secure storage.".to_string())?,
+            Backing::System => SYSTEM_CACHE.set(key, system_store::save)?,
         }
         Ok(())
     }
@@ -92,10 +125,107 @@ impl KeyStore {
         match &self.0 {
             Backing::Memory(m) => *m.lock() = None,
             Backing::System if Self::memory_seam() => *MEMORY_SYSTEM.lock() = None,
-            Backing::System => match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.delete_credential()) {
-                Ok(()) | Err(keyring::Error::NoEntry) => {}
-                Err(_) => return Err("Couldn't remove the key from the system's secure storage.".into()),
-            },
+            Backing::System => SYSTEM_CACHE.remove(system_store::delete)?,
+        }
+        Ok(())
+    }
+}
+
+/// The OS credential store (service "Wren", account "anthropic-api-key").
+mod os_store {
+    use super::{KEY_ACCOUNT, KEY_SERVICE};
+    use crate::claude_key_file::LegacyRead;
+
+    pub fn read() -> LegacyRead {
+        match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.get_password()) {
+            Ok(k) if !k.trim().is_empty() => LegacyRead::Found(k),
+            Ok(_) | Err(keyring::Error::NoEntry) => LegacyRead::Missing,
+            Err(_) => LegacyRead::Failed,
+        }
+    }
+
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn write(key: &str) -> Result<(), String> {
+        keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
+            .and_then(|e| e.set_password(key))
+            .map_err(|_| "Couldn't save the key in the system's secure storage.".to_string())
+    }
+
+    pub fn delete() -> Result<(), String> {
+        match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("Couldn't remove the key from the system's secure storage.".into()),
+        }
+    }
+}
+
+/// Windows: Credential Manager (no prompts).
+#[cfg(not(target_os = "macos"))]
+mod system_store {
+    use crate::claude_key_file::LegacyRead;
+
+    /// The key, and whether that answer can be kept for the launch (a failed read is retried).
+    pub fn load() -> (Option<String>, bool) {
+        match super::os_store::read() {
+            LegacyRead::Found(k) => (Some(k.trim().to_string()), true),
+            LegacyRead::Missing => (None, true),
+            LegacyRead::Failed => (None, false),
+        }
+    }
+
+    pub fn save(key: &str) -> Result<(), String> {
+        super::os_store::write(key)
+    }
+
+    pub fn delete() -> Result<(), String> {
+        super::os_store::delete()
+    }
+}
+
+/// macOS: Wren's private key file; the Keychain is only read to move an old key out of it.
+#[cfg(target_os = "macos")]
+mod system_store {
+    use crate::claude_key_file::KeyFile;
+
+    fn isolated_home() -> bool {
+        std::env::var_os("WREN_HOME").is_some()
+    }
+
+    fn file() -> KeyFile {
+        KeyFile::new(crate::paths::Paths::resolve().roaming)
+    }
+
+    /// Always kept for the launch: a denied Keychain prompt must not come back on every dictation.
+    pub fn load() -> (Option<String>, bool) {
+        let f = file();
+        if isolated_home() {
+            return (f.read(), true);
+        }
+        let key = f.get_or_move(super::os_store::read, || {
+            if super::os_store::delete().is_err() {
+                tracing::warn!("couldn't delete the old Claude key from the Keychain");
+            }
+        });
+        (key, true)
+    }
+
+    pub fn save(key: &str) -> Result<(), String> {
+        let f = file();
+        let old_copy = !isolated_home() && !f.moved();
+        f.write(key).map_err(|_| "Couldn't save the key in Wren's folder.".to_string())?;
+        if old_copy && super::os_store::delete().is_err() {
+            tracing::warn!("couldn't delete the old Claude key from the Keychain");
+        }
+        Ok(())
+    }
+
+    pub fn delete() -> Result<(), String> {
+        let f = file();
+        let old_copy = !isolated_home() && !f.moved();
+        f.remove().map_err(|_| "Couldn't remove the key from Wren's folder.".to_string())?;
+        // The marker now stops Wren reading any Keychain copy; still try to delete it.
+        if old_copy && super::os_store::delete().is_err() {
+            tracing::warn!("couldn't delete the old Claude key from the Keychain");
         }
         Ok(())
     }
@@ -290,5 +420,87 @@ mod tests {
     fn usage_reads_the_api_field_names() {
         let v = serde_json::json!({"input_tokens": 5, "output_tokens": 7, "cache_read_input_tokens": 600, "cache_creation_input_tokens": 0});
         assert_eq!(Usage::from_json(&v), Usage { input: 5, output: 7, cache_read: 600, cache_write: 0 });
+    }
+
+    #[test]
+    fn cache_reads_once_and_tracks_set_and_remove() {
+        let c = KeyCache::new();
+        let mut loads = 0;
+        assert_eq!(
+            c.get_or_load(|| {
+                loads += 1;
+                (Some("sk-ant-first".into()), true)
+            })
+            .as_deref(),
+            Some("sk-ant-first")
+        );
+        assert_eq!(c.get_or_load(|| panic!("served from cache")).as_deref(), Some("sk-ant-first"));
+        assert_eq!(loads, 1);
+
+        // Failed save leaves the cached key untouched.
+        assert!(c.set("sk-ant-bad".into(), |_| Err("disk full".into())).is_err());
+        assert_eq!(c.get_or_load(|| panic!("still cached")).as_deref(), Some("sk-ant-first"));
+
+        c.set("sk-ant-second".into(), |_| Ok(())).unwrap();
+        assert_eq!(c.get_or_load(|| panic!("updated in cache")).as_deref(), Some("sk-ant-second"));
+
+        // Failed delete leaves the cached key untouched.
+        assert!(c.remove(|| Err("locked".into())).is_err());
+        assert_eq!(c.get_or_load(|| panic!("still cached")).as_deref(), Some("sk-ant-second"));
+
+        c.remove(|| Ok(())).unwrap();
+        assert_eq!(c.get_or_load(|| panic!("absence is cached after remove")), None);
+    }
+
+    #[test]
+    fn cache_retries_unsettled_failure_but_keeps_settled_none() {
+        let win = KeyCache::new();
+        assert_eq!(win.get_or_load(|| (None, false)), None);
+        assert_eq!(win.get_or_load(|| (Some("sk-ant-retry".into()), true)).as_deref(), Some("sk-ant-retry"));
+
+        let mac_denied = KeyCache::new();
+        assert_eq!(mac_denied.get_or_load(|| (None, true)), None);
+        assert_eq!(mac_denied.get_or_load(|| panic!("denied read must stay cached for the launch")), None);
+    }
+
+    #[test]
+    fn cache_serialises_concurrent_loads() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let cache = Arc::new(KeyCache::new());
+        let loads = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+        let c1 = Arc::clone(&cache);
+        let l1 = Arc::clone(&loads);
+        let t1 = std::thread::spawn(move || {
+            c1.get_or_load(|| {
+                l1.fetch_add(1, Ordering::SeqCst);
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                (Some("sk-ant-once".into()), true)
+            })
+        });
+
+        entered_rx.recv().unwrap();
+        let c2 = Arc::clone(&cache);
+        let l2 = Arc::clone(&loads);
+        let t2 = std::thread::spawn(move || {
+            c2.get_or_load(|| {
+                l2.fetch_add(1, Ordering::SeqCst);
+                (Some("sk-ant-twice".into()), true)
+            })
+        });
+
+        // Give t2 time to queue behind the lock before releasing t1.
+        std::thread::sleep(Duration::from_millis(20));
+        release_tx.send(()).unwrap();
+
+        assert_eq!(t1.join().unwrap().as_deref(), Some("sk-ant-once"));
+        assert_eq!(t2.join().unwrap().as_deref(), Some("sk-ant-once"));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 }

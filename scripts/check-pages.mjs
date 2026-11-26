@@ -285,6 +285,13 @@ check("macOS Settings uses Start at login and macOS default", await page.evaluat
   const t = document.body.textContent ?? "";
   return t.includes("Start at login") && t.includes("macOS default") && t.includes("this Mac");
 }));
+check("macOS Settings describes the private key file (not Keychain)", await page.evaluate(() => {
+  const t = document.body.textContent ?? "";
+  return (
+    t.includes("(your API credits). The key is kept in a private file in Wren's folder that only your Mac account can open, never in Wren's settings or logs.") &&
+    !t.includes("macOS Keychain")
+  );
+}));
 await page.goto(`${base}/index.html?platform=macos#history`);
 await page.waitForSelector(".search__kbd");
 check("macOS History shows ⌘F shortcut badge", (await page.locator(".search__kbd").textContent())?.trim() === "⌘F");
@@ -299,6 +306,10 @@ await page.waitForSelector("#set-dictation");
 check("Windows Settings preserves Start with Windows and Windows default", await page.evaluate(() => {
   const t = document.body.textContent ?? "";
   return t.includes("Start with Windows") && t.includes("Windows default") && t.includes("this PC");
+}));
+check("Windows Settings keeps Credential Manager key description", await page.evaluate(() => {
+  const t = document.body.textContent ?? "";
+  return t.includes("(your API credits). The key is kept in Windows Credential Manager, never in Wren's files.");
 }));
 await page.goto(`${base}/popup.html?state=handsfree&platform=windows&hold=1`);
 await page.waitForSelector(".hint");

@@ -10,10 +10,18 @@ Maximilian, in `docs/superpowers/plans/2026-11-27-needs-maximilian.md` on that b
 clean-up switch starts **off** for anyone who had Ollama clean-up on; switch it on in Settings first.
 
 ### Open after the release (2026-11-26)
-- **PR #9** (brief only, branch `plan/mac-claude-key-file`): Mac Keychain pop-up after every update. Cause: since
-  0.1.12 releases are self-signed (no Team ID), so the Keychain remembers "Always Allow" per build (`cdhash:`).
-  Maximilian chose option A (key in a private 0600 file, moved out of the Keychain once). An unrequested working
-  draft sits on the local, unpushed branch `fix/mac-claude-key-file` (`C:\Wren-keyfile`); he asked for the PR only.
+- **PR #9** (built under **full stop**, ready for Maximilian to review and merge, branch `plan/mac-claude-key-file`,
+  worktree `C:\Wren-keyfile`): Mac Keychain pop-up after every update (option A — private `0600` key file in Wren's
+  roaming folder, one-time move out of Keychain + marker, per-launch locked `KeyCache` on both platforms, Windows
+  unchanged on Credential Manager, macOS Settings copy updated). Verified on Windows (`npm run build`, 38 unit tests,
+  172 page checks, `cargo test --lib` 504 passed / 0 failed, `key_move_probe` ok, 0 new clippy warnings) and on
+  Lord's MacBook Pro at `306ae1e` (`cargo test --lib` 558 passed / 0 failed including mode `0600`, `key_move_probe`
+  against real Keychain with `file mode: 600`, `cargo clippy` 0 new warnings, `cargo check --release --lib --bins`
+  ok). Reviewed with Gemini 4 Neon (Extra High): 2 rounds → APPROVE (fixed S1: `WREN_HOME` isolation matches
+  `Paths::resolve()`). **Not done:** PR left open & unmerged; did not touch `/Applications/Wren.app` or Wren's real
+  Keychain item (`service "Wren"`). **Next step:** Maximilian reviews/merges PR #9 (remember `WREN_RELEASE_PLATFORMS`
+  if releasing); on the Mac update that ships it, click **Allow** one last time and confirm the following update
+  doesn't prompt. (Local draft branch `fix/mac-claude-key-file` is now superseded and can be deleted whenever.)
 - **Pill idea** (not filed yet): with Tidy Text on, show the target app's icon in the recording pill. Open question
   to Maximilian: for websites in a browser, show (A) the browser icon, (B) built-in icons for known sites, or
   (C) downloaded favicons. My pick is B. He said "a couple of features" for PR #8; the second one hasn't been named yet.

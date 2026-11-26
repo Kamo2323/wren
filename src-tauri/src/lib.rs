@@ -4,6 +4,7 @@ pub mod ai_cleanup;
 pub mod app_icons;
 pub mod audio;
 pub mod claude_api;
+pub mod claude_key_file;
 pub mod commands;
 pub mod constants;
 pub mod dictionary;
