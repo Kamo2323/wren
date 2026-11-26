@@ -1,5 +1,14 @@
 # Wren — handoff and decision log
 
+## Released: v0.1.13 (2026-11-26, morning)
+
+Maximilian reviewed and said "merge and push it live". `WREN_RELEASE_PLATFORMS` set to `both`, PR #7 merged
+with a merge commit (`9fcf627`; #1, #4, #5, #6 show as merged). Release run 45778588228 succeeded (all 4 jobs):
+**Wren v0.1.13** has the Mac `.dmg` + updater `.app.tar.gz`, the Windows `x64-setup.exe`, and `latest.json`,
+so installed copies on both platforms will offer the update. Still open: PR #8 (the checks that need
+Maximilian, in `docs/superpowers/plans/2026-11-27-needs-maximilian.md` on that branch). After updating, the Claude
+clean-up switch starts **off** for anyone who had Ollama clean-up on; switch it on in Settings first.
+
 ## Status (2026-11-27, overnight "full stop") — one update combining PRs #1, #4, #5, #6 (branch `update/wren-four-prs`)
 
 Built overnight 26→27 Nov under **full stop**: everything built, tested on Windows and the MacBook, reviewed,
