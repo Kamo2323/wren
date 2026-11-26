@@ -400,6 +400,26 @@ impl Store {
         )?)
     }
 
+    /// Record the estimated cost of one AI clean-up request (no text is stored).
+    pub fn log_cleanup_spend(&self, at: DateTime<Utc>, model: &str, cost_usd: f64) -> StoreResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO cleanup_spend (created_at_utc, model, cost_usd) VALUES (?1, ?2, ?3)",
+            params![ts(at), model, cost_usd],
+        )?;
+        Ok(())
+    }
+
+    /// Estimated spend and number of AI clean-up requests at or after `since`.
+    pub fn cleanup_cost_since(&self, since: DateTime<Utc>) -> StoreResult<(f64, u32)> {
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            "SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM cleanup_spend WHERE created_at_utc >= ?1",
+            [ts(since)],
+            |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)? as u32)),
+        )?)
+    }
+
     /// At startup: meetings left `recording`/`paused` by a crash or forced quit become `interrupted`.
     /// Their end time is the end of their last segment (or the start time when there is none).
     pub fn mark_interrupted(&self) -> StoreResult<usize> {

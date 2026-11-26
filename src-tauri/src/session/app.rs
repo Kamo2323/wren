@@ -222,12 +222,12 @@ impl Env for AppEnv {
         if let Some(c) = &self.prepaste {
             c.prime();
         }
-        // Load the clean-up model while he speaks, so the AI step fits its time limit.
+        // Open the connection to Claude while the user speaks, so the AI step skips the handshake.
         let ai = self.settings().ai_cleanup;
         if ai.enabled && !self.ai_warming.swap(true, Ordering::SeqCst) {
             let warming = self.ai_warming.clone();
-            let spawned = std::thread::Builder::new().name("wren-ai-warm".into()).spawn(move || {
-                ai_cleanup::warm(&ai.model);
+            let spawned = std::thread::Builder::new().name("wren-ai-preconnect".into()).spawn(move || {
+                ai_cleanup::preconnect();
                 warming.store(false, Ordering::SeqCst);
             });
             if spawned.is_err() {
@@ -263,8 +263,15 @@ impl Env for AppEnv {
             .as_ref()
             .is_some_and(|c| c.check(target.pid, &target.process_name) == prepaste::PrePaste::NotEditable)
     }
-    fn ai_cleanup(&self, tidied: &str) -> Option<String> {
-        ai_cleanup::clean(&self.settings().ai_cleanup.model, tidied)
+    fn ai_cleanup(&self, tidied: &str, target: ai_cleanup::AppCategory) -> Option<String> {
+        let ai = self.settings().ai_cleanup;
+        let cleaned = ai_cleanup::clean(&ai.model, target, ai.coding_style, tidied).ok()?;
+        // The request was paid for even if its text is later rejected: keep this month's spend honest.
+        let cost = crate::claude_api::cost_usd(&ai.model, &cleaned.usage);
+        if let Err(err) = self.store().log_cleanup_spend(chrono::Utc::now(), &ai.model, cost) {
+            tracing::warn!(error = %err, "cannot record clean-up spend");
+        }
+        cleaned.text
     }
 }
 

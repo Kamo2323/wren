@@ -131,6 +131,16 @@ pub const MIGRATIONS: &[&str] = &[
     INSERT INTO meeting_spend (meeting_id, created_at_utc, cost_usd)
         SELECT meeting_id, created_at_utc, cost_usd FROM meeting_notes;
     "#,
+    // v4 — AI clean-up through Claude: the estimated cost of every clean-up request (no text).
+    r#"
+    CREATE TABLE cleanup_spend (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at_utc TEXT NOT NULL,
+        model          TEXT NOT NULL,
+        cost_usd       REAL NOT NULL
+    );
+    CREATE INDEX idx_cleanup_spend_created ON cleanup_spend (created_at_utc);
+    "#,
 ];
 
 /// Latest schema version this build knows.
@@ -190,6 +200,7 @@ mod tests {
         assert_eq!(
             tables(&conn),
             [
+                "cleanup_spend",
                 "correction_events",
                 "dictionary_entries",
                 "hourly_totals",

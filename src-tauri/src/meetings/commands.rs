@@ -516,9 +516,12 @@ pub async fn claude_key_remove() -> Result<(), String> {
 pub struct Spend {
     pub usd: f64,
     pub notes: u32,
+    /// AI clean-up through Claude, counted apart from notes.
+    pub cleanup_usd: f64,
+    pub cleanups: u32,
 }
 
-/// Estimated spend on enhanced notes since the 1st of this month (local time).
+/// Estimated spend on enhanced notes and on AI clean-up since the 1st of this month (local time).
 #[tauri::command]
 pub fn claude_spend_month(state: State<'_, AppState>) -> Result<Spend, String> {
     use chrono::{Datelike, Local, TimeZone};
@@ -529,7 +532,8 @@ pub fn claude_spend_month(state: State<'_, AppState>) -> Result<Spend, String> {
         .map(|t| t.with_timezone(&chrono::Utc))
         .unwrap_or_else(chrono::Utc::now);
     let (usd, notes) = state.store.notes_cost_since(first).map_err(|e| e.to_string())?;
-    Ok(Spend { usd, notes })
+    let (cleanup_usd, cleanups) = state.store.cleanup_cost_since(first).map_err(|e| e.to_string())?;
+    Ok(Spend { usd, notes, cleanup_usd, cleanups })
 }
 
 /// Tray: pause/resume or stop the meeting (never on the main thread; stop can take a while).

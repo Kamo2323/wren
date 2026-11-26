@@ -96,9 +96,19 @@ pub const NO_SOUND_WARN_MS: u64 = 1_500;
 pub const ENGINE_SAMPLE_RATE: u32 = 16_000;
 /// Level events per second sent to the popup.
 pub const LEVEL_EVENTS_HZ: u32 = 30;
-/// AI clean-up: replies slower than this, or changing length by more than the ratio, are discarded.
-pub const AI_CLEANUP_TIMEOUT_MS: u64 = 2_500;
+/// AI clean-up (Claude): the whole request must answer within this long, or the plain text is pasted.
+/// Sized for a network round trip (measured on this PC, see the brief's build result).
+pub const AI_CLEANUP_TIMEOUT_MS: u64 = 4_000;
+/// Strict check: replies changing length by more than this ratio are discarded.
 pub const AI_CLEANUP_MAX_LENGTH_CHANGE: f32 = 0.30;
+/// Coding "Rewrite as a clear prompt": the reply may be this short or this long (relative to the
+/// tidied text) — ums, repeats and false starts may go; backticks and list marks may be added…
+pub const AI_REWRITE_MIN_LENGTH_RATIO: f32 = 0.40;
+pub const AI_REWRITE_MAX_LENGTH_RATIO: f32 = 1.40;
+/// …and at least this share of the reply's words must come from the tidied text.
+pub const AI_REWRITE_MIN_REPLY_OVERLAP: f32 = 0.75;
+/// Spoken slash commands in coding apps: a command name is at most this many words.
+pub const SLASH_MAX_NAME_WORDS: usize = 4;
 
 /// Silence guard (spec §6): a phrase repeated more than this many times in a row is collapsed to one…
 pub const REPETITION_MAX_REPEATS: usize = 4;
@@ -263,27 +273,20 @@ pub const WATCH_SIMILAR_MIN_DICE: f64 = 0.4;
 /// long, or Wren pastes anyway.
 pub const PREPASTE_CHECK_MAX_MS: u64 = 50;
 
-/// AI clean-up (spec §10): Ollama's local address.
-pub const OLLAMA_HOST: &str = "127.0.0.1:11434";
-/// How long Ollama keeps the clean-up model loaded after its last use (Ollama duration string).
-pub const AI_CLEANUP_KEEP_ALIVE: &str = "5m";
-/// Status checks (is Ollama up, is the model there) give up after this long.
-pub const OLLAMA_STATUS_TIMEOUT_MS: u64 = 1_500;
-/// Loading the model into memory ahead of a dictation may take this long.
-pub const AI_CLEANUP_WARM_TIMEOUT_MS: u64 = 60_000;
-/// Longest reply, in tokens, as a multiple of the input's word count (plus a floor).
-pub const AI_CLEANUP_MAX_TOKENS_FACTOR: usize = 3;
-pub const AI_CLEANUP_MIN_TOKENS: usize = 32;
-/// While `ollama pull` runs, check on it this often.
-pub const AI_CLEANUP_PULL_POLL_MS: u64 = 500;
+/// AI clean-up: longest reply, in tokens (thinking at low effort counts too): this floor plus this
+/// many per word of the input, capped.
+pub const AI_CLEANUP_MIN_TOKENS: usize = 1_024;
+pub const AI_CLEANUP_TOKENS_PER_WORD: usize = 4;
+pub const AI_CLEANUP_MAX_TOKENS_CAP: usize = 8_192;
+/// The fixed prompt + worked examples are marked for caching only when at least this long (in
+/// estimated tokens): the smallest prefix Haiku 5.5 / Sonnet 5.5 cache.
+pub const AI_CLEANUP_CACHE_MIN_TOKENS: usize = 512;
 /// AI clean-up guard (on top of the length rule): at least this share of the tidied text's words
 /// must still be in the reply, and of the reply's words in the tidied text (case-insensitive).
 pub const AI_CLEANUP_MIN_WORD_OVERLAP: f32 = 0.8;
 /// A reply that starts with a lead-in ending in ':' or a line break within this many characters,
 /// which the tidied text does not start with, is chatter ("Here is the corrected transcript:").
 pub const AI_CLEANUP_LEAD_IN_MAX_CHARS: usize = 60;
-/// `ollama pull` of the clean-up model gives up after this long.
-pub const AI_CLEANUP_PULL_TIMEOUT_MS: u64 = 1_800_000;
 
 // ---- App updater (GitHub Releases) ----
 
