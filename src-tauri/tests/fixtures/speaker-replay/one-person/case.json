@@ -1,0 +1,44 @@
+{
+  "name": "one-person",
+  "participants": [
+    "Sarah Jones"
+  ],
+  "lines": [
+    {
+      "startMs": 1000,
+      "endMs": 4500,
+      "text": "Morning, can you hear me okay?",
+      "expected": "Sarah Jones"
+    },
+    {
+      "startMs": 7000,
+      "endMs": 12000,
+      "text": "Great. So the plan for today is the launch checklist and the budget.",
+      "expected": "Sarah Jones"
+    },
+    {
+      "startMs": 15000,
+      "endMs": 16200,
+      "text": "Sure, go ahead.",
+      "expected": "Sarah Jones"
+    },
+    {
+      "startMs": 18000,
+      "endMs": 24000,
+      "text": "The checklist has twelve items and we have finished nine of them so far this week.",
+      "expected": "Sarah Jones"
+    },
+    {
+      "startMs": 26000,
+      "endMs": 27500,
+      "text": "Yes, Thursday works.",
+      "expected": "Sarah Jones"
+    },
+    {
+      "startMs": 30000,
+      "endMs": 36000,
+      "text": "Perfect, I will send the notes round after the call. Thanks everyone.",
+      "expected": "Sarah Jones"
+    }
+  ]
+}
