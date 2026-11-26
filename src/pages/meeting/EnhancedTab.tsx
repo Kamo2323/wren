@@ -91,7 +91,8 @@ function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; o
         : kind === "share" ? "Couldn't open the Share menu"
         : kind === "email" ? "Couldn't open an email draft"
         : "Couldn't save the notes";
-      toast.show(errorText(err) || fallback, { tone: "danger" });
+      // Errors can carry advice ("Choose one in Windows Settings…"): leave time to read it.
+      toast.show(errorText(err) || fallback, { tone: "danger", ms: 7000 });
     } finally {
       setBusy(null);
     }

@@ -195,7 +195,7 @@ pub fn notes_email_draft(app: AppHandle, html: String, plain: String, subject: S
     {
         windows::email_draft(&app, &html, &plain, &subject).map_err(|e| match e {
             windows::EmailError::NoMailApp => {
-                "No email app is set up to open drafts. Set one in Settings → Apps → Default apps (for .eml files), or use Copy and paste into an email.".to_string()
+                "No email app is set up to open drafts. Choose one in Windows Settings → Apps → Default apps (for .eml files), or use Copy and paste the notes into an email.".to_string()
             }
             windows::EmailError::Other(e) => {
                 tracing::warn!(error = %e, "email draft failed");
