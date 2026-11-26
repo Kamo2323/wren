@@ -76,7 +76,8 @@ function NoteActions({ md, meta, onRegenerate }: { md: string; meta: NoteMeta; o
       } else if (kind === "share") {
         await notesShare(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes", [r.left, r.top, r.width, r.height]);
       } else if (kind === "email") {
-        await notesEmailDraft(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes");
+        const app = await notesEmailDraft(emailHtml(md, meta), plainText(md, meta), meta.title.trim() || "Meeting notes");
+        toast.show(app ? `Opening a new email in ${app}` : "Opening a new email");
       } else if (kind === "pdf") {
         const saved = await notesSavePdf(pdfDocument(md, meta), exportFileName(meta));
         if (saved) toast.show(`Saved ${saved}`);

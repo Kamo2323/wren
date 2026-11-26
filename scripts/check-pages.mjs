@@ -370,6 +370,8 @@ check("…and go to the browser instead", (await page.evaluate(() => window.__wr
   const email = await lastExport();
   check("Email drafts the formatted notes with the meeting title as subject",
     email.subject === "Weekly sync with Sarah" && /<table [^>]*style="border-collapse/.test(email.html) && email.plain.startsWith("Weekly sync with Sarah\n"));
+  check("Email confirms which mail app opens the draft",
+    await page.locator(".toast", { hasText: "Opening a new email in Outlook" }).first().waitFor({ timeout: 3000 }).then(() => true, () => false));
   await actions.getByRole("button", { name: "PDF" }).click();
   await page.waitForFunction(() => window.__wrenExport?.kind === "pdf");
   const winPdf = await lastExport();

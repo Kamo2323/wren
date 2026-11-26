@@ -344,10 +344,10 @@ impl From<anyhow::Error> for EmailError {
     }
 }
 
-/// The app registered to open `.eml` files, if any (its display name).
-fn eml_handler() -> Option<String> {
+/// The app registered to open files with extension `ext` (e.g. ".eml"), if any (its display name).
+fn file_handler(ext: &str) -> Option<String> {
     use windows::Win32::UI::Shell::{ASSOCF_INIT_IGNOREUNKNOWN, ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME, AssocQueryStringW};
-    use windows::core::{PCWSTR, PWSTR, w};
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
     let mut buf = [0u16; 260];
     let mut len = buf.len() as u32;
     // SAFETY: the buffer and its length are passed together.
@@ -355,7 +355,7 @@ fn eml_handler() -> Option<String> {
         AssocQueryStringW(
             ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE,
             ASSOCSTR_FRIENDLYAPPNAME,
-            w!(".eml"),
+            &HSTRING::from(ext),
             PCWSTR::null(),
             Some(PWSTR(buf.as_mut_ptr())),
             &mut len,
@@ -388,7 +388,7 @@ fn sweep_old_drafts(dir: &Path, max_age: Duration) {
 
 /// Writes the notes as an unsent `.eml` draft and opens it in the default mail app. Returns the app's name.
 pub fn email_draft(app: &AppHandle, html: &str, plain: &str, subject: &str) -> Result<String, EmailError> {
-    let Some(handler) = eml_handler() else { return Err(EmailError::NoMailApp) };
+    let Some(handler) = file_handler(".eml") else { return Err(EmailError::NoMailApp) };
     let root = temp_dir("email-drafts")?;
     sweep_old_drafts(&root, DRAFT_MAX_AGE);
     // One folder per draft, so the file keeps a readable name and never collides with one still open.
@@ -446,6 +446,12 @@ mod tests {
         let r = current_region().expect("a region code");
         assert_eq!(r.len(), 2, "{r}");
         assert!(r.chars().all(|c| c.is_ascii_uppercase()), "{r}");
+    }
+
+    #[test]
+    fn file_handler_finds_registered_apps_and_none_for_unknown_types() {
+        assert!(file_handler(".txt").is_some_and(|n| !n.is_empty()), "every Windows has a .txt handler");
+        assert_eq!(file_handler(".wren-no-such-type-7f3a"), None);
     }
 
     #[test]

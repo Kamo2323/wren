@@ -179,11 +179,12 @@ export const notesShare = (html: string, plain: string, subject: string, rect: [
   return later(undefined);
 };
 
-/** Email (Windows): opens the notes as an unsent email draft (HTML + plain text) in the default mail app. */
-export const notesEmailDraft = (html: string, plain: string, subject: string): Promise<void> => {
+/** Email (Windows): opens the notes as an unsent email draft (HTML + plain text) in the default mail app.
+ *  Resolves to that app's name. */
+export const notesEmailDraft = (html: string, plain: string, subject: string): Promise<string> => {
   if (inTauri) return call("notes_email_draft", { html, plain, subject });
   recordExport({ kind: "email", html, plain, subject });
-  return later(undefined);
+  return later("Outlook");
 };
 
 /** macOS: clear Wren's privacy permissions left over from an older build and ask again. */

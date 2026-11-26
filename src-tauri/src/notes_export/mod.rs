@@ -185,14 +185,15 @@ pub fn notes_share(app: AppHandle, html: String, plain: String, subject: String,
 }
 
 /// Email (Windows): writes the formatted notes as an unsent email draft (.eml, HTML + plain text,
-/// subject = `subject`) and opens it in the default mail app, ready to address and send.
+/// subject = `subject`) and opens it in the default mail app, ready to address and send. Returns that
+/// app's name.
 #[tauri::command(async)]
-pub fn notes_email_draft(app: AppHandle, html: String, plain: String, subject: String) -> Result<(), String> {
+pub fn notes_email_draft(app: AppHandle, html: String, plain: String, subject: String) -> Result<String, String> {
     check_len("email", html.len(), MAX_TEXT_BYTES)?;
     check_len("email", plain.len(), MAX_TEXT_BYTES)?;
     #[cfg(windows)]
     {
-        windows::email_draft(&app, &html, &plain, &subject).map(|_| ()).map_err(|e| match e {
+        windows::email_draft(&app, &html, &plain, &subject).map_err(|e| match e {
             windows::EmailError::NoMailApp => {
                 "No email app is set up to open drafts. Set one in Settings → Apps → Default apps (for .eml files), or use Copy and paste into an email.".to_string()
             }
