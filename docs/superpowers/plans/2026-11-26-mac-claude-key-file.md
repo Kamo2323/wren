@@ -1,6 +1,6 @@
 # Mac: stop the Keychain pop-up after every update (Claude key in a private file)
 
-**Status:** brief only, nothing built in this PR. Decision made by Maximilian on 2026-11-26: **option A**.
+**Status:** built on this branch (PR #9), ready for Maximilian to review and merge. Decision made by Maximilian on 2026-11-26: **option A**.
 
 ## The problem
 
@@ -72,8 +72,31 @@ this, enter the "login" keychain password"*. "Always Allow" doesn't stick across
 - Click **Allow** one last time after the update that ships this (the move). Then confirm a later update doesn't ask.
 - Optional, later: whether to join the Apple Developer Program (option B). It would also let the key go back into the Keychain.
 
-## Note
+## Build result
 
-A working draft of A (tests passing on Windows: 500 passed, 0 failed) exists on the **local, unpushed** branch
-`fix/mac-claude-key-file` in `C:\Wren-keyfile`. It was written before Maximilian said he only wanted the PR;
-use it or ignore it when this gets built.
+Built on `plan/mac-claude-key-file` (PR #9, rebased on `main`), starting from the brief and refining the earlier local draft:
+
+- `src-tauri/src/claude_key_file.rs`: owner-only (`0600`) key file created with `create_new(true)` via a unique `.tmp` file (cleaned up on error) and renamed into place, plus `claude-api-key.moved-from-keychain` marker and one-time `get_or_move` migration.
+- `src-tauri/src/claude_api.rs`: per-launch `KeyCache` held under a lock on both platforms; Windows stays on Credential Manager (unsettled failures retried); macOS uses `KeyFile` and skips the real Keychain when `WREN_HOME` is set so isolated test runs cannot touch or delete the user's real Keychain entry.
+- `src-tauri/examples/key_move_probe.rs`: live throwaway-entry probe (`Wren-key-move-probe`) with assertions and `Drop` cleanup.
+- `src/pages/Settings.tsx` & `scripts/check-pages.mjs`: updated macOS Settings copy (with explicit space after `(your API credits).`) and added macOS/Windows Settings copy assertions.
+
+### Verification (raw output)
+
+- **Windows (`C:\Wren-keyfile`):**
+  - `npm run build`: exit 0 (`tsc && vite build`).
+  - `node scripts/unit-tests.mjs`: 38 passed, 0 failed.
+  - `node scripts/check-pages.mjs`: 172 passed, 0 failed (including macOS private-file and Windows Credential Manager copy checks).
+  - `cargo test --lib`: `504 passed; 0 failed; 16 ignored` (and `cargo test --lib claude`: `28 passed; 0 failed; 1 ignored` after the review fix).
+  - `cargo run --example key_move_probe`: exit 0 (`probe entry created: true`, `moved key matches: true`, `file matches: true`, `probe entry gone from the store: true`, `second read from the file only: true`, `cleaned up`).
+  - `cargo clippy --lib --example key_move_probe`: exit 0, 20 pre-existing warnings, 0 in touched/new files.
+- **MacBook Pro (commit `306ae1e928201c872c58af04351138eeee57a447`):**
+  - `cargo test --lib`: `558 passed; 0 failed; 16 ignored` (all 9 `claude_key_file::` tests including `only_the_owner_can_read_the_key_file`, all 5 `claude_api::` tests).
+  - `cargo run --example key_move_probe`: exit 0 against the real macOS Keychain (`probe entry created: true`, `moved key matches: true`, `file matches: true`, `file mode: 600`, `probe entry gone from the store: true`, `second read from the file only: true`, `cleaned up`).
+  - `cargo clippy --lib --bins --example key_move_probe`: exit 0, 21 pre-existing warnings, 0 in touched/new files.
+  - `cargo check --release --lib --bins`: exit 0, 0 warnings/errors.
+- **Review:** 2 rounds with `gemini-4-neon` (`thought_level: xhigh`) → `VERDICT: APPROVE`. Fixed S1 (`isolated_home()` aligned to `std::env::var_os("WREN_HOME").is_some()`, matching `Paths::resolve()`).
+
+### Not done here
+
+- Did not overwrite `/Applications/Wren.app` or touch Wren's real Keychain entry (`service "Wren"`): Maximilian will click **Allow** one last time after updating to the release that includes this PR, then verify a subsequent update does not prompt.
